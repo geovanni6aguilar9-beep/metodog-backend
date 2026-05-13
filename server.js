@@ -1,4 +1,4 @@
-﻿const express = require("express");
+const express = require("express");
 const cors = require("cors");
 const sqlite3 = require("sqlite3").verbose();
 const bcrypt = require("bcryptjs");
@@ -179,4 +179,6 @@ app.post("/api/upgrade", (req, res) => {
   db.run("UPDATE usuarios SET rol = 'COACH', codigo_invitacion = ? WHERE id = ?", [cod, req.body.usuario_id], () => res.json({ rol: 'COACH', codigo_invitacion: cod }));
 });
 
-app.listen(4000, () => console.log("🚀 MOTOR EN PUERTO 4000"));
+// 🔥 AQUÍ ESTÁ EL PUERTO DINÁMICO LISTO PARA RENDER 🔥
+const PORT = process.env.PORT || 4000;
+app.listen(PORT, () => console.log(`🚀 MOTOR EN PUERTO ${PORT}`));
