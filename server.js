@@ -9,9 +9,18 @@ app.use(express.json());
 
 process.on('uncaughtException', (err) => console.error("🔥 ERROR FATAL:", err));
 
-// 🔥 CONEXIÓN A LA BASE DE DATOS INMORTAL (TURSO)
-const url = process.env.TURSO_DATABASE_URL;
-const authToken = process.env.TURSO_AUTH_TOKEN;
+// 🔥 CONEXIÓN BLINDADA A TURSO (ANTI-ERRORES RENDER) 🔥
+let url = (process.env.TURSO_DATABASE_URL || "").trim();
+const authToken = (process.env.TURSO_AUTH_TOKEN || "").trim();
+
+// Forzamos el uso de HTTPS por si Render bloquea el protocolo nativo
+if (url.startsWith("libsql://")) {
+  url = url.replace("libsql://", "https://");
+}
+
+if (!url || !authToken) {
+  console.error("❌ Faltan credenciales de Turso. Revisa las variables en Render.");
+}
 
 const db = createClient({ url, authToken });
 
@@ -59,7 +68,7 @@ async function inicializarBD() {
       await db.execute({ sql: "INSERT INTO alimentos (nombre, grupo, porcion_base, unidad, calorias, proteinas, carbohidratos, grasas, sodio) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", args: ["Aguacate", "Grasas", 50, "g", 80, 1, 4, 7.5, 7] });
     }
     console.log("✅ Bóveda de Turso conectada y lista.");
-  } catch (error) { console.error("❌ Error al conectar con Turso:", error); }
+  } catch (error) { console.error("❌ Error al conectar con Turso:", error.message); }
 }
 inicializarBD();
 
