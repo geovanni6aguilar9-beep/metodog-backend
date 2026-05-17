@@ -2,6 +2,7 @@ const express = require("express");
 const cors = require("cors");
 const { createClient } = require("@libsql/client");
 const bcrypt = require("bcryptjs");
+const nodemailer = require("nodemailer"); // 💌 El nuevo cartero
 
 const app = express();
 app.use(cors());
@@ -9,20 +10,20 @@ app.use(express.json());
 
 process.on('uncaughtException', (err) => console.error("🔥 ERROR FATAL:", err));
 
-// 🔥 CONEXIÓN BLINDADA A TURSO (ANTI-ERRORES RENDER) 🔥
+// 🔥 CONEXIÓN BLINDADA A TURSO
 let url = (process.env.TURSO_DATABASE_URL || "").trim();
 const authToken = (process.env.TURSO_AUTH_TOKEN || "").trim();
-
-// Forzamos el uso de HTTPS por si Render bloquea el protocolo nativo
-if (url.startsWith("libsql://")) {
-  url = url.replace("libsql://", "https://");
-}
-
-if (!url || !authToken) {
-  console.error("❌ Faltan credenciales de Turso. Revisa las variables en Render.");
-}
-
+if (url.startsWith("libsql://")) url = url.replace("libsql://", "https://");
 const db = createClient({ url, authToken });
+
+// 💌 CONFIGURACIÓN DEL CARTERO GOOGLE
+const transporter = nodemailer.createTransport({
+  service: 'gmail',
+  auth: {
+    user: process.env.EMAIL_USER,
+    pass: process.env.EMAIL_PASS
+  }
+});
 
 async function inicializarBD() {
   try {
@@ -31,24 +32,23 @@ async function inicializarBD() {
       rol TEXT, codigo_invitacion TEXT UNIQUE, coach_id INTEGER, fecha_inicio DATETIME DEFAULT CURRENT_TIMESTAMP, calificacion REAL DEFAULT 5.0
     )`);
     await db.execute(`CREATE TABLE IF NOT EXISTS rutinas (
-      id INTEGER PRIMARY KEY AUTOINCREMENT, usuario_id INTEGER UNIQUE, datos_rutina TEXT, 
-      notas_generales TEXT, ultima_actualizacion DATETIME DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(usuario_id) REFERENCES usuarios(id)
+      id INTEGER PRIMARY KEY AUTOINCREMENT, usuario_id INTEGER UNIQUE, datos_rutina TEXT, notas_generales TEXT, ultima_actualizacion DATETIME DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(usuario_id) REFERENCES usuarios(id)
     )`);
     await db.execute(`CREATE TABLE IF NOT EXISTS mediciones (
-      id INTEGER PRIMARY KEY AUTOINCREMENT, usuario_id INTEGER, peso REAL, grasa REAL, datos_extra TEXT,
-      fecha DATETIME DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(usuario_id) REFERENCES usuarios(id)
+      id INTEGER PRIMARY KEY AUTOINCREMENT, usuario_id INTEGER, peso REAL, grasa REAL, datos_extra TEXT, fecha DATETIME DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(usuario_id) REFERENCES usuarios(id)
     )`);
     await db.execute(`CREATE TABLE IF NOT EXISTS valoraciones (
-      id INTEGER PRIMARY KEY AUTOINCREMENT, coach_id INTEGER, cliente_id INTEGER UNIQUE, estrellas INTEGER, 
-      FOREIGN KEY(coach_id) REFERENCES usuarios(id), FOREIGN KEY(cliente_id) REFERENCES usuarios(id)
+      id INTEGER PRIMARY KEY AUTOINCREMENT, coach_id INTEGER, cliente_id INTEGER UNIQUE, estrellas INTEGER, FOREIGN KEY(coach_id) REFERENCES usuarios(id), FOREIGN KEY(cliente_id) REFERENCES usuarios(id)
     )`);
     await db.execute(`CREATE TABLE IF NOT EXISTS dietas (
-      id INTEGER PRIMARY KEY AUTOINCREMENT, usuario_id INTEGER UNIQUE, datos_dieta TEXT, macros_totales TEXT, 
-      notas_dieta TEXT, ultima_actualizacion DATETIME DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(usuario_id) REFERENCES usuarios(id)
+      id INTEGER PRIMARY KEY AUTOINCREMENT, usuario_id INTEGER UNIQUE, datos_dieta TEXT, macros_totales TEXT, notas_dieta TEXT, ultima_actualizacion DATETIME DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(usuario_id) REFERENCES usuarios(id)
     )`);
     await db.execute(`CREATE TABLE IF NOT EXISTS alimentos (
-      id INTEGER PRIMARY KEY AUTOINCREMENT, nombre TEXT, grupo TEXT, porcion_base REAL, unidad TEXT, 
-      calorias REAL, proteinas REAL, carbohidratos REAL, grasas REAL, sodio REAL
+      id INTEGER PRIMARY KEY AUTOINCREMENT, nombre TEXT, grupo TEXT, porcion_base REAL, unidad TEXT, calorias REAL, proteinas REAL, carbohidratos REAL, grasas REAL, sodio REAL
+    )`);
+    // 🔥 NUEVA TABLA PARA CÓDIGOS DE RECUPERACIÓN
+    await db.execute(`CREATE TABLE IF NOT EXISTS recuperacion (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT UNIQUE, codigo TEXT, fecha DATETIME DEFAULT CURRENT_TIMESTAMP
     )`);
 
     const countRes = await db.execute("SELECT COUNT(*) as count FROM alimentos");
@@ -72,6 +72,7 @@ async function inicializarBD() {
 }
 inicializarBD();
 
+// 🚀 RUTAS ORIGINALES 
 app.get("/api/alimentos", async (req, res) => {
   try {
     const result = await db.execute("SELECT * FROM alimentos ORDER BY grupo, nombre ASC");
@@ -83,8 +84,7 @@ app.post("/api/dietas/guardar", async (req, res) => {
   const { usuario_id, datos_dieta, macros_totales, notas_dieta } = req.body;
   try {
     await db.execute({
-      sql: `INSERT INTO dietas (usuario_id, datos_dieta, macros_totales, notas_dieta) VALUES (?, ?, ?, ?)
-            ON CONFLICT(usuario_id) DO UPDATE SET datos_dieta = excluded.datos_dieta, macros_totales = excluded.macros_totales, notas_dieta = excluded.notas_dieta`,
+      sql: `INSERT INTO dietas (usuario_id, datos_dieta, macros_totales, notas_dieta) VALUES (?, ?, ?, ?) ON CONFLICT(usuario_id) DO UPDATE SET datos_dieta = excluded.datos_dieta, macros_totales = excluded.macros_totales, notas_dieta = excluded.notas_dieta`,
       args: [usuario_id, JSON.stringify(datos_dieta), JSON.stringify(macros_totales), JSON.stringify(notas_dieta)]
     });
     res.json({ mensaje: "Dieta asignada" });
@@ -106,8 +106,7 @@ app.post("/api/rutinas/guardar", async (req, res) => {
   const { usuario_id, datos_rutina, notas_generales } = req.body;
   try {
     await db.execute({
-      sql: `INSERT INTO rutinas (usuario_id, datos_rutina, notas_generales) VALUES (?, ?, ?)
-            ON CONFLICT(usuario_id) DO UPDATE SET datos_rutina = excluded.datos_rutina, notas_generales = excluded.notas_generales`,
+      sql: `INSERT INTO rutinas (usuario_id, datos_rutina, notas_generales) VALUES (?, ?, ?) ON CONFLICT(usuario_id) DO UPDATE SET datos_rutina = excluded.datos_rutina, notas_generales = excluded.notas_generales`,
       args: [usuario_id, JSON.stringify(datos_rutina), JSON.stringify(notas_generales)]
     });
     res.json({ mensaje: "Ok" });
@@ -178,7 +177,7 @@ app.post("/api/registro", async (req, res) => {
   const { nombre, email, password, codigoIngresado } = req.body;
   const hash = bcrypt.hashSync(password, 10);
   const emailLimpio = email.toLowerCase().trim();
-  const rol = (emailLimpio === 'geovanni6aguilar9@gmail.com') ? 'SUPERADMIN' : 'CLIENTE';
+  const rol = (emailLimpio === process.env.EMAIL_USER) ? 'SUPERADMIN' : 'CLIENTE';
   const query = `INSERT INTO usuarios (nombre, email, password, rol, codigo_invitacion, coach_id) VALUES (?, ?, ?, ?, ?, ?)`;
   
   try {
@@ -210,6 +209,50 @@ app.post("/api/upgrade", async (req, res) => {
   try {
     await db.execute({ sql: "UPDATE usuarios SET rol = 'COACH', codigo_invitacion = ? WHERE id = ?", args: [cod, req.body.usuario_id] });
     res.json({ rol: 'COACH', codigo_invitacion: cod });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// 🔥 NUEVAS RUTAS: SISTEMA DE RECUPERACIÓN DE CONTRASEÑA
+app.post("/api/solicitar-recuperacion", async (req, res) => {
+  const { email } = req.body;
+  const emailLimpio = email.toLowerCase().trim();
+  try {
+    const user = await db.execute({ sql: "SELECT nombre FROM usuarios WHERE email = ?", args: [emailLimpio] });
+    if (user.rows.length === 0) return res.status(404).json({ error: "Correo no registrado" });
+
+    // Generar código de 6 números
+    const codigo = Math.floor(100000 + Math.random() * 900000).toString();
+
+    // Guardar en Turso (borra si ya había uno viejo)
+    await db.execute({ sql: `INSERT INTO recuperacion (email, codigo) VALUES (?, ?) ON CONFLICT(email) DO UPDATE SET codigo = excluded.codigo`, args: [emailLimpio, codigo] });
+
+    // Enviar el correo
+    await transporter.sendMail({
+      from: '"MétodoG App" <' + process.env.EMAIL_USER + '>',
+      to: emailLimpio,
+      subject: "🛡️ Recuperación de Contraseña - MétodoG",
+      html: `<h3>Hola ${user.rows[0].nombre},</h3><p>Tu código secreto para cambiar tu contraseña es: <b>${codigo}</b></p><p>Si no solicitaste este cambio, ignora este correo.</p>`
+    });
+    res.json({ mensaje: "Código enviado" });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post("/api/cambiar-password", async (req, res) => {
+  const { email, codigo, nuevaPassword } = req.body;
+  const emailLimpio = email.toLowerCase().trim();
+  try {
+    // Validar el código
+    const rec = await db.execute({ sql: "SELECT * FROM recuperacion WHERE email = ? AND codigo = ?", args: [emailLimpio, codigo] });
+    if (rec.rows.length === 0) return res.status(400).json({ error: "Código incorrecto o caducado" });
+
+    // Encriptar la nueva contraseña y guardarla
+    const hash = bcrypt.hashSync(nuevaPassword, 10);
+    await db.execute({ sql: "UPDATE usuarios SET password = ? WHERE email = ?", args: [hash, emailLimpio] });
+    
+    // Borrar el código usado
+    await db.execute({ sql: "DELETE FROM recuperacion WHERE email = ?", args: [emailLimpio] });
+    
+    res.json({ mensaje: "Contraseña actualizada con éxito" });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
