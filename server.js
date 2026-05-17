@@ -216,16 +216,25 @@ app.post("/api/upgrade", async (req, res) => {
 app.post("/api/solicitar-recuperacion", async (req, res) => {
   const { email } = req.body;
   const emailLimpio = email.toLowerCase().trim();
+  console.log(`🔎 1. Petición recibida para el correo: ${emailLimpio}`);
+
   try {
     const user = await db.execute({ sql: "SELECT nombre FROM usuarios WHERE email = ?", args: [emailLimpio] });
-    if (user.rows.length === 0) return res.status(404).json({ error: "Correo no registrado" });
+    if (user.rows.length === 0) {
+        console.log("❌ 2. El correo no existe en la BD.");
+        return res.status(404).json({ error: "Correo no registrado" });
+    }
+    console.log(`✅ 2. Usuario encontrado: ${user.rows[0].nombre}`);
 
     // Generar código de 6 números
     const codigo = Math.floor(100000 + Math.random() * 900000).toString();
 
-    // Guardar en Turso (borra si ya había uno viejo)
+    // Guardar en Turso
     await db.execute({ sql: `INSERT INTO recuperacion (email, codigo) VALUES (?, ?) ON CONFLICT(email) DO UPDATE SET codigo = excluded.codigo`, args: [emailLimpio, codigo] });
+    console.log(`💾 3. Código generado y guardado en Turso.`);
 
+    console.log(`💌 4. Intentando conectar con Google (Nodemailer) para enviar correo...`);
+    
     // Enviar el correo
     await transporter.sendMail({
       from: '"MétodoG App" <' + process.env.EMAIL_USER + '>',
@@ -233,8 +242,14 @@ app.post("/api/solicitar-recuperacion", async (req, res) => {
       subject: "🛡️ Recuperación de Contraseña - MétodoG",
       html: `<h3>Hola ${user.rows[0].nombre},</h3><p>Tu código secreto para cambiar tu contraseña es: <b>${codigo}</b></p><p>Si no solicitaste este cambio, ignora este correo.</p>`
     });
+    
+    console.log("🚀 5. ¡Correo enviado con éxito por Nodemailer!");
     res.json({ mensaje: "Código enviado" });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+
+  } catch (err) { 
+    console.error("🔥 ERROR CRÍTICO AL ENVIAR CORREO:", err.message);
+    res.status(500).json({ error: "Error interno: " + err.message }); 
+  }
 });
 
 app.post("/api/cambiar-password", async (req, res) => {
