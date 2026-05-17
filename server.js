@@ -2,7 +2,7 @@ const express = require("express");
 const cors = require("cors");
 const { createClient } = require("@libsql/client");
 const bcrypt = require("bcryptjs");
-const nodemailer = require("nodemailer"); // 💌 El nuevo cartero
+const { Resend } = require("resend"); // 💌 El nuevo cartero profesional vía API
 
 const app = express();
 app.use(cors());
@@ -16,16 +16,8 @@ const authToken = (process.env.TURSO_AUTH_TOKEN || "").trim();
 if (url.startsWith("libsql://")) url = url.replace("libsql://", "https://");
 const db = createClient({ url, authToken });
 
-// 💌 CONFIGURACIÓN DEL CARTERO GOOGLE (A PRUEBA DE FIREWALLS)
-const transporter = nodemailer.createTransport({
-  host: 'smtp.gmail.com',
-  port: 465,
-  secure: true, // Usa encriptación obligatoria
-  auth: {
-    user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASS
-  }
-});
+// 💌 CONFIGURACIÓN DEL CARTERO RESEND (Peticiones HTTP directas)
+const resend = new Resend(process.env.RESEND_API_KEY);
 
 async function inicializarBD() {
   try {
@@ -48,7 +40,6 @@ async function inicializarBD() {
     await db.execute(`CREATE TABLE IF NOT EXISTS alimentos (
       id INTEGER PRIMARY KEY AUTOINCREMENT, nombre TEXT, grupo TEXT, porcion_base REAL, unidad TEXT, calorias REAL, proteinas REAL, carbohidratos REAL, grasas REAL, sodio REAL
     )`);
-    // 🔥 NUEVA TABLA PARA CÓDIGOS DE RECUPERACIÓN
     await db.execute(`CREATE TABLE IF NOT EXISTS recuperacion (
       id INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT UNIQUE, codigo TEXT, fecha DATETIME DEFAULT CURRENT_TIMESTAMP
     )`);
@@ -74,7 +65,7 @@ async function inicializarBD() {
 }
 inicializarBD();
 
-// 🚀 RUTAS ORIGINALES 
+// 🚀 RUTAS GENERALES DE LA APP
 app.get("/api/alimentos", async (req, res) => {
   try {
     const result = await db.execute("SELECT * FROM alimentos ORDER BY grupo, nombre ASC");
@@ -109,7 +100,7 @@ app.post("/api/rutinas/guardar", async (req, res) => {
   try {
     await db.execute({
       sql: `INSERT INTO rutinas (usuario_id, datos_rutina, notas_generales) VALUES (?, ?, ?) ON CONFLICT(usuario_id) DO UPDATE SET datos_rutina = excluded.datos_rutina, notas_generales = excluded.notas_generales`,
-      args: [usuario_id, JSON.stringify(datos_rutina), JSON.stringify(notas_generales)]
+      args: [usuario_id, JSON.stringify(datos_rutina), JSON.stringify(notes_generales)]
     });
     res.json({ mensaje: "Ok" });
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -214,7 +205,7 @@ app.post("/api/upgrade", async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// 🔥 NUEVAS RUTAS: SISTEMA DE RECUPERACIÓN DE CONTRASEÑA
+// 🔥 NUEVA RUTA DE RECUPERACIÓN DE CONTRASEÑA (VÍA RESEND API)
 app.post("/api/solicitar-recuperacion", async (req, res) => {
   const { email } = req.body;
   const emailLimpio = email.toLowerCase().trim();
@@ -235,22 +226,27 @@ app.post("/api/solicitar-recuperacion", async (req, res) => {
     await db.execute({ sql: `INSERT INTO recuperacion (email, codigo) VALUES (?, ?) ON CONFLICT(email) DO UPDATE SET codigo = excluded.codigo`, args: [emailLimpio, codigo] });
     console.log(`💾 3. Código generado y guardado en Turso.`);
 
-    console.log(`💌 4. Intentando conectar con Google (Nodemailer) para enviar correo...`);
+    console.log(`💌 4. Intentando enviar correo a través de la API de Resend...`);
     
-    // Enviar el correo
-    await transporter.sendMail({
-      from: '"MétodoG App" <' + process.env.EMAIL_USER + '>',
+    // Envío seguro por HTTP (Sáltase las restricciones del firewall de Render)
+    const { data, error } = await resend.emails.send({
+      from: 'MétodoG Soporte <onboarding@resend.dev>',
       to: emailLimpio,
       subject: "🛡️ Recuperación de Contraseña - MétodoG",
       html: `<h3>Hola ${user.rows[0].nombre},</h3><p>Tu código secreto para cambiar tu contraseña es: <b>${codigo}</b></p><p>Si no solicitaste este cambio, ignora este correo.</p>`
     });
+
+    if (error) {
+       console.error("🔥 ERROR DE LA API DE RESEND:", error);
+       return res.status(500).json({ error: "No se pudo enviar el correo de recuperación." });
+    }
     
-    console.log("🚀 5. ¡Correo enviado con éxito por Nodemailer!");
+    console.log("🚀 5. ¡Correo enviado con éxito por Resend!");
     res.json({ mensaje: "Código enviado" });
 
   } catch (err) { 
-    console.error("🔥 ERROR CRÍTICO AL ENVIAR CORREO:", err.message);
-    res.status(500).json({ error: "Error interno: " + err.message }); 
+    console.error("🔥 ERROR CRÍTICO AL PROCESAR RECUPERACIÓN:", err.message);
+    res.status(500).json({ error: "Error interno del servidor." }); 
   }
 });
 
