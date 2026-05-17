@@ -16,9 +16,11 @@ const authToken = (process.env.TURSO_AUTH_TOKEN || "").trim();
 if (url.startsWith("libsql://")) url = url.replace("libsql://", "https://");
 const db = createClient({ url, authToken });
 
-// 💌 CONFIGURACIÓN DEL CARTERO GOOGLE
+// 💌 CONFIGURACIÓN DEL CARTERO GOOGLE (A PRUEBA DE FIREWALLS)
 const transporter = nodemailer.createTransport({
-  service: 'gmail',
+  host: 'smtp.gmail.com',
+  port: 465,
+  secure: true, // Usa encriptación obligatoria
   auth: {
     user: process.env.EMAIL_USER,
     pass: process.env.EMAIL_PASS
