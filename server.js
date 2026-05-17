@@ -176,14 +176,24 @@ app.post("/api/registro", async (req, res) => {
   try {
     if (codigoIngresado && codigoIngresado.trim() !== '') {
       const coachRes = await db.execute({ sql: "SELECT id FROM usuarios WHERE codigo_invitacion = ?", args: [codigoIngresado.toUpperCase()] });
-      if (coachRes.rows.length === 0) return res.status(400).json({ error: "Código Inválido" });
+      if (coachRes.rows.length === 0) return res.status(400).json({ error: "El código de Coach que ingresaste no es válido." });
+      
       await db.execute({ sql: query, args: [nombre, emailLimpio, hash, 'CLIENTE', null, coachRes.rows[0].id] });
       res.json({ mensaje: "Ok" });
     } else {
       await db.execute({ sql: query, args: [nombre, emailLimpio, hash, rol, (rol === 'SUPERADMIN' ? generarCodigo() : null), null] });
       res.json({ mensaje: "Ok" });
     }
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { 
+    // 🔥 TRADUCTOR DE ERRORES PARA HUMANOS 🔥
+    if (err.message.includes("UNIQUE constraint failed: usuarios.email")) {
+      return res.status(400).json({ error: "Este correo ya está registrado. Por favor, inicia sesión." });
+    }
+    
+    // Si es un error diferente y desconocido
+    console.error("Error en registro:", err.message);
+    res.status(500).json({ error: "Ocurrió un problema al crear tu cuenta. Intenta de nuevo." }); 
+  }
 });
 
 app.post("/api/login", async (req, res) => {
