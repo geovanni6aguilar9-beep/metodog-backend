@@ -2,7 +2,7 @@ const express = require("express");
 const cors = require("cors");
 const { createClient } = require("@libsql/client");
 const bcrypt = require("bcryptjs");
-const { Resend } = require("resend"); // 💌 El nuevo cartero profesional vía API
+const { Resend } = require("resend");
 
 const app = express();
 app.use(cors());
@@ -16,7 +16,7 @@ const authToken = (process.env.TURSO_AUTH_TOKEN || "").trim();
 if (url.startsWith("libsql://")) url = url.replace("libsql://", "https://");
 const db = createClient({ url, authToken });
 
-// 💌 CONFIGURACIÓN DEL CARTERO RESEND (Peticiones HTTP directas)
+// 💌 CONFIGURACIÓN DEL CARTERO RESEND
 const resend = new Resend(process.env.RESEND_API_KEY);
 
 async function inicializarBD() {
@@ -42,6 +42,17 @@ async function inicializarBD() {
     )`);
     await db.execute(`CREATE TABLE IF NOT EXISTS recuperacion (
       id INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT UNIQUE, codigo TEXT, fecha DATETIME DEFAULT CURRENT_TIMESTAMP
+    )`);
+
+    // 🔥 NUEVA TABLA: PERFILES EXTENDIDOS DE CLIENTES (FICHA INICIAL)
+    await db.execute(`CREATE TABLE IF NOT EXISTS perfiles_clientes (
+      usuario_id INTEGER PRIMARY KEY,
+      edad INTEGER,
+      estatura REAL,
+      gustos TEXT,
+      disgustos TEXT,
+      enfermedades TEXT,
+      FOREIGN KEY(usuario_id) REFERENCES usuarios(id)
     )`);
 
     const countRes = await db.execute("SELECT COUNT(*) as count FROM alimentos");
@@ -100,7 +111,7 @@ app.post("/api/rutinas/guardar", async (req, res) => {
   try {
     await db.execute({
       sql: `INSERT INTO rutinas (usuario_id, datos_rutina, notas_generales) VALUES (?, ?, ?) ON CONFLICT(usuario_id) DO UPDATE SET datos_rutina = excluded.datos_rutina, notas_generales = excluded.notas_generales`,
-      args: [usuario_id, JSON.stringify(datos_rutina), JSON.stringify(notes_generales)]
+      args: [usuario_id, JSON.stringify(datos_rutina), JSON.stringify(notas_generales)]
     });
     res.json({ mensaje: "Ok" });
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -123,12 +134,48 @@ app.post("/api/mediciones/guardar", async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// 🔥 NUEVA RUTA: GUARDAR O ACTUALIZAR EL FORMULARIO DEL CLIENTE
+app.post("/api/clientes/guardar-perfil", async (req, res) => {
+  const { usuario_id, edad, estatura, gustos, disgustos, enfermedades } = req.body;
+  try {
+    await db.execute({
+      sql: `INSERT INTO perfiles_clientes (usuario_id, edad, estatura, gustos, disgustos, enfermedades) 
+            VALUES (?, ?, ?, ?, ?, ?) 
+            ON CONFLICT(usuario_id) 
+            DO UPDATE SET edad = excluded.edad, estatura = excluded.estatura, gustos = excluded.gustos, disgustos = excluded.disgustos, enfermedades = excluded.enfermedades`,
+      args: [
+        usuario_id, 
+        edad || null, 
+        estatura || null, 
+        gustos ? gustos.trim() : "", 
+        disgustos ? disgustos.trim() : "", 
+        enfermedades ? enfermedades.trim() : ""
+      ]
+    });
+    res.json({ mensaje: "Perfil de diagnóstico guardado correctamente" });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// 🔄 RUTA ACTUALIZADA: ENVÍA EL PACK COMPLETO AL COACH (INFO, PERFIL Y HISTORIAL)
 app.get("/api/clientes/:id/resumen", async (req, res) => {
   try {
+    // 1. Obtener datos base del usuario
     const infoRes = await db.execute({ sql: "SELECT nombre, email, fecha_inicio FROM usuarios WHERE id = ?", args: [req.params.id] });
-    if (infoRes.rows.length === 0) return res.status(404).json({ error: "No" });
-    const histRes = await db.execute({ sql: "SELECT peso, grasa, datos_extra, fecha FROM mediciones WHERE usuario_id = ?", args: [req.params.id] });
-    res.json({ info: infoRes.rows[0], historial: histRes.rows || [] });
+    if (infoRes.rows.length === 0) return res.status(404).json({ error: "Usuario no encontrado" });
+    
+    // 2. Obtener su perfil extendido (si no lo ha llenado, manda valores vacíos por defecto)
+    const perfilRes = await db.execute({ sql: "SELECT edad, estatura, gustos, disgustos, enfermedades FROM perfiles_clientes WHERE usuario_id = ?", args: [req.params.id] });
+    const perfil = perfilRes.rows.length > 0 ? perfilRes.rows[0] : { edad: null, estatura: null, gustos: "", disgustos: "", enfermedades: "" };
+
+    // 3. Obtener su historial de pesajes ordenados del más reciente al más antiguo
+    const histRes = await db.execute({ sql: "SELECT peso, grasa, datos_extra, fecha FROM mediciones WHERE usuario_id = ? ORDER BY fecha DESC", args: [req.params.id] });
+    
+    // Mandamos las 3 piezas de información en una sola respuesta limpia
+    res.json({ 
+      info: infoRes.rows[0], 
+      perfil: perfil,
+      historial: histRes.rows || [] 
+    });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -170,14 +217,13 @@ app.post("/api/registro", async (req, res) => {
   const { nombre, email, password, codigoIngresado } = req.body;
   const hash = bcrypt.hashSync(password, 10);
   const emailLimpio = email.toLowerCase().trim();
-  const rol = (emailLimpio === process.env.EMAIL_USER) ? 'SUPERADMIN' : 'CLIENTE';
+  const rol = (emailLimpio === 'geovanni6aguilar9@gmail.com') ? 'SUPERADMIN' : 'CLIENTE';
   const query = `INSERT INTO usuarios (nombre, email, password, rol, codigo_invitacion, coach_id) VALUES (?, ?, ?, ?, ?, ?)`;
   
   try {
     if (codigoIngresado && codigoIngresado.trim() !== '') {
       const coachRes = await db.execute({ sql: "SELECT id FROM usuarios WHERE codigo_invitacion = ?", args: [codigoIngresado.toUpperCase()] });
       if (coachRes.rows.length === 0) return res.status(400).json({ error: "El código de Coach que ingresaste no es válido." });
-      
       await db.execute({ sql: query, args: [nombre, emailLimpio, hash, 'CLIENTE', null, coachRes.rows[0].id] });
       res.json({ mensaje: "Ok" });
     } else {
@@ -185,12 +231,9 @@ app.post("/api/registro", async (req, res) => {
       res.json({ mensaje: "Ok" });
     }
   } catch (err) { 
-    // 🔥 TRADUCTOR DE ERRORES PARA HUMANOS 🔥
     if (err.message.includes("UNIQUE constraint failed: usuarios.email")) {
       return res.status(400).json({ error: "Este correo ya está registrado. Por favor, inicia sesión." });
     }
-    
-    // Si es un error diferente y desconocido
     console.error("Error en registro:", err.message);
     res.status(500).json({ error: "Ocurrió un problema al crear tu cuenta. Intenta de nuevo." }); 
   }
@@ -215,7 +258,6 @@ app.post("/api/upgrade", async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// 🔥 NUEVA RUTA DE RECUPERACIÓN DE CONTRASEÑA (VÍA RESEND API)
 app.post("/api/solicitar-recuperacion", async (req, res) => {
   const { email } = req.body;
   const emailLimpio = email.toLowerCase().trim();
@@ -224,21 +266,12 @@ app.post("/api/solicitar-recuperacion", async (req, res) => {
   try {
     const user = await db.execute({ sql: "SELECT nombre FROM usuarios WHERE email = ?", args: [emailLimpio] });
     if (user.rows.length === 0) {
-        console.log("❌ 2. El correo no existe en la BD.");
         return res.status(404).json({ error: "Correo no registrado" });
     }
-    console.log(`✅ 2. Usuario encontrado: ${user.rows[0].nombre}`);
 
-    // Generar código de 6 números
     const codigo = Math.floor(100000 + Math.random() * 900000).toString();
-
-    // Guardar en Turso
     await db.execute({ sql: `INSERT INTO recuperacion (email, codigo) VALUES (?, ?) ON CONFLICT(email) DO UPDATE SET codigo = excluded.codigo`, args: [emailLimpio, codigo] });
-    console.log(`💾 3. Código generado y guardado en Turso.`);
 
-    console.log(`💌 4. Intentando enviar correo a través de la API de Resend...`);
-    
-    // Envío seguro por HTTP (Sáltase las restricciones del firewall de Render)
     const { data, error } = await resend.emails.send({
       from: 'MétodoG Soporte <onboarding@resend.dev>',
       to: emailLimpio,
@@ -251,11 +284,8 @@ app.post("/api/solicitar-recuperacion", async (req, res) => {
        return res.status(500).json({ error: "No se pudo enviar el correo de recuperación." });
     }
     
-    console.log("🚀 5. ¡Correo enviado con éxito por Resend!");
     res.json({ mensaje: "Código enviado" });
-
   } catch (err) { 
-    console.error("🔥 ERROR CRÍTICO AL PROCESAR RECUPERACIÓN:", err.message);
     res.status(500).json({ error: "Error interno del servidor." }); 
   }
 });
@@ -264,15 +294,11 @@ app.post("/api/cambiar-password", async (req, res) => {
   const { email, codigo, nuevaPassword } = req.body;
   const emailLimpio = email.toLowerCase().trim();
   try {
-    // Validar el código
     const rec = await db.execute({ sql: "SELECT * FROM recuperacion WHERE email = ? AND codigo = ?", args: [emailLimpio, codigo] });
     if (rec.rows.length === 0) return res.status(400).json({ error: "Código incorrecto o caducado" });
 
-    // Encriptar la nueva contraseña y guardarla
     const hash = bcrypt.hashSync(nuevaPassword, 10);
     await db.execute({ sql: "UPDATE usuarios SET password = ? WHERE email = ?", args: [hash, emailLimpio] });
-    
-    // Borrar el código usado
     await db.execute({ sql: "DELETE FROM recuperacion WHERE email = ?", args: [emailLimpio] });
     
     res.json({ mensaje: "Contraseña actualizada con éxito" });
