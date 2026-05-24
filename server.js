@@ -1,3 +1,5 @@
+﻿require("dotenv").config({ quiet: true });
+const path = require("path");
 const express = require("express");
 const cors = require("cors");
 const { createClient } = require("@libsql/client");
@@ -10,11 +12,28 @@ app.use(express.json());
 
 process.on('uncaughtException', (err) => console.error("🔥 ERROR FATAL:", err));
 
-// 🔥 CONEXIÓN BLINDADA A TURSO
-let url = (process.env.TURSO_DATABASE_URL || "").trim();
-const authToken = (process.env.TURSO_AUTH_TOKEN || "").trim();
-if (url.startsWith("libsql://")) url = url.replace("libsql://", "https://");
-const db = createClient({ url, authToken });
+function crearClienteDB() {
+  const useLocal = process.env.USE_LOCAL_DB === "true";
+  let url = (process.env.TURSO_DATABASE_URL || "").trim();
+  const authToken = (process.env.TURSO_AUTH_TOKEN || "").trim();
+
+  if (useLocal || url.startsWith("file:")) {
+    const localPath = url.startsWith("file:")
+      ? url
+      : `file:${path.join(__dirname, "metodog.db")}`;
+    console.log(`📂 BD local: ${localPath}`);
+    return createClient({ url: localPath });
+  }
+
+  if (!url) {
+    throw new Error("TURSO_DATABASE_URL vacío. Usa USE_LOCAL_DB=true o credenciales de Turso.");
+  }
+  if (url.startsWith("libsql://")) url = url.replace("libsql://", "https://");
+  console.log(`☁️ BD Turso: ${url.split("?")[0]}`);
+  return createClient({ url, authToken });
+}
+
+const db = crearClienteDB();
 
 // 💌 CONFIGURACIÓN DEL CARTERO RESEND
 const resend = new Resend(process.env.RESEND_API_KEY);
@@ -55,6 +74,46 @@ async function inicializarBD() {
       FOREIGN KEY(usuario_id) REFERENCES usuarios(id)
     )`);
 
+    await db.execute(`CREATE TABLE IF NOT EXISTS perfiles_coach_publicos (
+      usuario_id INTEGER PRIMARY KEY,
+      foto_url TEXT,
+      bio TEXT,
+      especialidad TEXT,
+      logros TEXT,
+      tarifa_base REAL,
+      whatsapp TEXT,
+      visible_en_directorio INTEGER DEFAULT 1,
+      FOREIGN KEY(usuario_id) REFERENCES usuarios(id)
+    )`);
+
+    await db.execute(`CREATE TABLE IF NOT EXISTS planes_archivados (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      cliente_id INTEGER,
+      coach_id INTEGER,
+      tipo TEXT,
+      datos_json TEXT,
+      archivado_hasta DATETIME,
+      FOREIGN KEY(cliente_id) REFERENCES usuarios(id),
+      FOREIGN KEY(coach_id) REFERENCES usuarios(id)
+    )`);
+
+    try {
+      await db.execute("ALTER TABLE usuarios ADD COLUMN paquete_rutina_6_dias INTEGER DEFAULT 0");
+    } catch (_) { /* columna ya existe */ }
+
+    await db.execute(`CREATE TABLE IF NOT EXISTS historial_fuerza (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      usuario_id INTEGER NOT NULL,
+      ejercicio TEXT NOT NULL,
+      peso REAL NOT NULL,
+      reps INTEGER DEFAULT 0,
+      numero_serie INTEGER,
+      dia_rutina TEXT,
+      fecha DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY(usuario_id) REFERENCES usuarios(id)
+    )`);
+    await db.execute(`CREATE INDEX IF NOT EXISTS idx_historial_fuerza_user_ej ON historial_fuerza(usuario_id, ejercicio)`);
+
     const countRes = await db.execute("SELECT COUNT(*) as count FROM alimentos");
     if (countRes.rows[0].count === 0) {
       await db.execute({ sql: "INSERT INTO alimentos (nombre, grupo, porcion_base, unidad, calorias, proteinas, carbohidratos, grasas, sodio) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", args: ["Pechuga de Pollo", "Carnes", 100, "g", 165, 31, 0, 3.6, 74] });
@@ -71,8 +130,13 @@ async function inicializarBD() {
       await db.execute({ sql: "INSERT INTO alimentos (nombre, grupo, porcion_base, unidad, calorias, proteinas, carbohidratos, grasas, sodio) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", args: ["Aceite de Oliva", "Grasas", 1, "cucharada", 119, 0, 0, 13.5, 0] });
       await db.execute({ sql: "INSERT INTO alimentos (nombre, grupo, porcion_base, unidad, calorias, proteinas, carbohidratos, grasas, sodio) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", args: ["Aguacate", "Grasas", 50, "g", 80, 1, 4, 7.5, 7] });
     }
-    console.log("✅ Bóveda de Turso conectada y lista.");
-  } catch (error) { console.error("❌ Error al conectar con Turso:", error.message); }
+    console.log("✅ Base de datos conectada y lista.");
+  } catch (error) {
+    console.error("❌ Error al conectar con la base de datos:", error.message);
+    if (process.env.USE_LOCAL_DB !== "true") {
+      console.error("💡 Si estás en local y falla la red a Turso, añade USE_LOCAL_DB=true en backend/.env");
+    }
+  }
 }
 inicializarBD();
 
@@ -126,12 +190,93 @@ app.get("/api/rutinas/:usuario_id", async (req, res) => {
   } catch (err) { res.json({ datos_rutina: null }); }
 });
 
+app.post("/api/fuerza/guardar", async (req, res) => {
+  const { usuario_id, ejercicio, peso, reps, numero_serie, dia_rutina } = req.body;
+  if (!usuario_id || !ejercicio || peso == null || peso === "") {
+    return res.status(400).json({ error: "usuario_id, ejercicio y peso son obligatorios" });
+  }
+  const pesoNum = parseFloat(peso);
+  if (Number.isNaN(pesoNum)) return res.status(400).json({ error: "Peso inválido" });
+  try {
+    const result = await db.execute({
+      sql: `INSERT INTO historial_fuerza (usuario_id, ejercicio, peso, reps, numero_serie, dia_rutina) VALUES (?, ?, ?, ?, ?, ?)`,
+      args: [
+        usuario_id,
+        String(ejercicio).trim(),
+        pesoNum,
+        parseInt(reps, 10) || 0,
+        numero_serie != null ? parseInt(numero_serie, 10) : null,
+        dia_rutina || null
+      ]
+    });
+    res.json({ mensaje: "Ok", id: Number(result.lastInsertRowid) });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get("/api/fuerza/historial/:usuario_id/:ejercicio", async (req, res) => {
+  try {
+    const ejercicio = decodeURIComponent(req.params.ejercicio || "");
+    const result = await db.execute({
+      sql: `SELECT id, ejercicio, peso, reps, numero_serie, dia_rutina, fecha
+            FROM historial_fuerza WHERE usuario_id = ? AND ejercicio = ? ORDER BY fecha ASC, id ASC LIMIT 500`,
+      args: [req.params.usuario_id, ejercicio]
+    });
+    res.json({ historial: result.rows });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get("/api/fuerza/historial/:usuario_id", async (req, res) => {
+  try {
+    const result = await db.execute({
+      sql: `SELECT id, ejercicio, peso, reps, numero_serie, dia_rutina, fecha
+            FROM historial_fuerza WHERE usuario_id = ? ORDER BY fecha ASC, id ASC LIMIT 1000`,
+      args: [req.params.usuario_id]
+    });
+    const ejercicios = [...new Set(result.rows.map(r => r.ejercicio))];
+    res.json({ historial: result.rows, ejercicios });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.put("/api/usuarios/paquete-6-dias", async (req, res) => {
+  const { usuario_id, activo } = req.body;
+  if (!usuario_id) return res.status(400).json({ error: "usuario_id requerido" });
+  try {
+    const result = await db.execute({
+      sql: "UPDATE usuarios SET paquete_rutina_6_dias = ? WHERE id = ?",
+      args: [activo ? 1 : 0, usuario_id]
+    });
+    if ((result.rowsAffected ?? 0) === 0) return res.status(404).json({ error: "Usuario no encontrado" });
+    res.json({ paquete_rutina_6_dias: !!activo });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 app.post("/api/mediciones/guardar", async (req, res) => {
   const { usuario_id, peso, grasa, datos_extra } = req.body;
   try {
     await db.execute({ sql: "INSERT INTO mediciones (usuario_id, peso, grasa, datos_extra) VALUES (?, ?, ?, ?)", args: [usuario_id, peso, grasa, datos_extra] });
     res.json({ mensaje: "Ok" });
   } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.delete("/api/mediciones/:id", async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (!id || Number.isNaN(id)) {
+    return res.status(400).json({ error: "ID de medición inválido" });
+  }
+  try {
+    const result = await db.execute({
+      sql: "DELETE FROM mediciones WHERE id = ?",
+      args: [id]
+    });
+    const affected = result.rowsAffected ?? 0;
+    if (affected === 0) {
+      return res.status(404).json({ error: "Registro no encontrado" });
+    }
+    res.json({ mensaje: "Eliminado", deleted: affected });
+  } catch (err) {
+    console.error("Error DELETE medicion:", err.message);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // 🔥 NUEVA RUTA: GUARDAR O ACTUALIZAR EL FORMULARIO DEL CLIENTE
@@ -156,6 +301,46 @@ app.post("/api/clientes/guardar-perfil", async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+app.post("/api/clientes/desvincular-coach", async (req, res) => {
+  const { cliente_id } = req.body;
+  if (!cliente_id) return res.status(400).json({ error: "cliente_id requerido" });
+  try {
+    const userRes = await db.execute({ sql: "SELECT id, coach_id FROM usuarios WHERE id = ?", args: [cliente_id] });
+    if (userRes.rows.length === 0) return res.status(404).json({ error: "Cliente no encontrado" });
+    const cliente = userRes.rows[0];
+    if (!cliente.coach_id) return res.status(400).json({ error: "No tienes un coach asignado" });
+
+    const coachId = cliente.coach_id;
+    const archivadoHasta = new Date();
+    archivadoHasta.setDate(archivadoHasta.getDate() + 30);
+    const hastaISO = archivadoHasta.toISOString();
+
+    const rutinaRes = await db.execute({ sql: "SELECT datos_rutina, notas_generales FROM rutinas WHERE usuario_id = ?", args: [cliente_id] });
+    if (rutinaRes.rows.length > 0) {
+      await db.execute({
+        sql: "INSERT INTO planes_archivados (cliente_id, coach_id, tipo, datos_json, archivado_hasta) VALUES (?, ?, ?, ?, ?)",
+        args: [cliente_id, coachId, "rutina", JSON.stringify(rutinaRes.rows[0]), hastaISO]
+      });
+    }
+    const dietaRes = await db.execute({ sql: "SELECT datos_dieta, macros_totales, notas_dieta FROM dietas WHERE usuario_id = ?", args: [cliente_id] });
+    if (dietaRes.rows.length > 0) {
+      await db.execute({
+        sql: "INSERT INTO planes_archivados (cliente_id, coach_id, tipo, datos_json, archivado_hasta) VALUES (?, ?, ?, ?, ?)",
+        args: [cliente_id, coachId, "dieta", JSON.stringify(dietaRes.rows[0]), hastaISO]
+      });
+    }
+
+    const updateRes = await db.execute({ sql: "UPDATE usuarios SET coach_id = NULL WHERE id = ?", args: [cliente_id] });
+    if ((updateRes.rowsAffected ?? 0) === 0) {
+      return res.status(500).json({ error: "No se pudo actualizar el vínculo" });
+    }
+    res.json({ mensaje: "Desvinculado correctamente", archivado_hasta: hastaISO });
+  } catch (err) {
+    console.error("Error desvincular coach:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // 🔄 RUTA ACTUALIZADA: ENVÍA EL PACK COMPLETO AL COACH (INFO, PERFIL Y HISTORIAL)
 app.get("/api/clientes/:id/resumen", async (req, res) => {
   try {
@@ -168,7 +353,7 @@ app.get("/api/clientes/:id/resumen", async (req, res) => {
     const perfil = perfilRes.rows.length > 0 ? perfilRes.rows[0] : { edad: null, estatura: null, gustos: "", disgustos: "", enfermedades: "" };
 
     // 3. Obtener su historial de pesajes ordenados del más reciente al más antiguo
-    const histRes = await db.execute({ sql: "SELECT peso, grasa, datos_extra, fecha FROM mediciones WHERE usuario_id = ? ORDER BY fecha DESC", args: [req.params.id] });
+    const histRes = await db.execute({ sql: "SELECT id, peso, grasa, datos_extra, fecha FROM mediciones WHERE usuario_id = ? ORDER BY fecha DESC", args: [req.params.id] });
     
     // Mandamos las 3 piezas de información en una sola respuesta limpia
     res.json({ 
@@ -200,6 +385,85 @@ app.get("/api/coach/:id", async (req, res) => {
     if (coachRes.rows.length === 0) return res.status(404).json({ error: "No encontrado" });
     res.json(coachRes.rows[0]);
   } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get("/api/directorio/coaches", async (req, res) => {
+  try {
+    const result = await db.execute(`
+      SELECT u.id, u.nombre, u.calificacion, u.codigo_invitacion,
+        p.foto_url, p.bio, p.especialidad, p.logros, p.tarifa_base, p.whatsapp
+      FROM usuarios u
+      LEFT JOIN perfiles_coach_publicos p ON p.usuario_id = u.id
+      WHERE u.rol IN ('COACH', 'SUPERADMIN')
+        AND (p.visible_en_directorio IS NULL OR p.visible_en_directorio = 1)
+      ORDER BY u.calificacion DESC, u.nombre ASC
+    `);
+    res.json(result.rows || []);
+  } catch (err) {
+    console.error("Error directorio coaches:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/api/directorio/mi-perfil/:usuario_id", async (req, res) => {
+  try {
+    const userRes = await db.execute({
+      sql: "SELECT id, nombre, rol, calificacion, codigo_invitacion FROM usuarios WHERE id = ?",
+      args: [req.params.usuario_id]
+    });
+    if (userRes.rows.length === 0) return res.status(404).json({ error: "Usuario no encontrado" });
+    const user = userRes.rows[0];
+    if (user.rol !== 'COACH' && user.rol !== 'SUPERADMIN') {
+      return res.status(403).json({ error: "Solo coaches pueden tener perfil público" });
+    }
+    const perfilRes = await db.execute({
+      sql: "SELECT foto_url, bio, especialidad, logros, tarifa_base, whatsapp, visible_en_directorio FROM perfiles_coach_publicos WHERE usuario_id = ?",
+      args: [req.params.usuario_id]
+    });
+    const perfil = perfilRes.rows[0] || {
+      foto_url: '', bio: '', especialidad: '', logros: '', tarifa_base: null, whatsapp: '', visible_en_directorio: 1
+    };
+    res.json({ usuario: user, perfil });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post("/api/directorio/guardar-perfil", async (req, res) => {
+  const { usuario_id, foto_url, bio, especialidad, logros, tarifa_base, whatsapp, visible_en_directorio } = req.body;
+  if (!usuario_id) return res.status(400).json({ error: "usuario_id requerido" });
+  try {
+    const userRes = await db.execute({ sql: "SELECT rol FROM usuarios WHERE id = ?", args: [usuario_id] });
+    if (userRes.rows.length === 0) return res.status(404).json({ error: "Usuario no encontrado" });
+    const rol = userRes.rows[0].rol;
+    if (rol !== 'COACH' && rol !== 'SUPERADMIN') {
+      return res.status(403).json({ error: "Solo coaches pueden guardar perfil público" });
+    }
+    await db.execute({
+      sql: `INSERT INTO perfiles_coach_publicos (usuario_id, foto_url, bio, especialidad, logros, tarifa_base, whatsapp, visible_en_directorio)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(usuario_id) DO UPDATE SET
+              foto_url = excluded.foto_url,
+              bio = excluded.bio,
+              especialidad = excluded.especialidad,
+              logros = excluded.logros,
+              tarifa_base = excluded.tarifa_base,
+              whatsapp = excluded.whatsapp,
+              visible_en_directorio = excluded.visible_en_directorio`,
+      args: [
+        usuario_id,
+        foto_url || '',
+        bio || '',
+        especialidad || '',
+        logros || '',
+        tarifa_base != null && tarifa_base !== '' ? parseFloat(tarifa_base) : null,
+        whatsapp || '',
+        visible_en_directorio === false || visible_en_directorio === 0 ? 0 : 1
+      ]
+    });
+    res.json({ mensaje: "Perfil público guardado" });
+  } catch (err) {
+    console.error("Error guardar perfil coach:", err.message);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.post("/api/calificar", async (req, res) => {
@@ -246,7 +510,9 @@ app.post("/api/login", async (req, res) => {
     if (userRes.rows.length === 0) return res.status(401).json({ error: "Error" });
     const user = userRes.rows[0];
     if (!bcrypt.compareSync(password, user.password)) return res.status(401).json({ error: "Error" });
-    res.json({ usuario: user });
+    const { password: _pw, ...usuario } = user;
+    usuario.paquete_rutina_6_dias = !!usuario.paquete_rutina_6_dias;
+    res.json({ usuario });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
