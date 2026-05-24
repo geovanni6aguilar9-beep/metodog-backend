@@ -130,7 +130,7 @@ async function inicializarBD() {
       await db.execute({ sql: "INSERT INTO alimentos (nombre, grupo, porcion_base, unidad, calorias, proteinas, carbohidratos, grasas, sodio) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", args: ["Aceite de Oliva", "Grasas", 1, "cucharada", 119, 0, 0, 13.5, 0] });
       await db.execute({ sql: "INSERT INTO alimentos (nombre, grupo, porcion_base, unidad, calorias, proteinas, carbohidratos, grasas, sodio) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", args: ["Aguacate", "Grasas", 50, "g", 80, 1, 4, 7.5, 7] });
     }
-    console.log("✅ Base de datos conectada y lista.");
+    console.log("✅ Base de datos conectada y lista (historial_fuerza + paquete_6_dias).");
   } catch (error) {
     console.error("❌ Error al conectar con la base de datos:", error.message);
     if (process.env.USE_LOCAL_DB !== "true") {
