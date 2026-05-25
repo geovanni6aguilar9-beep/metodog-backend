@@ -1,0 +1,105 @@
+const jwt = require("jsonwebtoken");
+
+const JWT_SECRET = (process.env.JWT_SECRET || "metodog-dev-cambiar-en-produccion").trim();
+const JWT_EXPIRES = process.env.JWT_EXPIRES || "7d";
+
+function signToken(user) {
+  return jwt.sign(
+    { id: Number(user.id), rol: user.rol, email: user.email },
+    JWT_SECRET,
+    { expiresIn: JWT_EXPIRES }
+  );
+}
+
+function verifyToken(token) {
+  return jwt.verify(token, JWT_SECRET);
+}
+
+function sanitizeUsuario(row) {
+  if (!row) return null;
+  const { password: _pw, ...usuario } = row;
+  usuario.paquete_rutina_6_dias = !!usuario.paquete_rutina_6_dias;
+  return usuario;
+}
+
+function isPublicApiRoute(req) {
+  const method = req.method;
+  const path = req.path;
+
+  if (method === "POST" && ["/api/login", "/api/registro", "/api/solicitar-recuperacion", "/api/cambiar-password"].includes(path)) {
+    return true;
+  }
+  if (method === "GET" && path === "/api/alimentos") return true;
+  if (method === "GET" && path === "/api/directorio/coaches") return true;
+  if (method === "GET" && /^\/api\/coach\/\d+$/.test(path)) return true;
+  return false;
+}
+
+function requireAuthMiddleware(req, res, next) {
+  if (!req.path.startsWith("/api")) return next();
+  if (isPublicApiRoute(req)) return next();
+
+  const header = req.headers.authorization || "";
+  const token = header.startsWith("Bearer ") ? header.slice(7).trim() : null;
+  if (!token) return res.status(401).json({ error: "Sesión requerida" });
+
+  try {
+    req.user = verifyToken(token);
+    return next();
+  } catch {
+    return res.status(401).json({ error: "Sesión expirada. Vuelve a iniciar sesión." });
+  }
+}
+
+async function puedeAccederUsuario(db, authUser, targetUserId) {
+  const tid = parseInt(targetUserId, 10);
+  const aid = parseInt(authUser.id, 10);
+  if (!tid || Number.isNaN(tid)) return false;
+  if (tid === aid) return true;
+  if (authUser.rol === "SUPERADMIN") return true;
+  if (authUser.rol === "COACH") {
+    const r = await db.execute({
+      sql: "SELECT coach_id FROM usuarios WHERE id = ?",
+      args: [tid]
+    });
+    return r.rows[0]?.coach_id === aid;
+  }
+  return false;
+}
+
+async function assertAccesoUsuario(db, req, res, targetUserId) {
+  if (!(await puedeAccederUsuario(db, req.user, targetUserId))) {
+    res.status(403).json({ error: "No tienes permiso para este recurso" });
+    return false;
+  }
+  return true;
+}
+
+async function assertCoachOAdmin(db, req, res) {
+  if (req.user.rol !== "COACH" && req.user.rol !== "SUPERADMIN") {
+    res.status(403).json({ error: "Solo coaches pueden usar esta función" });
+    return false;
+  }
+  return true;
+}
+
+/** Comunidad: solo el propio id en la URL (no suplantar a otro coach/admin). */
+function assertComunidadSelf(req, res) {
+  if (parseInt(req.params.id, 10) !== parseInt(req.user.id, 10)) {
+    res.status(403).json({ error: "Solo puedes ver tu propia cartera" });
+    return false;
+  }
+  return true;
+}
+
+module.exports = {
+  signToken,
+  verifyToken,
+  sanitizeUsuario,
+  requireAuthMiddleware,
+  puedeAccederUsuario,
+  assertAccesoUsuario,
+  assertCoachOAdmin,
+  assertComunidadSelf,
+  isPublicApiRoute
+};

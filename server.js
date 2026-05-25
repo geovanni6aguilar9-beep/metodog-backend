@@ -5,10 +5,19 @@ const cors = require("cors");
 const { createClient } = require("@libsql/client");
 const bcrypt = require("bcryptjs");
 const { Resend } = require("resend");
+const {
+  signToken,
+  sanitizeUsuario,
+  requireAuthMiddleware,
+  assertAccesoUsuario,
+  assertCoachOAdmin,
+  assertComunidadSelf
+} = require("./auth");
 
 const app = express();
 app.use(cors());
 app.use(express.json());
+app.use(requireAuthMiddleware);
 
 process.on('uncaughtException', (err) => console.error("🔥 ERROR FATAL:", err));
 
@@ -150,6 +159,7 @@ app.get("/api/alimentos", async (req, res) => {
 
 app.post("/api/dietas/guardar", async (req, res) => {
   const { usuario_id, datos_dieta, macros_totales, notas_dieta } = req.body;
+  if (!(await assertAccesoUsuario(db, req, res, usuario_id))) return;
   try {
     await db.execute({
       sql: `INSERT INTO dietas (usuario_id, datos_dieta, macros_totales, notas_dieta) VALUES (?, ?, ?, ?) ON CONFLICT(usuario_id) DO UPDATE SET datos_dieta = excluded.datos_dieta, macros_totales = excluded.macros_totales, notas_dieta = excluded.notas_dieta`,
@@ -160,18 +170,24 @@ app.post("/api/dietas/guardar", async (req, res) => {
 });
 
 app.get("/api/dietas/:usuario_id", async (req, res) => {
+  if (!(await assertAccesoUsuario(db, req, res, req.params.usuario_id))) return;
   try {
     const result = await db.execute({ sql: "SELECT * FROM dietas WHERE usuario_id = ?", args: [req.params.usuario_id] });
-    if (result.rows.length === 0) return res.json({ datos_dieta: null });
+    if (result.rows.length === 0) return res.json({ datos_dieta: null, macros_totales: null, notas_dieta: null });
     const row = result.rows[0];
-    res.json({ datos_dieta: JSON.parse(row.datos_dieta), macros_totales: JSON.parse(row.macros_totales), notas_dieta: JSON.parse(row.notas_dieta) });
-  } catch (err) { res.json({ datos_dieta: null }); }
+    res.json({
+      datos_dieta: JSON.parse(row.datos_dieta),
+      macros_totales: row.macros_totales ? JSON.parse(row.macros_totales) : null,
+      notas_dieta: row.notas_dieta || ""
+    });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 const generarCodigo = () => Math.random().toString(36).substring(2, 8).toUpperCase();
 
 app.post("/api/rutinas/guardar", async (req, res) => {
   const { usuario_id, datos_rutina, notas_generales } = req.body;
+  if (!(await assertAccesoUsuario(db, req, res, usuario_id))) return;
   try {
     await db.execute({
       sql: `INSERT INTO rutinas (usuario_id, datos_rutina, notas_generales) VALUES (?, ?, ?) ON CONFLICT(usuario_id) DO UPDATE SET datos_rutina = excluded.datos_rutina, notas_generales = excluded.notas_generales`,
@@ -182,16 +198,21 @@ app.post("/api/rutinas/guardar", async (req, res) => {
 });
 
 app.get("/api/rutinas/:usuario_id", async (req, res) => {
+  if (!(await assertAccesoUsuario(db, req, res, req.params.usuario_id))) return;
   try {
     const result = await db.execute({ sql: "SELECT * FROM rutinas WHERE usuario_id = ?", args: [req.params.usuario_id] });
-    if (result.rows.length === 0) return res.json({ datos_rutina: null });
+    if (result.rows.length === 0) return res.json({ datos_rutina: null, notas_generales: null });
     const row = result.rows[0];
-    res.json({ datos_rutina: JSON.parse(row.datos_rutina), notas_generales: JSON.parse(row.notas_generales) });
-  } catch (err) { res.json({ datos_rutina: null }); }
+    res.json({
+      datos_rutina: JSON.parse(row.datos_rutina),
+      notas_generales: row.notas_generales ? JSON.parse(row.notas_generales) : null
+    });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 app.post("/api/fuerza/guardar", async (req, res) => {
   const { usuario_id, ejercicio, peso, reps, numero_serie, dia_rutina } = req.body;
+  if (!(await assertAccesoUsuario(db, req, res, usuario_id))) return;
   if (!usuario_id || !ejercicio || peso == null || peso === "") {
     return res.status(400).json({ error: "usuario_id, ejercicio y peso son obligatorios" });
   }
@@ -214,6 +235,7 @@ app.post("/api/fuerza/guardar", async (req, res) => {
 });
 
 app.get("/api/fuerza/historial/:usuario_id/:ejercicio", async (req, res) => {
+  if (!(await assertAccesoUsuario(db, req, res, req.params.usuario_id))) return;
   try {
     const ejercicio = decodeURIComponent(req.params.ejercicio || "");
     const result = await db.execute({
@@ -226,6 +248,7 @@ app.get("/api/fuerza/historial/:usuario_id/:ejercicio", async (req, res) => {
 });
 
 app.get("/api/fuerza/historial/:usuario_id", async (req, res) => {
+  if (!(await assertAccesoUsuario(db, req, res, req.params.usuario_id))) return;
   try {
     const result = await db.execute({
       sql: `SELECT id, ejercicio, peso, reps, numero_serie, dia_rutina, fecha
@@ -240,6 +263,9 @@ app.get("/api/fuerza/historial/:usuario_id", async (req, res) => {
 app.put("/api/usuarios/paquete-6-dias", async (req, res) => {
   const { usuario_id, activo } = req.body;
   if (!usuario_id) return res.status(400).json({ error: "usuario_id requerido" });
+  if (parseInt(usuario_id, 10) !== parseInt(req.user.id, 10) && req.user.rol !== "SUPERADMIN") {
+    return res.status(403).json({ error: "Solo puedes activar tu propio paquete" });
+  }
   try {
     const result = await db.execute({
       sql: "UPDATE usuarios SET paquete_rutina_6_dias = ? WHERE id = ?",
@@ -252,6 +278,7 @@ app.put("/api/usuarios/paquete-6-dias", async (req, res) => {
 
 app.post("/api/mediciones/guardar", async (req, res) => {
   const { usuario_id, peso, grasa, datos_extra } = req.body;
+  if (!(await assertAccesoUsuario(db, req, res, usuario_id))) return;
   try {
     await db.execute({ sql: "INSERT INTO mediciones (usuario_id, peso, grasa, datos_extra) VALUES (?, ?, ?, ?)", args: [usuario_id, peso, grasa, datos_extra] });
     res.json({ mensaje: "Ok" });
@@ -264,6 +291,10 @@ app.delete("/api/mediciones/:id", async (req, res) => {
     return res.status(400).json({ error: "ID de medición inválido" });
   }
   try {
+    const owner = await db.execute({ sql: "SELECT usuario_id FROM mediciones WHERE id = ?", args: [id] });
+    if (owner.rows.length === 0) return res.status(404).json({ error: "Registro no encontrado" });
+    if (!(await assertAccesoUsuario(db, req, res, owner.rows[0].usuario_id))) return;
+
     const result = await db.execute({
       sql: "DELETE FROM mediciones WHERE id = ?",
       args: [id]
@@ -282,6 +313,7 @@ app.delete("/api/mediciones/:id", async (req, res) => {
 // 🔥 NUEVA RUTA: GUARDAR O ACTUALIZAR EL FORMULARIO DEL CLIENTE
 app.post("/api/clientes/guardar-perfil", async (req, res) => {
   const { usuario_id, edad, estatura, gustos, disgustos, enfermedades } = req.body;
+  if (!(await assertAccesoUsuario(db, req, res, usuario_id))) return;
   try {
     await db.execute({
       sql: `INSERT INTO perfiles_clientes (usuario_id, edad, estatura, gustos, disgustos, enfermedades) 
@@ -304,6 +336,9 @@ app.post("/api/clientes/guardar-perfil", async (req, res) => {
 app.post("/api/clientes/desvincular-coach", async (req, res) => {
   const { cliente_id } = req.body;
   if (!cliente_id) return res.status(400).json({ error: "cliente_id requerido" });
+  if (parseInt(cliente_id, 10) !== parseInt(req.user.id, 10)) {
+    return res.status(403).json({ error: "Solo puedes desvincular tu propia cuenta" });
+  }
   try {
     const userRes = await db.execute({ sql: "SELECT id, coach_id FROM usuarios WHERE id = ?", args: [cliente_id] });
     if (userRes.rows.length === 0) return res.status(404).json({ error: "Cliente no encontrado" });
@@ -343,6 +378,7 @@ app.post("/api/clientes/desvincular-coach", async (req, res) => {
 
 // 🔄 RUTA ACTUALIZADA: ENVÍA EL PACK COMPLETO AL COACH (INFO, PERFIL Y HISTORIAL)
 app.get("/api/clientes/:id/resumen", async (req, res) => {
+  if (!(await assertAccesoUsuario(db, req, res, req.params.id))) return;
   try {
     // 1. Obtener datos base del usuario
     const infoRes = await db.execute({ sql: "SELECT nombre, email, fecha_inicio FROM usuarios WHERE id = ?", args: [req.params.id] });
@@ -365,6 +401,8 @@ app.get("/api/clientes/:id/resumen", async (req, res) => {
 });
 
 app.get("/api/comunidad/:id", async (req, res) => {
+  if (!assertComunidadSelf(req, res)) return;
+  if (!(await assertCoachOAdmin(db, req, res))) return;
   try {
     const userRes = await db.execute({ sql: "SELECT rol FROM usuarios WHERE id = ?", args: [req.params.id] });
     if (userRes.rows.length === 0) return res.json([]);
@@ -406,6 +444,9 @@ app.get("/api/directorio/coaches", async (req, res) => {
 });
 
 app.get("/api/directorio/mi-perfil/:usuario_id", async (req, res) => {
+  if (parseInt(req.params.usuario_id, 10) !== parseInt(req.user.id, 10)) {
+    return res.status(403).json({ error: "Solo puedes ver tu perfil de coach" });
+  }
   try {
     const userRes = await db.execute({
       sql: "SELECT id, nombre, rol, calificacion, codigo_invitacion FROM usuarios WHERE id = ?",
@@ -430,6 +471,9 @@ app.get("/api/directorio/mi-perfil/:usuario_id", async (req, res) => {
 app.post("/api/directorio/guardar-perfil", async (req, res) => {
   const { usuario_id, foto_url, bio, especialidad, logros, tarifa_base, whatsapp, visible_en_directorio } = req.body;
   if (!usuario_id) return res.status(400).json({ error: "usuario_id requerido" });
+  if (parseInt(usuario_id, 10) !== parseInt(req.user.id, 10)) {
+    return res.status(403).json({ error: "Solo puedes editar tu perfil público" });
+  }
   try {
     const userRes = await db.execute({ sql: "SELECT rol FROM usuarios WHERE id = ?", args: [usuario_id] });
     if (userRes.rows.length === 0) return res.status(404).json({ error: "Usuario no encontrado" });
@@ -468,6 +512,9 @@ app.post("/api/directorio/guardar-perfil", async (req, res) => {
 
 app.post("/api/calificar", async (req, res) => {
   const { coach_id, cliente_id, estrellas } = req.body;
+  if (parseInt(cliente_id, 10) !== parseInt(req.user.id, 10)) {
+    return res.status(403).json({ error: "Solo puedes calificar como cliente" });
+  }
   try {
     await db.execute({ sql: `INSERT INTO valoraciones (coach_id, cliente_id, estrellas) VALUES (?, ?, ?) ON CONFLICT(cliente_id) DO UPDATE SET estrellas = excluded.estrellas`, args: [coach_id, cliente_id, estrellas] });
     const avgRes = await db.execute({ sql: "SELECT AVG(estrellas) as promedio FROM valoraciones WHERE coach_id = ?", args: [coach_id] });
@@ -507,20 +554,32 @@ app.post("/api/login", async (req, res) => {
   const { email, password } = req.body;
   try {
     const userRes = await db.execute({ sql: `SELECT * FROM usuarios WHERE email = ?`, args: [email.toLowerCase().trim()] });
-    if (userRes.rows.length === 0) return res.status(401).json({ error: "Error" });
+    if (userRes.rows.length === 0) return res.status(401).json({ error: "Correo o contraseña incorrectos" });
     const user = userRes.rows[0];
-    if (!bcrypt.compareSync(password, user.password)) return res.status(401).json({ error: "Error" });
-    const { password: _pw, ...usuario } = user;
-    usuario.paquete_rutina_6_dias = !!usuario.paquete_rutina_6_dias;
-    res.json({ usuario });
+    if (!bcrypt.compareSync(password, user.password)) return res.status(401).json({ error: "Correo o contraseña incorrectos" });
+    const usuario = sanitizeUsuario(user);
+    const token = signToken(usuario);
+    res.json({ usuario, token });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get("/api/auth/me", async (req, res) => {
+  try {
+    const userRes = await db.execute({ sql: "SELECT * FROM usuarios WHERE id = ?", args: [req.user.id] });
+    if (userRes.rows.length === 0) return res.status(404).json({ error: "Usuario no encontrado" });
+    res.json({ usuario: sanitizeUsuario(userRes.rows[0]) });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 app.post("/api/upgrade", async (req, res) => {
+  if (parseInt(req.body.usuario_id, 10) !== parseInt(req.user.id, 10)) {
+    return res.status(403).json({ error: "Solo puedes actualizar tu propia cuenta" });
+  }
   const cod = generarCodigo();
   try {
-    await db.execute({ sql: "UPDATE usuarios SET rol = 'COACH', codigo_invitacion = ? WHERE id = ?", args: [cod, req.body.usuario_id] });
-    res.json({ rol: 'COACH', codigo_invitacion: cod });
+    const result = await db.execute({ sql: "UPDATE usuarios SET rol = 'COACH', codigo_invitacion = ? WHERE id = ?", args: [cod, req.user.id] });
+    if ((result.rowsAffected ?? 0) === 0) return res.status(404).json({ error: "Usuario no encontrado" });
+    res.json({ rol: "COACH", codigo_invitacion: cod });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -562,6 +621,10 @@ app.post("/api/cambiar-password", async (req, res) => {
   try {
     const rec = await db.execute({ sql: "SELECT * FROM recuperacion WHERE email = ? AND codigo = ?", args: [emailLimpio, codigo] });
     if (rec.rows.length === 0) return res.status(400).json({ error: "Código incorrecto o caducado" });
+    const creado = new Date(rec.rows[0].fecha).getTime();
+    if (Number.isNaN(creado) || Date.now() - creado > 15 * 60 * 1000) {
+      return res.status(400).json({ error: "Código caducado. Solicita uno nuevo." });
+    }
 
     const hash = bcrypt.hashSync(nuevaPassword, 10);
     await db.execute({ sql: "UPDATE usuarios SET password = ? WHERE email = ?", args: [hash, emailLimpio] });
