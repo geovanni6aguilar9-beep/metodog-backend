@@ -13,7 +13,12 @@ const {
   assertCoachOAdmin,
   assertComunidadSelf
 } = require("./auth");
-const { crearCheckoutAtleta, handleStripeWebhook } = require("./pagos");
+const {
+  crearCheckoutAtleta,
+  crearCheckoutCoach,
+  handleStripeWebhook,
+  enrichUsuarioConSuscripcion
+} = require("./pagos");
 
 const app = express();
 
@@ -117,6 +122,18 @@ async function inicializarBD() {
     try {
       await db.execute("ALTER TABLE usuarios ADD COLUMN paquete_rutina_6_dias INTEGER DEFAULT 0");
     } catch (_) { /* columna ya existe */ }
+
+    await db.execute(`CREATE TABLE IF NOT EXISTS suscripciones_coach (
+      usuario_id INTEGER PRIMARY KEY,
+      plan TEXT NOT NULL DEFAULT 'pro',
+      stripe_customer_id TEXT,
+      stripe_subscription_id TEXT UNIQUE,
+      status TEXT NOT NULL DEFAULT 'active',
+      limite_clientes INTEGER DEFAULT 25,
+      current_period_end TEXT,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY(usuario_id) REFERENCES usuarios(id)
+    )`);
 
     await db.execute(`CREATE TABLE IF NOT EXISTS historial_fuerza (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -270,6 +287,10 @@ app.get("/api/fuerza/historial/:usuario_id", async (req, res) => {
 
 app.post("/api/pagos/crear-checkout-atleta", async (req, res) => {
   return crearCheckoutAtleta(req, res, db);
+});
+
+app.post("/api/pagos/crear-checkout-coach", async (req, res) => {
+  return crearCheckoutCoach(req, res, db);
 });
 
 app.put("/api/usuarios/paquete-6-dias", async (req, res) => {
@@ -444,8 +465,14 @@ app.get("/api/directorio/coaches", async (req, res) => {
         p.foto_url, p.bio, p.especialidad, p.logros, p.tarifa_base, p.whatsapp
       FROM usuarios u
       LEFT JOIN perfiles_coach_publicos p ON p.usuario_id = u.id
+      LEFT JOIN suscripciones_coach s ON s.usuario_id = u.id
       WHERE u.rol IN ('COACH', 'SUPERADMIN')
         AND (p.visible_en_directorio IS NULL OR p.visible_en_directorio = 1)
+        AND (
+          u.rol = 'SUPERADMIN'
+          OR s.usuario_id IS NULL
+          OR s.status IN ('active', 'trialing')
+        )
       ORDER BY u.calificacion DESC, u.nombre ASC
     `);
     res.json(result.rows || []);
@@ -569,7 +596,8 @@ app.post("/api/login", async (req, res) => {
     if (userRes.rows.length === 0) return res.status(401).json({ error: "Correo o contraseña incorrectos" });
     const user = userRes.rows[0];
     if (!bcrypt.compareSync(password, user.password)) return res.status(401).json({ error: "Correo o contraseña incorrectos" });
-    const usuario = sanitizeUsuario(user);
+    let usuario = sanitizeUsuario(user);
+    usuario = await enrichUsuarioConSuscripcion(db, usuario);
     const token = signToken(usuario);
     res.json({ usuario, token });
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -579,7 +607,9 @@ app.get("/api/auth/me", async (req, res) => {
   try {
     const userRes = await db.execute({ sql: "SELECT * FROM usuarios WHERE id = ?", args: [req.user.id] });
     if (userRes.rows.length === 0) return res.status(404).json({ error: "Usuario no encontrado" });
-    res.json({ usuario: sanitizeUsuario(userRes.rows[0]) });
+    let usuario = sanitizeUsuario(userRes.rows[0]);
+    usuario = await enrichUsuarioConSuscripcion(db, usuario);
+    res.json({ usuario });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
