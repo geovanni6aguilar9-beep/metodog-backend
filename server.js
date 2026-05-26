@@ -13,8 +13,16 @@ const {
   assertCoachOAdmin,
   assertComunidadSelf
 } = require("./auth");
+const { crearCheckoutAtleta, handleStripeWebhook } = require("./pagos");
 
 const app = express();
+
+app.post(
+  "/api/pagos/webhook",
+  express.raw({ type: "application/json" }),
+  (req, res) => handleStripeWebhook(req, res, db)
+);
+
 app.use(cors());
 app.use(express.json());
 app.use(requireAuthMiddleware);
@@ -258,6 +266,10 @@ app.get("/api/fuerza/historial/:usuario_id", async (req, res) => {
     const ejercicios = [...new Set(result.rows.map(r => r.ejercicio))];
     res.json({ historial: result.rows, ejercicios });
   } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post("/api/pagos/crear-checkout-atleta", async (req, res) => {
+  return crearCheckoutAtleta(req, res, db);
 });
 
 app.put("/api/usuarios/paquete-6-dias", async (req, res) => {

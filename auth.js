@@ -26,7 +26,13 @@ function isPublicApiRoute(req) {
   const method = req.method;
   const path = req.path;
 
-  if (method === "POST" && ["/api/login", "/api/registro", "/api/solicitar-recuperacion", "/api/cambiar-password"].includes(path)) {
+  if (method === "POST" && [
+    "/api/login",
+    "/api/registro",
+    "/api/solicitar-recuperacion",
+    "/api/cambiar-password",
+    "/api/pagos/webhook"
+  ].includes(path)) {
     return true;
   }
   if (method === "GET" && path === "/api/alimentos") return true;
