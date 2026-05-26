@@ -609,7 +609,11 @@ app.get("/api/auth/me", async (req, res) => {
     if (userRes.rows.length === 0) return res.status(404).json({ error: "Usuario no encontrado" });
     let usuario = sanitizeUsuario(userRes.rows[0]);
     usuario = await enrichUsuarioConSuscripcion(db, usuario);
-    res.json({ usuario });
+    const payload = { usuario };
+    if (usuario.rol !== req.user.rol) {
+      payload.token = signToken(usuario);
+    }
+    res.json(payload);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 

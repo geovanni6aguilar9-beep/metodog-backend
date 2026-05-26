@@ -82,11 +82,17 @@ async function assertAccesoUsuario(db, req, res, targetUserId) {
 }
 
 async function assertCoachOAdmin(db, req, res) {
-  if (req.user.rol !== "COACH" && req.user.rol !== "SUPERADMIN") {
-    res.status(403).json({ error: "Solo coaches pueden usar esta función" });
-    return false;
-  }
-  return true;
+  if (req.user.rol === "COACH" || req.user.rol === "SUPERADMIN") return true;
+  try {
+    const r = await db.execute({
+      sql: "SELECT rol FROM usuarios WHERE id = ?",
+      args: [req.user.id]
+    });
+    const rolDb = r.rows[0]?.rol;
+    if (rolDb === "COACH" || rolDb === "SUPERADMIN") return true;
+  } catch (_) { /* fallback abajo */ }
+  res.status(403).json({ error: "Solo coaches pueden usar esta función" });
+  return false;
 }
 
 /** Comunidad: solo el propio id en la URL (no suplantar a otro coach/admin). */
