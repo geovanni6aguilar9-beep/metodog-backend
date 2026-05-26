@@ -16,6 +16,7 @@ const {
 const {
   crearCheckoutAtleta,
   crearCheckoutCoach,
+  crearPortalCoach,
   handleStripeWebhook,
   enrichUsuarioConSuscripcion
 } = require("./pagos");
@@ -131,9 +132,15 @@ async function inicializarBD() {
       status TEXT NOT NULL DEFAULT 'active',
       limite_clientes INTEGER DEFAULT 25,
       current_period_end TEXT,
+      cancel_at_period_end INTEGER DEFAULT 0,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY(usuario_id) REFERENCES usuarios(id)
     )`);
+    try {
+      await db.execute(
+        "ALTER TABLE suscripciones_coach ADD COLUMN cancel_at_period_end INTEGER DEFAULT 0"
+      );
+    } catch (_) { /* columna ya existe */ }
 
     await db.execute(`CREATE TABLE IF NOT EXISTS historial_fuerza (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -291,6 +298,10 @@ app.post("/api/pagos/crear-checkout-atleta", async (req, res) => {
 
 app.post("/api/pagos/crear-checkout-coach", async (req, res) => {
   return crearCheckoutCoach(req, res, db);
+});
+
+app.post("/api/pagos/portal-coach", async (req, res) => {
+  return crearPortalCoach(req, res, db);
 });
 
 app.put("/api/usuarios/paquete-6-dias", async (req, res) => {

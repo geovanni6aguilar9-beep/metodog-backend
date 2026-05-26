@@ -56,13 +56,14 @@ async function upsertSuscripcionCoach(db, {
   stripeSubscriptionId,
   status,
   limiteClientes,
-  currentPeriodEnd
+  currentPeriodEnd,
+  cancelAtPeriodEnd
 }) {
   await db.execute({
     sql: `INSERT INTO suscripciones_coach (
             usuario_id, plan, stripe_customer_id, stripe_subscription_id, status,
-            limite_clientes, current_period_end, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+            limite_clientes, current_period_end, cancel_at_period_end, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
           ON CONFLICT(usuario_id) DO UPDATE SET
             plan = excluded.plan,
             stripe_customer_id = excluded.stripe_customer_id,
@@ -70,6 +71,7 @@ async function upsertSuscripcionCoach(db, {
             status = excluded.status,
             limite_clientes = excluded.limite_clientes,
             current_period_end = excluded.current_period_end,
+            cancel_at_period_end = excluded.cancel_at_period_end,
             updated_at = datetime('now')`,
     args: [
       usuarioId,
@@ -78,9 +80,14 @@ async function upsertSuscripcionCoach(db, {
       stripeSubscriptionId || null,
       status,
       limiteClientes,
-      currentPeriodEnd || null
+      currentPeriodEnd || null,
+      cancelAtPeriodEnd ? 1 : 0
     ]
   });
+}
+
+function suscripcionCoachActiva(status) {
+  return status === "active" || status === "trialing";
 }
 
 async function ascenderUsuarioACoach(db, usuarioId) {
@@ -105,9 +112,11 @@ async function activarCoachDesdeStripe(db, stripe, usuarioId, subscriptionId, cu
   let status = "active";
   let currentPeriodEnd = null;
 
+  let cancelAtPeriodEnd = false;
   if (subscriptionId) {
     const sub = await stripe.subscriptions.retrieve(subscriptionId);
     status = sub.status || "active";
+    cancelAtPeriodEnd = !!sub.cancel_at_period_end;
     if (sub.current_period_end) {
       currentPeriodEnd = new Date(sub.current_period_end * 1000).toISOString();
     }
@@ -123,7 +132,8 @@ async function activarCoachDesdeStripe(db, stripe, usuarioId, subscriptionId, cu
     stripeSubscriptionId: subscriptionId,
     status,
     limiteClientes: coachLimiteClientes(),
-    currentPeriodEnd
+    currentPeriodEnd,
+    cancelAtPeriodEnd
   });
 
   return true;
@@ -148,6 +158,7 @@ async function syncSuscripcionPorStripeId(db, stripe, stripeSubscriptionId) {
   const currentPeriodEnd = sub.current_period_end
     ? new Date(sub.current_period_end * 1000).toISOString()
     : null;
+  const cancelAtPeriodEnd = !!sub.cancel_at_period_end;
 
   await upsertSuscripcionCoach(db, {
     usuarioId: uid,
@@ -156,10 +167,11 @@ async function syncSuscripcionPorStripeId(db, stripe, stripeSubscriptionId) {
     stripeSubscriptionId: sub.id,
     status,
     limiteClientes: coachLimiteClientes(),
-    currentPeriodEnd
+    currentPeriodEnd,
+    cancelAtPeriodEnd
   });
 
-  if (status === "active" || status === "trialing") {
+  if (suscripcionCoachActiva(status)) {
     await ascenderUsuarioACoach(db, uid);
     await db.execute({
       sql: `UPDATE perfiles_coach_publicos SET visible_en_directorio = 1 WHERE usuario_id = ?`,
@@ -404,10 +416,72 @@ async function handleStripeWebhook(req, res, db) {
   }
 }
 
+async function crearPortalCoach(req, res, db) {
+  const stripe = getStripe();
+  if (!stripe) {
+    return res.status(503).json({ error: "Pagos no configurados (falta STRIPE_SECRET_KEY)" });
+  }
+
+  const userId = parseInt(req.user.id, 10);
+  const subRes = await db.execute({
+    sql: `SELECT stripe_customer_id, status FROM suscripciones_coach WHERE usuario_id = ?`,
+    args: [userId]
+  });
+
+  let customerId = subRes.rows[0]?.stripe_customer_id;
+
+  if (!customerId) {
+    const userRes = await db.execute({
+      sql: "SELECT email FROM usuarios WHERE id = ?",
+      args: [userId]
+    });
+    const email = userRes.rows[0]?.email;
+    if (email) {
+      const list = await stripe.customers.list({ email, limit: 1 });
+      customerId = list.data[0]?.id;
+      if (customerId && subRes.rows.length > 0) {
+        await db.execute({
+          sql: "UPDATE suscripciones_coach SET stripe_customer_id = ? WHERE usuario_id = ?",
+          args: [customerId, userId]
+        });
+      }
+    }
+  }
+
+  if (!customerId) {
+    return res.status(400).json({
+      error: "No hay cliente de Stripe vinculado. Suscríbete primero o contacta soporte."
+    });
+  }
+
+  const { return_url } = req.body || {};
+  const base = getFrontendOrigins()[0];
+  const returnUrl = return_url || `${base}/?coach_portal=1`;
+
+  if (!isAllowedReturnUrl(returnUrl)) {
+    return res.status(400).json({ error: "URL de retorno no permitida" });
+  }
+
+  try {
+    const session = await stripe.billingPortal.sessions.create({
+      customer: customerId,
+      return_url: returnUrl
+    });
+    res.json({ url: session.url });
+  } catch (err) {
+    console.error("Stripe portal coach:", err.message);
+    res.status(500).json({
+      error:
+        err.message ||
+        "No se pudo abrir el portal. Activa Customer Portal en Stripe Dashboard."
+    });
+  }
+}
+
 async function enrichUsuarioConSuscripcion(db, usuario) {
   if (!usuario) return usuario;
   const subRes = await db.execute({
-    sql: `SELECT plan, status, limite_clientes, current_period_end, stripe_subscription_id
+    sql: `SELECT plan, status, limite_clientes, current_period_end, cancel_at_period_end, stripe_subscription_id
           FROM suscripciones_coach WHERE usuario_id = ?`,
     args: [usuario.id]
   });
@@ -416,10 +490,10 @@ async function enrichUsuarioConSuscripcion(db, usuario) {
     const s = subRes.rows[0];
     usuario.coach_plan = s.plan;
     usuario.coach_suscripcion_status = s.status;
-    usuario.coach_suscripcion_activa =
-      s.status === "active" || s.status === "trialing";
+    usuario.coach_suscripcion_activa = suscripcionCoachActiva(s.status);
     usuario.coach_limite_clientes = s.limite_clientes;
     usuario.coach_periodo_fin = s.current_period_end;
+    usuario.coach_cancel_at_period_end = !!s.cancel_at_period_end;
   } else {
     usuario.coach_plan = null;
     usuario.coach_suscripcion_status = null;
@@ -427,6 +501,7 @@ async function enrichUsuarioConSuscripcion(db, usuario) {
       usuario.rol === "COACH" || usuario.rol === "SUPERADMIN";
     usuario.coach_limite_clientes = usuario.rol === "COACH" ? coachLimiteClientes() : null;
     usuario.coach_periodo_fin = null;
+    usuario.coach_cancel_at_period_end = false;
   }
 
   return usuario;
@@ -435,6 +510,7 @@ async function enrichUsuarioConSuscripcion(db, usuario) {
 module.exports = {
   crearCheckoutAtleta,
   crearCheckoutCoach,
+  crearPortalCoach,
   handleStripeWebhook,
   enrichUsuarioConSuscripcion
 };
