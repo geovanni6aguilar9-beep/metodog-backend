@@ -424,9 +424,16 @@ async function crearPortalCoach(req, res, db) {
 
   const userId = parseInt(req.user.id, 10);
   const subRes = await db.execute({
-    sql: `SELECT stripe_customer_id, status FROM suscripciones_coach WHERE usuario_id = ?`,
+    sql: `SELECT stripe_customer_id, stripe_subscription_id, status FROM suscripciones_coach WHERE usuario_id = ?`,
     args: [userId]
   });
+
+  // Si el usuario es COACH por activación manual (sin suscripción), no hay "portal" que administrar.
+  if (subRes.rows.length === 0) {
+    return res.status(400).json({
+      error: "Tu cuenta Coach no tiene una suscripción activa vinculada en Stripe. Suscríbete primero."
+    });
+  }
 
   let customerId = subRes.rows[0]?.stripe_customer_id;
 
@@ -497,11 +504,12 @@ async function enrichUsuarioConSuscripcion(db, usuario) {
   } else {
     usuario.coach_plan = null;
     usuario.coach_suscripcion_status = null;
-    usuario.coach_suscripcion_activa =
-      usuario.rol === "COACH" || usuario.rol === "SUPERADMIN";
-    usuario.coach_limite_clientes = usuario.rol === "COACH" ? coachLimiteClientes() : null;
+    // COACH sin fila en suscripciones_coach => rol activado manualmente, pero sin facturación vinculada.
+    usuario.coach_suscripcion_activa = usuario.rol === "SUPERADMIN";
+    usuario.coach_limite_clientes = null;
     usuario.coach_periodo_fin = null;
     usuario.coach_cancel_at_period_end = false;
+    usuario.coach_necesita_suscripcion = usuario.rol === "COACH";
   }
 
   return usuario;
