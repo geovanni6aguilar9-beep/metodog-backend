@@ -20,6 +20,17 @@ const {
   handleStripeWebhook,
   enrichUsuarioConSuscripcion
 } = require("./pagos");
+const {
+  ensureTablesNotificaciones,
+  enrichUsuarioVinculo,
+  solicitarVinculoCoach,
+  responderSolicitudVinculo,
+  listarNotificaciones,
+  contarNotificacionesNoLeidas,
+  marcarNotificacionLeida,
+  marcarTodasNotificacionesLeidas,
+  cancelarSolicitudesPendientesCliente
+} = require("./notificaciones");
 
 const app = express();
 
@@ -141,6 +152,8 @@ async function inicializarBD() {
         "ALTER TABLE suscripciones_coach ADD COLUMN cancel_at_period_end INTEGER DEFAULT 0"
       );
     } catch (_) { /* columna ya existe */ }
+
+    await ensureTablesNotificaciones(db);
 
     await db.execute(`CREATE TABLE IF NOT EXISTS historial_fuerza (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -461,6 +474,8 @@ app.post("/api/clientes/desvincular-coach", async (req, res) => {
       });
     }
 
+    await cancelarSolicitudesPendientesCliente(db, cliente_id);
+
     const updateRes = await db.execute({ sql: "UPDATE usuarios SET coach_id = NULL WHERE id = ?", args: [cliente_id] });
     if ((updateRes.rowsAffected ?? 0) === 0) {
       return res.status(500).json({ error: "No se pudo actualizar el vínculo" });
@@ -480,78 +495,99 @@ app.post("/api/clientes/vincular-coach", async (req, res) => {
   if (!coachId || Number.isNaN(coachId)) return res.status(400).json({ error: "coach_id requerido" });
   if (!clienteId || Number.isNaN(clienteId)) return res.status(400).json({ error: "Cliente inválido" });
 
-  // Solo clientes pueden vincularse a un coach.
   if (req.user.rol !== "CLIENTE") {
     return res.status(403).json({ error: "Solo CLIENTE puede vincularse a un coach" });
   }
 
   try {
-    const coachRes = await db.execute({
-      sql: "SELECT id, rol FROM usuarios WHERE id = ?",
-      args: [coachId]
-    });
-    if (coachRes.rows.length === 0) return res.status(404).json({ error: "Coach no encontrado" });
-    const coach = coachRes.rows[0];
-    if (coach.rol !== "COACH" && coach.rol !== "SUPERADMIN") {
-      return res.status(400).json({ error: "El usuario no es coach" });
+    const result = await solicitarVinculoCoach(db, { clienteId, coachId, resend });
+    if (!result.ok) {
+      return res.status(result.status || 400).json({ error: result.error });
     }
 
-    // Solo coaches con suscripción activa (o superadmin) pueden recibir clientes.
-    if (coach.rol === "COACH") {
-      const subRes = await db.execute({
-        sql: "SELECT status, limite_clientes FROM suscripciones_coach WHERE usuario_id = ?",
-        args: [coachId]
-      });
-      const status = subRes.rows[0]?.status;
-      const limite = subRes.rows[0]?.limite_clientes ?? 0;
-      const activa = status === "active" || status === "trialing";
-      if (!activa) {
-        return res.status(400).json({ error: "Este coach no tiene suscripción activa en MétodoG" });
-      }
-      const countRes = await db.execute({
-        sql: "SELECT COUNT(*) as count FROM usuarios WHERE coach_id = ?",
-        args: [coachId]
-      });
-      const count = Number(countRes.rows[0]?.count || 0);
-      if (limite && count >= Number(limite)) {
-        return res.status(400).json({ error: "Este coach alcanzó su límite de alumnos" });
-      }
-    }
-
-    // Vincular (permite cambiar de coach con la misma cuenta).
-    const upd = await db.execute({
-      sql: "UPDATE usuarios SET coach_id = ? WHERE id = ?",
-      args: [coachId, clienteId]
-    });
-    if ((upd.rowsAffected ?? 0) === 0) return res.status(404).json({ error: "Cliente no encontrado" });
-
-    // Notificación simple al coach (best-effort). No bloquea el flujo.
-    try {
-      const coachEmailRes = await db.execute({ sql: "SELECT email, nombre FROM usuarios WHERE id = ?", args: [coachId] });
-      const clienteEmailRes = await db.execute({ sql: "SELECT email, nombre FROM usuarios WHERE id = ?", args: [clienteId] });
-      const coachEmail = coachEmailRes.rows[0]?.email;
-      const coachNombre = coachEmailRes.rows[0]?.nombre || "Coach";
-      const clienteNombre = clienteEmailRes.rows[0]?.nombre || "Nuevo alumno";
-      const clienteEmail = clienteEmailRes.rows[0]?.email || "";
-      if (coachEmail) {
-        await resend.emails.send({
-          from: "MétodoG Notificaciones <onboarding@resend.dev>",
-          to: coachEmail,
-          subject: "🎯 Nuevo alumno vinculado en MétodoG",
-          html: `<p>Hola <b>${coachNombre}</b>,</p>
-                 <p><b>${clienteNombre}</b> se vinculó contigo en MétodoG.</p>
-                 <p>Email del alumno: ${clienteEmail || "—"}</p>
-                 <p>Entra a tu Panel de Alumnos para verlo.</p>`
-        });
-      }
-    } catch (_) { /* ignore */ }
-
-    // Devolver usuario actualizado para refrescar frontend.
     const userRes = await db.execute({ sql: "SELECT * FROM usuarios WHERE id = ?", args: [clienteId] });
     if (userRes.rows.length === 0) return res.status(404).json({ error: "Cliente no encontrado" });
-    res.json({ usuario: sanitizeUsuario(userRes.rows[0]) });
+    let usuario = sanitizeUsuario(userRes.rows[0]);
+    usuario = await enrichUsuarioConSuscripcion(db, usuario);
+    usuario = await enrichUsuarioVinculo(db, usuario);
+
+    res.json({
+      pendiente: true,
+      mensaje: result.mensaje,
+      solicitud_id: result.solicitud_id,
+      usuario
+    });
   } catch (err) {
     console.error("Error vincular coach:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/api/notificaciones/contador", async (req, res) => {
+  if (!(await assertCoachOAdmin(db, req, res))) return;
+  try {
+    const no_leidas = await contarNotificacionesNoLeidas(db, req.user.id);
+    res.json({ no_leidas });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/api/notificaciones", async (req, res) => {
+  if (!(await assertCoachOAdmin(db, req, res))) return;
+  try {
+    const filtro = (req.query.filtro || "all").trim();
+    const notificaciones = await listarNotificaciones(db, req.user.id, { filtro });
+    res.json({ notificaciones });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/notificaciones/leer-todas", async (req, res) => {
+  if (!(await assertCoachOAdmin(db, req, res))) return;
+  try {
+    const actualizadas = await marcarTodasNotificacionesLeidas(db, req.user.id);
+    res.json({ mensaje: "Ok", actualizadas });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/notificaciones/:id/leer", async (req, res) => {
+  if (!(await assertCoachOAdmin(db, req, res))) return;
+  const notifId = parseInt(req.params.id, 10);
+  if (!notifId) return res.status(400).json({ error: "id inválido" });
+  try {
+    const ok = await marcarNotificacionLeida(db, req.user.id, notifId);
+    if (!ok) return res.status(404).json({ error: "Notificación no encontrada" });
+    res.json({ mensaje: "Ok" });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/solicitudes-vinculo/:id/responder", async (req, res) => {
+  if (!(await assertCoachOAdmin(db, req, res))) return;
+  const solicitudId = parseInt(req.params.id, 10);
+  const { accion } = req.body || {};
+  if (!solicitudId) return res.status(400).json({ error: "id inválido" });
+  if (accion !== "aceptar" && accion !== "rechazar") {
+    return res.status(400).json({ error: "accion debe ser aceptar o rechazar" });
+  }
+  try {
+    const result = await responderSolicitudVinculo(db, {
+      solicitudId,
+      coachUserId: req.user.id,
+      accion,
+      resend
+    });
+    if (!result.ok) {
+      return res.status(result.status || 400).json({ error: result.error });
+    }
+    res.json({ mensaje: result.mensaje, cliente_id: result.cliente_id });
+  } catch (err) {
+    console.error("Error responder solicitud:", err.message);
     res.status(500).json({ error: err.message });
   }
 });
@@ -745,6 +781,7 @@ app.post("/api/login", async (req, res) => {
     if (!bcrypt.compareSync(password, user.password)) return res.status(401).json({ error: "Correo o contraseña incorrectos" });
     let usuario = sanitizeUsuario(user);
     usuario = await enrichUsuarioConSuscripcion(db, usuario);
+    usuario = await enrichUsuarioVinculo(db, usuario);
     const token = signToken(usuario);
     res.json({ usuario, token });
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -756,6 +793,7 @@ app.get("/api/auth/me", async (req, res) => {
     if (userRes.rows.length === 0) return res.status(404).json({ error: "Usuario no encontrado" });
     let usuario = sanitizeUsuario(userRes.rows[0]);
     usuario = await enrichUsuarioConSuscripcion(db, usuario);
+    usuario = await enrichUsuarioVinculo(db, usuario);
     const payload = { usuario };
     if (usuario.rol !== req.user.rol) {
       payload.token = signToken(usuario);
