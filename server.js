@@ -472,6 +472,69 @@ app.post("/api/clientes/desvincular-coach", async (req, res) => {
   }
 });
 
+app.post("/api/clientes/vincular-coach", async (req, res) => {
+  const { coach_id } = req.body || {};
+  const coachId = parseInt(coach_id, 10);
+  const clienteId = parseInt(req.user.id, 10);
+
+  if (!coachId || Number.isNaN(coachId)) return res.status(400).json({ error: "coach_id requerido" });
+  if (!clienteId || Number.isNaN(clienteId)) return res.status(400).json({ error: "Cliente inválido" });
+
+  // Solo clientes pueden vincularse a un coach.
+  if (req.user.rol !== "CLIENTE") {
+    return res.status(403).json({ error: "Solo CLIENTE puede vincularse a un coach" });
+  }
+
+  try {
+    const coachRes = await db.execute({
+      sql: "SELECT id, rol FROM usuarios WHERE id = ?",
+      args: [coachId]
+    });
+    if (coachRes.rows.length === 0) return res.status(404).json({ error: "Coach no encontrado" });
+    const coach = coachRes.rows[0];
+    if (coach.rol !== "COACH" && coach.rol !== "SUPERADMIN") {
+      return res.status(400).json({ error: "El usuario no es coach" });
+    }
+
+    // Solo coaches con suscripción activa (o superadmin) pueden recibir clientes.
+    if (coach.rol === "COACH") {
+      const subRes = await db.execute({
+        sql: "SELECT status, limite_clientes FROM suscripciones_coach WHERE usuario_id = ?",
+        args: [coachId]
+      });
+      const status = subRes.rows[0]?.status;
+      const limite = subRes.rows[0]?.limite_clientes ?? 0;
+      const activa = status === "active" || status === "trialing";
+      if (!activa) {
+        return res.status(400).json({ error: "Este coach no tiene suscripción activa en MétodoG" });
+      }
+      const countRes = await db.execute({
+        sql: "SELECT COUNT(*) as count FROM usuarios WHERE coach_id = ?",
+        args: [coachId]
+      });
+      const count = Number(countRes.rows[0]?.count || 0);
+      if (limite && count >= Number(limite)) {
+        return res.status(400).json({ error: "Este coach alcanzó su límite de alumnos" });
+      }
+    }
+
+    // Vincular (permite cambiar de coach con la misma cuenta).
+    const upd = await db.execute({
+      sql: "UPDATE usuarios SET coach_id = ? WHERE id = ?",
+      args: [coachId, clienteId]
+    });
+    if ((upd.rowsAffected ?? 0) === 0) return res.status(404).json({ error: "Cliente no encontrado" });
+
+    // Devolver usuario actualizado para refrescar frontend.
+    const userRes = await db.execute({ sql: "SELECT * FROM usuarios WHERE id = ?", args: [clienteId] });
+    if (userRes.rows.length === 0) return res.status(404).json({ error: "Cliente no encontrado" });
+    res.json({ usuario: sanitizeUsuario(userRes.rows[0]) });
+  } catch (err) {
+    console.error("Error vincular coach:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // 🔄 RUTA ACTUALIZADA: ENVÍA EL PACK COMPLETO AL COACH (INFO, PERFIL Y HISTORIAL)
 app.get("/api/clientes/:id/resumen", async (req, res) => {
   if (!(await assertAccesoUsuario(db, req, res, req.params.id))) return;
