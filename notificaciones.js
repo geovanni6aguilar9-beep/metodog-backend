@@ -2,6 +2,13 @@
  * Solicitudes de vínculo coach↔cliente e inbox in-app.
  */
 
+function toNum(v) {
+  if (v == null) return null;
+  if (typeof v === "bigint") return Number(v);
+  const n = Number(v);
+  return Number.isNaN(n) ? null : n;
+}
+
 async function ensureTablesNotificaciones(db) {
   await db.execute(`CREATE TABLE IF NOT EXISTS solicitudes_vinculo (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -83,8 +90,8 @@ async function obtenerSolicitudPendienteCliente(db, clienteId) {
   if (r.rows.length === 0) return null;
   const row = r.rows[0];
   return {
-    id: row.id,
-    coach_id: row.coach_id,
+    id: toNum(row.id),
+    coach_id: toNum(row.coach_id),
     coach_nombre: row.coach_nombre,
     created_at: row.created_at
   };
@@ -191,6 +198,14 @@ async function solicitarVinculoCoach(db, { clienteId, coachId, resend }) {
     return { ok: false, error: "Ya estás vinculado con este coach", status: 400 };
   }
 
+  if (cliente.coach_id != null && cliente.coach_id !== "") {
+    return {
+      ok: false,
+      error: "Ya tienes un coach asignado. Desvincúlate en Mi Coach o Ajustes antes de solicitar otro.",
+      status: 400
+    };
+  }
+
   const pendienteRes = await db.execute({
     sql: `SELECT id FROM solicitudes_vinculo
           WHERE cliente_id = ? AND coach_id = ? AND estado = 'pendiente'`,
@@ -201,7 +216,7 @@ async function solicitarVinculoCoach(db, { clienteId, coachId, resend }) {
       ok: true,
       pendiente: true,
       mensaje: "Ya enviaste una solicitud a este coach. Espera su respuesta.",
-      solicitud_id: pendienteRes.rows[0].id
+      solicitud_id: toNum(pendienteRes.rows[0].id)
     };
   }
 
@@ -212,7 +227,7 @@ async function solicitarVinculoCoach(db, { clienteId, coachId, resend }) {
           VALUES (?, ?, 'pendiente')`,
     args: [clienteId, coachId]
   });
-  const solicitudId = ins.lastInsertRowid;
+  const solicitudId = toNum(ins.lastInsertRowid);
 
   await crearNotificacion(db, {
     usuarioId: coachId,
@@ -290,7 +305,7 @@ async function responderSolicitudVinculo(db, { solicitudId, coachUserId, accion,
       args: [coachUserId, solicitudId]
     });
 
-    return { ok: true, mensaje: "Alumno vinculado correctamente", cliente_id: sol.cliente_id };
+    return { ok: true, mensaje: "Alumno vinculado correctamente", cliente_id: toNum(sol.cliente_id) };
   }
 
   await db.execute({
@@ -338,8 +353,9 @@ async function listarNotificaciones(db, userId, { filtro, limite = 50 }) {
   }));
 
   const solicitudIds = items
-    .filter((n) => n.tipo === "solicitud_vinculo" && n.ref_id)
-    .map((n) => n.ref_id);
+    .filter((n) => n.tipo === "solicitud_vinculo" && n.ref_id != null)
+    .map((n) => toNum(n.ref_id))
+    .filter((id) => id != null);
 
   let solicitudesMap = {};
   if (solicitudIds.length > 0) {
@@ -352,14 +368,27 @@ async function listarNotificaciones(db, userId, { filtro, limite = 50 }) {
       args: solicitudIds
     });
     for (const s of sRes.rows || []) {
-      solicitudesMap[s.id] = s;
+      solicitudesMap[toNum(s.id)] = s;
     }
   }
 
-  return items.map((n) => ({
-    ...n,
-    solicitud: n.ref_id ? solicitudesMap[n.ref_id] || null : null
-  }));
+  return items.map((n) => {
+    const refId = toNum(n.ref_id);
+    const sol = refId != null ? solicitudesMap[refId] : null;
+    return {
+      ...n,
+      id: toNum(n.id),
+      ref_id: refId,
+      leida: !!n.leida,
+      solicitud: sol
+        ? {
+            ...sol,
+            id: toNum(sol.id),
+            cliente_id: toNum(sol.cliente_id)
+          }
+        : null
+    };
+  });
 }
 
 async function contarNotificacionesNoLeidas(db, userId) {

@@ -15,9 +15,22 @@ function verifyToken(token) {
   return jwt.verify(token, JWT_SECRET);
 }
 
+function toNum(v) {
+  if (v == null) return null;
+  if (typeof v === "bigint") return Number(v);
+  const n = Number(v);
+  return Number.isNaN(n) ? null : n;
+}
+
 function sanitizeUsuario(row) {
   if (!row) return null;
   const { password: _pw, ...usuario } = row;
+  usuario.id = toNum(usuario.id);
+  if (usuario.coach_id != null && usuario.coach_id !== "") {
+    usuario.coach_id = toNum(usuario.coach_id);
+  } else if (usuario.coach_id === "" || usuario.coach_id === 0) {
+    usuario.coach_id = null;
+  }
   usuario.paquete_rutina_6_dias = !!usuario.paquete_rutina_6_dias;
   return usuario;
 }

@@ -517,7 +517,7 @@ app.post("/api/clientes/vincular-coach", async (req, res) => {
     res.json({
       pendiente: true,
       mensaje: result.mensaje,
-      solicitud_id: result.solicitud_id,
+      solicitud_id: result.solicitud_id != null ? Number(result.solicitud_id) : null,
       usuario
     });
   } catch (err) {
