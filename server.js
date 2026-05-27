@@ -525,6 +525,27 @@ app.post("/api/clientes/vincular-coach", async (req, res) => {
     });
     if ((upd.rowsAffected ?? 0) === 0) return res.status(404).json({ error: "Cliente no encontrado" });
 
+    // Notificación simple al coach (best-effort). No bloquea el flujo.
+    try {
+      const coachEmailRes = await db.execute({ sql: "SELECT email, nombre FROM usuarios WHERE id = ?", args: [coachId] });
+      const clienteEmailRes = await db.execute({ sql: "SELECT email, nombre FROM usuarios WHERE id = ?", args: [clienteId] });
+      const coachEmail = coachEmailRes.rows[0]?.email;
+      const coachNombre = coachEmailRes.rows[0]?.nombre || "Coach";
+      const clienteNombre = clienteEmailRes.rows[0]?.nombre || "Nuevo alumno";
+      const clienteEmail = clienteEmailRes.rows[0]?.email || "";
+      if (coachEmail) {
+        await resend.emails.send({
+          from: "MétodoG Notificaciones <onboarding@resend.dev>",
+          to: coachEmail,
+          subject: "🎯 Nuevo alumno vinculado en MétodoG",
+          html: `<p>Hola <b>${coachNombre}</b>,</p>
+                 <p><b>${clienteNombre}</b> se vinculó contigo en MétodoG.</p>
+                 <p>Email del alumno: ${clienteEmail || "—"}</p>
+                 <p>Entra a tu Panel de Alumnos para verlo.</p>`
+        });
+      }
+    } catch (_) { /* ignore */ }
+
     // Devolver usuario actualizado para refrescar frontend.
     const userRes = await db.execute({ sql: "SELECT * FROM usuarios WHERE id = ?", args: [clienteId] });
     if (userRes.rows.length === 0) return res.status(404).json({ error: "Cliente no encontrado" });
