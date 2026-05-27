@@ -304,6 +304,58 @@ app.post("/api/pagos/portal-coach", async (req, res) => {
   return crearPortalCoach(req, res, db);
 });
 
+app.delete("/api/usuarios/me", async (req, res) => {
+  const userId = parseInt(req.user.id, 10);
+  if (!userId || Number.isNaN(userId)) return res.status(400).json({ error: "Usuario inválido" });
+
+  try {
+    // 0) Si hay suscripción Stripe ligada, intentamos cancelarla para evitar cobros futuros.
+    try {
+      const subRes = await db.execute({
+        sql: "SELECT stripe_subscription_id FROM suscripciones_coach WHERE usuario_id = ?",
+        args: [userId]
+      });
+      const subId = subRes.rows[0]?.stripe_subscription_id;
+      if (subId) {
+        const Stripe = require("stripe");
+        const key = (process.env.STRIPE_SECRET_KEY || "").trim();
+        if (key) {
+          const stripe = new Stripe(key);
+          await stripe.subscriptions.cancel(subId);
+        }
+      }
+    } catch (_) { /* si falla Stripe, seguimos con borrado local */ }
+
+    // 1) Si es coach, desvincular clientes para no dejar coach_id apuntando a un usuario borrado.
+    await db.execute({
+      sql: "UPDATE usuarios SET coach_id = NULL WHERE coach_id = ?",
+      args: [userId]
+    });
+
+    // 2) Borrar datos dependientes del usuario.
+    await db.execute({ sql: "DELETE FROM rutinas WHERE usuario_id = ?", args: [userId] });
+    await db.execute({ sql: "DELETE FROM dietas WHERE usuario_id = ?", args: [userId] });
+    await db.execute({ sql: "DELETE FROM mediciones WHERE usuario_id = ?", args: [userId] });
+    await db.execute({ sql: "DELETE FROM historial_fuerza WHERE usuario_id = ?", args: [userId] });
+    await db.execute({ sql: "DELETE FROM perfiles_clientes WHERE usuario_id = ?", args: [userId] });
+    await db.execute({ sql: "DELETE FROM perfiles_coach_publicos WHERE usuario_id = ?", args: [userId] });
+    await db.execute({ sql: "DELETE FROM suscripciones_coach WHERE usuario_id = ?", args: [userId] });
+    await db.execute({ sql: "DELETE FROM planes_archivados WHERE coach_id = ? OR cliente_id = ?", args: [userId, userId] });
+    await db.execute({ sql: "DELETE FROM valoraciones WHERE coach_id = ? OR cliente_id = ?", args: [userId, userId] });
+    await db.execute({ sql: "DELETE FROM recuperacion WHERE email = (SELECT email FROM usuarios WHERE id = ?)", args: [userId] });
+
+    // 3) Borrar el usuario.
+    const del = await db.execute({ sql: "DELETE FROM usuarios WHERE id = ?", args: [userId] });
+    const affected = del.rowsAffected ?? 0;
+    if (affected === 0) return res.status(404).json({ error: "Usuario no encontrado" });
+
+    res.json({ deleted: true });
+  } catch (err) {
+    console.error("Error eliminar cuenta:", err.message);
+    res.status(500).json({ error: "No se pudo eliminar la cuenta" });
+  }
+});
+
 app.put("/api/usuarios/paquete-6-dias", async (req, res) => {
   const { usuario_id, activo } = req.body;
   if (!usuario_id) return res.status(400).json({ error: "usuario_id requerido" });
