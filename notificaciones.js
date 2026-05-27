@@ -95,14 +95,55 @@ async function enrichUsuarioVinculo(db, usuario) {
   if (usuario.rol === "CLIENTE") {
     usuario.solicitud_vinculo_pendiente = await obtenerSolicitudPendienteCliente(db, usuario.id);
   }
-  if (usuario.rol === "COACH" || usuario.rol === "SUPERADMIN") {
-    const c = await db.execute({
-      sql: "SELECT COUNT(*) AS n FROM notificaciones WHERE usuario_id = ? AND leida = 0",
-      args: [usuario.id]
-    });
-    usuario.notificaciones_no_leidas = Number(c.rows[0]?.n || 0);
-  }
+  const c = await db.execute({
+    sql: "SELECT COUNT(*) AS n FROM notificaciones WHERE usuario_id = ? AND leida = 0",
+    args: [usuario.id]
+  });
+  usuario.notificaciones_no_leidas = Number(c.rows[0]?.n || 0);
   return usuario;
+}
+
+/** Coach (o superadmin) guardó plan de un alumno → notificación in-app al cliente. */
+async function notificarClientePlanActualizado(db, req, clienteId, tipo) {
+  const targetId = parseInt(clienteId, 10);
+  const actorId = parseInt(req.user?.id, 10);
+  if (!targetId || targetId === actorId) return;
+  if (req.user?.rol !== "COACH" && req.user?.rol !== "SUPERADMIN") return;
+
+  const clienteRes = await db.execute({
+    sql: "SELECT id, coach_id FROM usuarios WHERE id = ?",
+    args: [targetId]
+  });
+  if (clienteRes.rows.length === 0) return;
+  const cliente = clienteRes.rows[0];
+
+  if (req.user.rol === "COACH" && Number(cliente.coach_id) !== actorId) return;
+
+  const coachRes = await db.execute({
+    sql: "SELECT nombre FROM usuarios WHERE id = ?",
+    args: [actorId]
+  });
+  const coachNombre = coachRes.rows[0]?.nombre || "Tu coach";
+
+  if (tipo === "plan_rutina") {
+    await crearNotificacion(db, {
+      usuarioId: targetId,
+      tipo: "plan_rutina",
+      titulo: "Nueva rutina disponible",
+      cuerpo: `${coachNombre} actualizó tu rutina. Revísala en Rutinas.`,
+      refTipo: "plan_rutina",
+      refId: actorId
+    });
+  } else if (tipo === "plan_dieta") {
+    await crearNotificacion(db, {
+      usuarioId: targetId,
+      tipo: "plan_dieta",
+      titulo: "Nueva dieta disponible",
+      cuerpo: `${coachNombre} actualizó tu plan nutricional. Revísala en Nutrición.`,
+      refTipo: "plan_dieta",
+      refId: actorId
+    });
+  }
 }
 
 async function cancelarSolicitudesPendientesCliente(db, clienteId, exceptId = null) {
@@ -279,7 +320,11 @@ async function listarNotificaciones(db, userId, { filtro, limite = 50 }) {
   const args = [userId];
   let sql = `SELECT id, tipo, titulo, cuerpo, ref_tipo, ref_id, leida, created_at
              FROM notificaciones WHERE usuario_id = ?`;
-  if (filtro && filtro !== "all" && filtro !== "todas") {
+  if (filtro === "planes") {
+    sql += " AND tipo IN ('plan_rutina', 'plan_dieta')";
+  } else if (filtro === "vinculo") {
+    sql += " AND tipo IN ('vinculo_aceptado', 'vinculo_rechazado')";
+  } else if (filtro && filtro !== "all" && filtro !== "todas") {
     sql += " AND tipo = ?";
     args.push(filtro);
   }
@@ -350,5 +395,6 @@ module.exports = {
   contarNotificacionesNoLeidas,
   marcarNotificacionLeida,
   marcarTodasNotificacionesLeidas,
-  cancelarSolicitudesPendientesCliente
+  cancelarSolicitudesPendientesCliente,
+  notificarClientePlanActualizado
 };

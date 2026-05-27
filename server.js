@@ -29,7 +29,8 @@ const {
   contarNotificacionesNoLeidas,
   marcarNotificacionLeida,
   marcarTodasNotificacionesLeidas,
-  cancelarSolicitudesPendientesCliente
+  cancelarSolicitudesPendientesCliente,
+  notificarClientePlanActualizado
 } = require("./notificaciones");
 
 const app = express();
@@ -210,6 +211,7 @@ app.post("/api/dietas/guardar", async (req, res) => {
       sql: `INSERT INTO dietas (usuario_id, datos_dieta, macros_totales, notas_dieta) VALUES (?, ?, ?, ?) ON CONFLICT(usuario_id) DO UPDATE SET datos_dieta = excluded.datos_dieta, macros_totales = excluded.macros_totales, notas_dieta = excluded.notas_dieta`,
       args: [usuario_id, JSON.stringify(datos_dieta), JSON.stringify(macros_totales), JSON.stringify(notas_dieta)]
     });
+    await notificarClientePlanActualizado(db, req, usuario_id, "plan_dieta");
     res.json({ mensaje: "Dieta asignada" });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -238,6 +240,7 @@ app.post("/api/rutinas/guardar", async (req, res) => {
       sql: `INSERT INTO rutinas (usuario_id, datos_rutina, notas_generales) VALUES (?, ?, ?) ON CONFLICT(usuario_id) DO UPDATE SET datos_rutina = excluded.datos_rutina, notas_generales = excluded.notas_generales`,
       args: [usuario_id, JSON.stringify(datos_rutina), JSON.stringify(notas_generales)]
     });
+    await notificarClientePlanActualizado(db, req, usuario_id, "plan_rutina");
     res.json({ mensaje: "Ok" });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -524,7 +527,6 @@ app.post("/api/clientes/vincular-coach", async (req, res) => {
 });
 
 app.get("/api/notificaciones/contador", async (req, res) => {
-  if (!(await assertCoachOAdmin(db, req, res))) return;
   try {
     const no_leidas = await contarNotificacionesNoLeidas(db, req.user.id);
     res.json({ no_leidas });
@@ -534,7 +536,6 @@ app.get("/api/notificaciones/contador", async (req, res) => {
 });
 
 app.get("/api/notificaciones", async (req, res) => {
-  if (!(await assertCoachOAdmin(db, req, res))) return;
   try {
     const filtro = (req.query.filtro || "all").trim();
     const notificaciones = await listarNotificaciones(db, req.user.id, { filtro });
@@ -545,7 +546,6 @@ app.get("/api/notificaciones", async (req, res) => {
 });
 
 app.post("/api/notificaciones/leer-todas", async (req, res) => {
-  if (!(await assertCoachOAdmin(db, req, res))) return;
   try {
     const actualizadas = await marcarTodasNotificacionesLeidas(db, req.user.id);
     res.json({ mensaje: "Ok", actualizadas });
@@ -555,7 +555,6 @@ app.post("/api/notificaciones/leer-todas", async (req, res) => {
 });
 
 app.post("/api/notificaciones/:id/leer", async (req, res) => {
-  if (!(await assertCoachOAdmin(db, req, res))) return;
   const notifId = parseInt(req.params.id, 10);
   if (!notifId) return res.status(400).json({ error: "id inválido" });
   try {
