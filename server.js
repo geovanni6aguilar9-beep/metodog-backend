@@ -805,6 +805,19 @@ app.post("/api/upgrade", async (req, res) => {
   if (parseInt(req.body.usuario_id, 10) !== parseInt(req.user.id, 10)) {
     return res.status(403).json({ error: "Solo puedes actualizar tu propia cuenta" });
   }
+  try {
+    const check = await db.execute({
+      sql: "SELECT coach_id FROM usuarios WHERE id = ?",
+      args: [req.user.id]
+    });
+    if (check.rows[0]?.coach_id != null && check.rows[0]?.coach_id !== "") {
+      return res.status(400).json({
+        error: "Tienes un coach asignado. Desvincúlate en Ajustes → Mi Coach antes de convertirte en coach."
+      });
+    }
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
   const cod = generarCodigo();
   try {
     const result = await db.execute({ sql: "UPDATE usuarios SET rol = 'COACH', codigo_invitacion = ? WHERE id = ?", args: [cod, req.user.id] });

@@ -92,13 +92,18 @@ function suscripcionCoachActiva(status) {
 
 async function ascenderUsuarioACoach(db, usuarioId) {
   const userRes = await db.execute({
-    sql: "SELECT id, rol, codigo_invitacion FROM usuarios WHERE id = ?",
+    sql: "SELECT id, rol, codigo_invitacion, coach_id FROM usuarios WHERE id = ?",
     args: [usuarioId]
   });
   if (userRes.rows.length === 0) return false;
 
   const user = userRes.rows[0];
   if (user.rol === "SUPERADMIN") return true;
+
+  if (user.coach_id != null && user.coach_id !== "") {
+    console.warn(`ascenderUsuarioACoach bloqueado: usuario ${usuarioId} tiene coach_id`);
+    return false;
+  }
 
   const codigo = user.codigo_invitacion || generarCodigo();
   const result = await db.execute({
@@ -261,7 +266,7 @@ async function crearCheckoutCoach(req, res, db) {
 
   const userId = parseInt(req.user.id, 10);
   const userRes = await db.execute({
-    sql: `SELECT u.id, u.email, u.nombre, u.rol, s.status AS sub_status
+    sql: `SELECT u.id, u.email, u.nombre, u.rol, u.coach_id, s.status AS sub_status
           FROM usuarios u
           LEFT JOIN suscripciones_coach s ON s.usuario_id = u.id
           WHERE u.id = ?`,
@@ -270,6 +275,11 @@ async function crearCheckoutCoach(req, res, db) {
   if (userRes.rows.length === 0) return res.status(404).json({ error: "Usuario no encontrado" });
 
   const user = userRes.rows[0];
+  if (user.coach_id != null && user.coach_id !== "") {
+    return res.status(400).json({
+      error: "Tienes un coach asignado. Desvincúlate en Ajustes → Mi Coach antes de suscribirte como coach."
+    });
+  }
   if (user.rol === "SUPERADMIN") {
     return res.status(400).json({ error: "Tu cuenta ya tiene acceso total de administrador." });
   }
