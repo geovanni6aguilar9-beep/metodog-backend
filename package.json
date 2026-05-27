@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "node --watch server.js",
     "start": "node server.js",
+    "seed:meso2": "node seed-superadmin-rutina.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],

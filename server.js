@@ -32,6 +32,7 @@ const {
   cancelarSolicitudesPendientesCliente,
   notificarClientePlanActualizado
 } = require("./notificaciones");
+const { buildMeso2Payload, PROGRAMA_MESO2 } = require("./data/programa-meso2-geovanni");
 
 const app = express();
 
@@ -587,6 +588,51 @@ app.post("/api/solicitudes-vinculo/:id/responder", async (req, res) => {
     res.json({ mensaje: result.mensaje, cliente_id: result.cliente_id });
   } catch (err) {
     console.error("Error responder solicitud:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/** Carga programa Meso 2 en la rutina del SUPERADMIN autenticado (prueba en vivo). */
+app.post("/api/admin/seed-meso2-rutina", async (req, res) => {
+  if (req.user.rol !== "SUPERADMIN") {
+    return res.status(403).json({ error: "Solo SUPERADMIN puede cargar esta rutina de prueba" });
+  }
+  try {
+    const userRes = await db.execute({
+      sql: "SELECT id, rol FROM usuarios WHERE id = ?",
+      args: [req.user.id]
+    });
+    if (userRes.rows.length === 0) return res.status(404).json({ error: "Usuario no encontrado" });
+    if (userRes.rows[0].rol !== "SUPERADMIN") {
+      return res.status(403).json({ error: "Cuenta no es SUPERADMIN" });
+    }
+
+    const { datos_rutina, notas_generales } = buildMeso2Payload(PROGRAMA_MESO2);
+    const totalEjercicios = Object.keys(datos_rutina)
+      .filter((k) => !k.startsWith("_"))
+      .reduce((acc, d) => acc + (datos_rutina[d]?.length || 0), 0);
+
+    const result = await db.execute({
+      sql: `INSERT INTO rutinas (usuario_id, datos_rutina, notas_generales, ultima_actualizacion)
+            VALUES (?, ?, ?, datetime('now'))
+            ON CONFLICT(usuario_id) DO UPDATE SET
+              datos_rutina = excluded.datos_rutina,
+              notas_generales = excluded.notas_generales,
+              ultima_actualizacion = datetime('now')`,
+      args: [req.user.id, JSON.stringify(datos_rutina), JSON.stringify(notas_generales)]
+    });
+    if ((result.rowsAffected ?? 0) === 0) {
+      return res.status(500).json({ error: "No se pudo guardar la rutina" });
+    }
+
+    res.json({
+      mensaje: "Programa Meso 2 cargado en tu cuenta",
+      nombre_rutina: PROGRAMA_MESO2.nombre_rutina,
+      ejercicios: totalEjercicios,
+      sesiones: 6
+    });
+  } catch (err) {
+    console.error("Error seed meso2:", err.message);
     res.status(500).json({ error: err.message });
   }
 });
