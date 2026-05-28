@@ -46,6 +46,19 @@ app.use(cors());
 app.use(express.json());
 app.use(requireAuthMiddleware);
 
+/** Público: UptimeRobot / Render health — sin JWT */
+app.get("/", (req, res) => {
+  res.status(200).json({ ok: true, service: "metodog-backend" });
+});
+
+app.get("/api/ping", (req, res) => {
+  res.status(200).json({
+    ok: true,
+    service: "metodog-backend",
+    ts: new Date().toISOString()
+  });
+});
+
 process.on('uncaughtException', (err) => console.error("🔥 ERROR FATAL:", err));
 
 function crearClienteDB() {
