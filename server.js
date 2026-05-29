@@ -231,7 +231,7 @@ app.post("/api/dietas/guardar", async (req, res) => {
   try {
     await db.execute({
       sql: `INSERT INTO dietas (usuario_id, datos_dieta, macros_totales, notas_dieta) VALUES (?, ?, ?, ?) ON CONFLICT(usuario_id) DO UPDATE SET datos_dieta = excluded.datos_dieta, macros_totales = excluded.macros_totales, notas_dieta = excluded.notas_dieta`,
-      args: [usuario_id, JSON.stringify(datos_dieta), JSON.stringify(macros_totales), JSON.stringify(notas_dieta)]
+      args: [usuario_id, JSON.stringify(datos_dieta), JSON.stringify(macros_totales), notas_dieta ?? ""]
     });
     await notificarClientePlanActualizado(db, req, usuario_id, "plan_dieta");
     res.json({ mensaje: "Dieta asignada" });
@@ -244,10 +244,14 @@ app.get("/api/dietas/:usuario_id", async (req, res) => {
     const result = await db.execute({ sql: "SELECT * FROM dietas WHERE usuario_id = ?", args: [req.params.usuario_id] });
     if (result.rows.length === 0) return res.json({ datos_dieta: null, macros_totales: null, notas_dieta: null });
     const row = result.rows[0];
+    let notas = row.notas_dieta || "";
+    if (typeof notas === "string" && notas.startsWith('"')) {
+      try { notas = JSON.parse(notas); } catch { /* texto plano legacy */ }
+    }
     res.json({
       datos_dieta: JSON.parse(row.datos_dieta),
       macros_totales: row.macros_totales ? JSON.parse(row.macros_totales) : null,
-      notas_dieta: row.notas_dieta || ""
+      notas_dieta: notas
     });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
