@@ -48,7 +48,12 @@ function isPublicApiRoute(req) {
   ].includes(path)) {
     return true;
   }
-  if (method === "GET" && (path === "/api/ping" || path === "/api/health")) return true;
+  if (
+    (method === "GET" || method === "HEAD") &&
+    (path === "/api/ping" || path === "/api/health")
+  ) {
+    return true;
+  }
   if (method === "GET" && path === "/api/alimentos") return true;
   if (method === "GET" && path === "/api/directorio/coaches") return true;
   if (method === "GET" && /^\/api\/coach\/\d+$/.test(path)) return true;

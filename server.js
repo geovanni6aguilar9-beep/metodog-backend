@@ -44,20 +44,28 @@ app.post(
 
 app.use(cors());
 app.use(express.json());
-app.use(requireAuthMiddleware);
 
-/** Público: UptimeRobot / Render health — sin JWT */
-app.get("/", (req, res) => {
-  res.status(200).json({ ok: true, service: "metodog-backend" });
-});
-
-app.get("/api/ping", (req, res) => {
+/** Público — ANTES del JWT (UptimeRobot usa HEAD) */
+function responderPing(req, res) {
+  if (req.method === "HEAD") {
+    return res.status(200).end();
+  }
   res.status(200).json({
     ok: true,
+    message: "pong",
     service: "metodog-backend",
     ts: new Date().toISOString()
   });
+}
+
+app.get("/", (req, res) => {
+  if (req.method === "HEAD") return res.status(200).end();
+  res.status(200).json({ ok: true, service: "metodog-backend" });
 });
+app.head("/", (req, res) => res.status(200).end());
+app.all("/api/ping", responderPing);
+
+app.use(requireAuthMiddleware);
 
 process.on('uncaughtException', (err) => console.error("🔥 ERROR FATAL:", err));
 
