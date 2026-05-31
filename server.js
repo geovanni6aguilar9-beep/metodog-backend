@@ -718,8 +718,9 @@ app.get("/api/clientes/:id/resumen", async (req, res) => {
     const histRes = await db.execute({ sql: "SELECT id, peso, grasa, datos_extra, fecha FROM mediciones WHERE usuario_id = ? ORDER BY fecha DESC", args: [req.params.id] });
     
     // Mandamos las 3 piezas de información en una sola respuesta limpia
+    const clienteId = parseInt(req.params.id, 10);
     res.json({ 
-      info: infoRes.rows[0], 
+      info: { id: clienteId, ...infoRes.rows[0] }, 
       perfil: perfil,
       historial: histRes.rows || [] 
     });
