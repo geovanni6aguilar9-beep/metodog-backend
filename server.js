@@ -191,6 +191,15 @@ async function inicializarBD() {
     )`);
     await db.execute(`CREATE INDEX IF NOT EXISTS idx_historial_fuerza_user_ej ON historial_fuerza(usuario_id, ejercicio)`);
 
+    await db.execute(`CREATE TABLE IF NOT EXISTS notas_ejercicio_coach (
+      coach_id INTEGER NOT NULL,
+      nombre_ejercicio TEXT NOT NULL,
+      nota TEXT NOT NULL DEFAULT '',
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (coach_id, nombre_ejercicio),
+      FOREIGN KEY(coach_id) REFERENCES usuarios(id)
+    )`);
+
     const countRes = await db.execute("SELECT COUNT(*) as count FROM alimentos");
     if (countRes.rows[0].count === 0) {
       await db.execute({ sql: "INSERT INTO alimentos (nombre, grupo, porcion_base, unidad, calorias, proteinas, carbohidratos, grasas, sodio) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", args: ["Pechuga de Pollo", "Carnes", 100, "g", 165, 31, 0, 3.6, 74] });
@@ -222,6 +231,37 @@ app.get("/api/alimentos", async (req, res) => {
   try {
     const result = await db.execute("SELECT * FROM alimentos ORDER BY grupo, nombre ASC");
     res.json(result.rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get("/api/coach/notas-ejercicio", async (req, res) => {
+  if (!(await assertCoachOAdmin(db, req, res))) return;
+  try {
+    const result = await db.execute({
+      sql: "SELECT nombre_ejercicio, nota, updated_at FROM notas_ejercicio_coach WHERE coach_id = ? ORDER BY nombre_ejercicio ASC",
+      args: [req.user.id]
+    });
+    res.json({ notas: result.rows || [] });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.put("/api/coach/notas-ejercicio", async (req, res) => {
+  if (!(await assertCoachOAdmin(db, req, res))) return;
+  const { nombre_ejercicio, nota } = req.body || {};
+  const nombre = String(nombre_ejercicio || "").trim();
+  const texto = String(nota || "").trim();
+  if (!nombre) return res.status(400).json({ error: "nombre_ejercicio requerido" });
+  if (!texto) return res.status(400).json({ error: "nota requerida" });
+  try {
+    await db.execute({
+      sql: `INSERT INTO notas_ejercicio_coach (coach_id, nombre_ejercicio, nota, updated_at)
+            VALUES (?, ?, ?, datetime('now'))
+            ON CONFLICT(coach_id, nombre_ejercicio) DO UPDATE SET
+              nota = excluded.nota,
+              updated_at = datetime('now')`,
+      args: [req.user.id, nombre, texto]
+    });
+    res.json({ mensaje: "Nota guardada en tu biblioteca" });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
