@@ -34,6 +34,14 @@ const {
 } = require("./notificaciones");
 const { buildMeso2Payload, PROGRAMA_MESO2 } = require("./data/programa-meso2-geovanni");
 const { buildCorsOptions, isProduction } = require("./corsConfig");
+const { generarOpinionInformeMensual } = require("./aiInforme");
+const {
+  fingerprintGrupos,
+  leerInformeCache,
+  guardarInformeCache
+} = require("./informeIaCache");
+const { seedAlimentosMetodog } = require("./seedAlimentos");
+const { calcularSustitutos, SIN_SUSTITUTO } = require("./equivalenciasNutricion");
 
 const DEV_JWT_FALLBACK = "metodog-dev-cambiar-en-produccion";
 if (isProduction()) {
@@ -211,22 +219,20 @@ async function inicializarBD() {
       FOREIGN KEY(coach_id) REFERENCES usuarios(id)
     )`);
 
-    const countRes = await db.execute("SELECT COUNT(*) as count FROM alimentos");
-    if (countRes.rows[0].count === 0) {
-      await db.execute({ sql: "INSERT INTO alimentos (nombre, grupo, porcion_base, unidad, calorias, proteinas, carbohidratos, grasas, sodio) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", args: ["Pechuga de Pollo", "Carnes", 100, "g", 165, 31, 0, 3.6, 74] });
-      await db.execute({ sql: "INSERT INTO alimentos (nombre, grupo, porcion_base, unidad, calorias, proteinas, carbohidratos, grasas, sodio) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", args: ["Carne de Res Magra", "Carnes", 100, "g", 250, 26, 0, 15, 72] });
-      await db.execute({ sql: "INSERT INTO alimentos (nombre, grupo, porcion_base, unidad, calorias, proteinas, carbohidratos, grasas, sodio) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", args: ["Atún en Agua", "Carnes", 100, "g", 116, 26, 0, 1, 338] });
-      await db.execute({ sql: "INSERT INTO alimentos (nombre, grupo, porcion_base, unidad, calorias, proteinas, carbohidratos, grasas, sodio) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", args: ["Leche Entera", "Lácteos", 250, "ml", 150, 8, 12, 8, 105] });
-      await db.execute({ sql: "INSERT INTO alimentos (nombre, grupo, porcion_base, unidad, calorias, proteinas, carbohidratos, grasas, sodio) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", args: ["Yogur Griego Sin Azúcar", "Lácteos", 200, "g", 120, 20, 8, 0, 70] });
-      await db.execute({ sql: "INSERT INTO alimentos (nombre, grupo, porcion_base, unidad, calorias, proteinas, carbohidratos, grasas, sodio) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", args: ["Lentejas Cocidas", "Leguminosas", 100, "g", 116, 9, 20, 0.4, 2] });
-      await db.execute({ sql: "INSERT INTO alimentos (nombre, grupo, porcion_base, unidad, calorias, proteinas, carbohidratos, grasas, sodio) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", args: ["Frijoles Cocidos", "Leguminosas", 100, "g", 130, 8.8, 23, 0.5, 2] });
-      await db.execute({ sql: "INSERT INTO alimentos (nombre, grupo, porcion_base, unidad, calorias, proteinas, carbohidratos, grasas, sodio) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", args: ["Arroz Blanco Cocido", "Cereales", 100, "g", 130, 2.7, 28, 0.3, 1] });
-      await db.execute({ sql: "INSERT INTO alimentos (nombre, grupo, porcion_base, unidad, calorias, proteinas, carbohidratos, grasas, sodio) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", args: ["Avena en Hojuelas", "Cereales", 3, "cucharadas", 116, 4, 20, 2.5, 2] });
-      await db.execute({ sql: "INSERT INTO alimentos (nombre, grupo, porcion_base, unidad, calorias, proteinas, carbohidratos, grasas, sodio) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", args: ["Tortilla de Maíz", "Cereales", 1, "pieza", 52, 1.4, 11, 0.5, 11] });
-      await db.execute({ sql: "INSERT INTO alimentos (nombre, grupo, porcion_base, unidad, calorias, proteinas, carbohidratos, grasas, sodio) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", args: ["Almendras", "Grasas", 30, "g", 173, 6, 6, 15, 0] });
-      await db.execute({ sql: "INSERT INTO alimentos (nombre, grupo, porcion_base, unidad, calorias, proteinas, carbohidratos, grasas, sodio) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", args: ["Aceite de Oliva", "Grasas", 1, "cucharada", 119, 0, 0, 13.5, 0] });
-      await db.execute({ sql: "INSERT INTO alimentos (nombre, grupo, porcion_base, unidad, calorias, proteinas, carbohidratos, grasas, sodio) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", args: ["Aguacate", "Grasas", 50, "g", 80, 1, 4, 7.5, 7] });
-    }
+    await db.execute(`CREATE TABLE IF NOT EXISTS informes_anatomia_ia (
+      usuario_id INTEGER NOT NULL,
+      mes TEXT NOT NULL,
+      fingerprint TEXT NOT NULL DEFAULT '',
+      opinion TEXT NOT NULL DEFAULT '',
+      siguiente_paso TEXT NOT NULL DEFAULT '[]',
+      recomendaciones TEXT NOT NULL DEFAULT '[]',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (usuario_id, mes),
+      FOREIGN KEY(usuario_id) REFERENCES usuarios(id)
+    )`);
+
+    await seedAlimentosMetodog(db);
     console.log("✅ Base de datos conectada y lista (historial_fuerza + paquete_6_dias).");
   } catch (error) {
     console.error("❌ Error al conectar con la base de datos:", error.message);
@@ -243,6 +249,61 @@ app.get("/api/alimentos", async (req, res) => {
     const result = await db.execute("SELECT * FROM alimentos ORDER BY grupo, nombre ASC");
     res.json(result.rows);
   } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post("/api/alimentos/sustitutos", async (req, res) => {
+  const { alimento_id, nombre, cantidad, prioridad } = req.body || {};
+  const cant = parseFloat(cantidad);
+  if (!cant || cant <= 0) {
+    return res.status(400).json({ error: "cantidad es obligatoria y debe ser > 0" });
+  }
+  if (!alimento_id && !nombre) {
+    return res.status(400).json({ error: "alimento_id o nombre es obligatorio" });
+  }
+  try {
+    let alimento;
+    if (alimento_id) {
+      const r = await db.execute({
+        sql: "SELECT * FROM alimentos WHERE id = ?",
+        args: [alimento_id]
+      });
+      alimento = r.rows[0];
+    } else {
+      const r = await db.execute({
+        sql: "SELECT * FROM alimentos WHERE LOWER(nombre) = LOWER(?) LIMIT 1",
+        args: [String(nombre).trim()]
+      });
+      alimento = r.rows[0];
+    }
+    if (!alimento) {
+      return res.status(404).json({ error: "Alimento no encontrado en biblioteca" });
+    }
+    const ge = String(alimento.grupo_equivalencia || "").trim();
+    if (!ge || SIN_SUSTITUTO.has(ge)) {
+      return res.json({
+        ok: false,
+        motivo: "sin_sustituto",
+        mensaje: "Este alimento no tiene intercambios automáticos. Consulta a tu coach."
+      });
+    }
+    const bib = await db.execute("SELECT * FROM alimentos ORDER BY nombre ASC");
+    const resultado = calcularSustitutos(alimento, cant, bib.rows, {
+      prioridad: prioridad || "prot",
+      limite: 3
+    });
+    return res.json({
+      ...resultado,
+      original: {
+        id: alimento.id,
+        nombre: alimento.nombre,
+        cantidad: cant,
+        unidad: alimento.unidad,
+        grupo_equivalencia: ge
+      }
+    });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
 });
 
 app.get("/api/coach/notas-ejercicio", async (req, res) => {
@@ -383,6 +444,55 @@ app.get("/api/fuerza/historial/:usuario_id", async (req, res) => {
     const ejercicios = [...new Set(result.rows.map(r => r.ejercicio))];
     res.json({ historial: result.rows, ejercicios });
   } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post("/api/rendimiento/informe-ia", async (req, res) => {
+  const {
+    usuario_id,
+    mes,
+    grupos,
+    balance_score,
+    fuente_grupos,
+    reglas_base
+  } = req.body || {};
+  if (!(await assertAccesoUsuario(db, req, res, usuario_id))) return;
+  if (!mes) return res.status(400).json({ ok: false, error: "mes requerido" });
+
+  const regenerar = req.query.regenerar === "1" || req.query.regenerar === 1;
+  const fp = fingerprintGrupos(grupos || [], balance_score ?? 0);
+
+  try {
+    if (!regenerar) {
+      const cache = await leerInformeCache(db, usuario_id, mes);
+      if (cache && cache.fingerprint === fp) {
+        return res.json({
+          ok: true,
+          ia: true,
+          cached: true,
+          opinion: cache.opinion,
+          siguiente_paso: cache.siguiente_paso,
+          recomendaciones: cache.recomendaciones
+        });
+      }
+    }
+
+    const resultado = await generarOpinionInformeMensual({
+      mes,
+      grupos,
+      balanceScore: balance_score,
+      fuenteGrupos: fuente_grupos,
+      reglasBase: reglas_base
+    });
+
+    if (!resultado.ok) {
+      return res.json({ ok: false, motivo: resultado.motivo || "sin_ia" });
+    }
+
+    await guardarInformeCache(db, usuario_id, mes, fp, resultado);
+    return res.json({ ...resultado, cached: false });
+  } catch (err) {
+    return res.status(500).json({ ok: false, error: err.message });
+  }
 });
 
 app.post("/api/pagos/crear-checkout-atleta", async (req, res) => {
