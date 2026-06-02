@@ -110,8 +110,15 @@ Reglas: español, tono directo y motivador; NO inventes datos que no estén en e
 
     if (!res.ok) {
       const errText = await res.text().catch(() => '');
-      console.warn('[aiInforme] OpenAI HTTP', res.status, errText.slice(0, 200));
-      return { ok: false, motivo: 'openai_error' };
+      let detalle = null;
+      try {
+        const j = errText ? JSON.parse(errText) : null;
+        detalle = j?.error?.message || j?.message || null;
+      } catch (_) {
+        detalle = errText ? errText.slice(0, 200).replace(/\s+/g, ' ') : null;
+      }
+      console.warn('[aiInforme] OpenAI HTTP', res.status, detalle || errText.slice(0, 200));
+      return { ok: false, motivo: `openai_http_${res.status}`, detalle };
     }
 
     const data = await res.json();
