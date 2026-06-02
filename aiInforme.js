@@ -3,6 +3,19 @@
  * Requiere OPENAI_API_KEY en Render. Sin key → null (frontend usa reglas).
  */
 
+function getFetch() {
+  if (typeof fetch === "function") return fetch;
+  try {
+    // Node 18+ suele exponer fetch o undici.
+    // eslint-disable-next-line global-require
+    const undici = require("undici");
+    if (typeof undici?.fetch === "function") return undici.fetch;
+  } catch (_) {
+    // ignore
+  }
+  return null;
+}
+
 function parseJsonSeguro(text) {
   if (!text) return null;
   try {
@@ -44,6 +57,9 @@ async function generarOpinionInformeMensual(payload) {
   const apiKey = (process.env.OPENAI_API_KEY || '').trim();
   if (!apiKey) return { ok: false, motivo: 'sin_api_key' };
 
+  const fetchFn = getFetch();
+  if (!fetchFn) return { ok: false, motivo: "no_fetch" };
+
   const model = (process.env.OPENAI_MODEL || 'gpt-4o-mini').trim();
   const { mes, grupos, balanceScore, fuenteGrupos, reglasBase } = payload || {};
 
@@ -73,7 +89,7 @@ Reglas: español, tono directo y motivador; NO inventes datos que no estén en e
   const timeout = setTimeout(() => controller.abort(), 25000);
 
   try {
-    const res = await fetch('https://api.openai.com/v1/chat/completions', {
+    const res = await fetchFn('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
       signal: controller.signal,
       headers: {
