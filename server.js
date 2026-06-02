@@ -34,6 +34,7 @@ const {
 } = require("./notificaciones");
 const { buildMeso2Payload, PROGRAMA_MESO2 } = require("./data/programa-meso2-geovanni");
 const { buildCorsOptions, isProduction } = require("./corsConfig");
+const { generarOpinionInformeMensual } = require("./aiInforme");
 
 const DEV_JWT_FALLBACK = "metodog-dev-cambiar-en-produccion";
 if (isProduction()) {
@@ -383,6 +384,28 @@ app.get("/api/fuerza/historial/:usuario_id", async (req, res) => {
     const ejercicios = [...new Set(result.rows.map(r => r.ejercicio))];
     res.json({ historial: result.rows, ejercicios });
   } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+/** Opinión IA para informe mensual de anatomía (requiere OPENAI_API_KEY). */
+app.post("/api/rendimiento/informe-ia", async (req, res) => {
+  const { usuario_id, mes, grupos, balance_score, fuente_grupos, reglas_base } = req.body || {};
+  if (!(await assertAccesoUsuario(db, req, res, usuario_id))) return;
+  if (!mes || !Array.isArray(grupos)) {
+    return res.status(400).json({ error: "mes y grupos son obligatorios" });
+  }
+  try {
+    const resultado = await generarOpinionInformeMensual({
+      mes,
+      grupos,
+      balanceScore: balance_score,
+      fuenteGrupos: fuente_grupos,
+      reglasBase: reglas_base
+    });
+    if (!resultado.ok) return res.json({ ok: false, motivo: resultado.motivo || "sin_ia" });
+    return res.json(resultado);
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
 });
 
 app.post("/api/pagos/crear-checkout-atleta", async (req, res) => {
