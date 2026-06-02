@@ -35,6 +35,11 @@ const {
 const { buildMeso2Payload, PROGRAMA_MESO2 } = require("./data/programa-meso2-geovanni");
 const { buildCorsOptions, isProduction } = require("./corsConfig");
 const { generarOpinionInformeMensual } = require("./aiInforme");
+const {
+  fingerprintGrupos,
+  leerInformeCache,
+  guardarInformeCache
+} = require("./informeIaCache");
 
 const DEV_JWT_FALLBACK = "metodog-dev-cambiar-en-produccion";
 if (isProduction()) {
@@ -212,6 +217,19 @@ async function inicializarBD() {
       FOREIGN KEY(coach_id) REFERENCES usuarios(id)
     )`);
 
+    await db.execute(`CREATE TABLE IF NOT EXISTS informes_anatomia_ia (
+      usuario_id INTEGER NOT NULL,
+      mes TEXT NOT NULL,
+      fingerprint TEXT NOT NULL,
+      opinion TEXT NOT NULL,
+      siguiente_paso TEXT NOT NULL DEFAULT '[]',
+      recomendaciones TEXT NOT NULL DEFAULT '[]',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (usuario_id, mes),
+      FOREIGN KEY(usuario_id) REFERENCES usuarios(id)
+    )`);
+
     const countRes = await db.execute("SELECT COUNT(*) as count FROM alimentos");
     if (countRes.rows[0].count === 0) {
       await db.execute({ sql: "INSERT INTO alimentos (nombre, grupo, porcion_base, unidad, calorias, proteinas, carbohidratos, grasas, sodio) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", args: ["Pechuga de Pollo", "Carnes", 100, "g", 165, 31, 0, 3.6, 74] });
@@ -386,14 +404,31 @@ app.get("/api/fuerza/historial/:usuario_id", async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-/** Opinión IA para informe mensual de anatomía (requiere OPENAI_API_KEY). */
+/** Opinión IA para informe mensual (OpenAI + caché Turso por mes). ?regenerar=1 fuerza nueva llamada. */
 app.post("/api/rendimiento/informe-ia", async (req, res) => {
   const { usuario_id, mes, grupos, balance_score, fuente_grupos, reglas_base } = req.body || {};
   if (!(await assertAccesoUsuario(db, req, res, usuario_id))) return;
   if (!mes || !Array.isArray(grupos)) {
     return res.status(400).json({ error: "mes y grupos son obligatorios" });
   }
+  const forzarRegenerar = req.query.regenerar === "1" || req.body?.regenerar === true;
+  const fp = fingerprintGrupos(grupos, balance_score ?? 0);
+
   try {
+    if (!forzarRegenerar) {
+      const cached = await leerInformeCache(db, usuario_id, mes);
+      if (cached && cached.fingerprint === fp) {
+        return res.json({
+          ok: true,
+          ia: true,
+          cached: true,
+          opinion: cached.opinion,
+          siguiente_paso: cached.siguiente_paso,
+          recomendaciones: cached.recomendaciones
+        });
+      }
+    }
+
     const resultado = await generarOpinionInformeMensual({
       mes,
       grupos,
@@ -401,8 +436,9 @@ app.post("/api/rendimiento/informe-ia", async (req, res) => {
       fuenteGrupos: fuente_grupos,
       reglasBase: reglas_base
     });
-    if (!resultado.ok) return res.json({ ok: false, motivo: resultado.motivo || "sin_ia" });
-    return res.json(resultado);
+    if (!resultado.ok) return res.json({ ok: false, motivo: resultado.motivo || "sin_ia", detalle: resultado.detalle || null });
+    await guardarInformeCache(db, usuario_id, mes, fp, resultado);
+    return res.json({ ...resultado, cached: false });
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }

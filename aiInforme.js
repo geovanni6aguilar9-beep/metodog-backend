@@ -67,11 +67,11 @@ async function generarOpinionInformeMensual(payload) {
 Analiza el volumen mensual por grupo muscular (series con peso×reps registradas).
 Responde SOLO JSON válido (sin markdown):
 {
-  "opinion": "1-2 frases claras sobre el mes",
-  "siguiente_paso": ["3 acciones concretas para la PRÓXIMA semana, con series aproximadas"],
-  "recomendaciones": ["2-4 bullets de equilibrio o prioridad"]
+  "opinion": "máximo 2 frases cortas (≤220 caracteres total)",
+  "siguiente_paso": ["exactamente 3 acciones para la PRÓXIMA semana; cada una ≤90 caracteres; incluye series aprox"],
+  "recomendaciones": ["2 bullets máximo; cada uno ≤80 caracteres"]
 }
-Reglas: español, tono directo y motivador; NO inventes datos que no estén en el input; si hay grupos en 0, dilo; prioriza empuje/tirón y pierna si aplica.`;
+Reglas: español México, directo y motivador; NO inventes datos; si hay grupos en 0, dilo; prioriza empuje/tirón y pierna si aplica; texto pensado para pantalla móvil pequeña.`;
 
   const user = JSON.stringify({
     mes: mes || '—',
@@ -99,7 +99,7 @@ Reglas: español, tono directo y motivador; NO inventes datos que no estén en e
       body: JSON.stringify({
         model,
         temperature: 0.35,
-        max_tokens: 500,
+        max_tokens: 320,
         response_format: { type: 'json_object' },
         messages: [
           { role: 'system', content: system },
