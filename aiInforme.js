@@ -55,7 +55,7 @@ Responde SOLO JSON válido (sin markdown):
   "siguiente_paso": ["exactamente 3 acciones para la PRÓXIMA semana; cada una ≤90 caracteres; incluye series aprox"],
   "recomendaciones": ["2 bullets máximo; cada uno ≤80 caracteres"]
 }
-Reglas: español México, directo y motivador; NO inventes datos; si hay grupos en 0, dilo; prioriza empuje/tirón y pierna si aplica; texto pensado para pantalla móvil pequeña.`;
+Reglas: español México, directo y motivador; NO inventes datos; si hay grupos en 0, dilo; empuje = pecho+tríceps+hombro anterior; tirón = espalda+bíceps; NUNCA digas bíceps para empuje; texto pensado para pantalla móvil pequeña.`;
 
   const user = JSON.stringify({
     mes: mes || '—',
