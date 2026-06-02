@@ -171,18 +171,20 @@ function buildDietaPayload(plan = PLAN_NUTRICION) {
   const meta = plan._meta || {};
   const consumido = sumarConsumido(comidas);
 
+  const objetivos = {
+    cal: meta.calorias_objetivo,
+    prot: meta.proteina_objetivo,
+    carb: meta.carbos_objetivo,
+    gras: meta.grasas_objetivo,
+    sodio: meta.sodio_objetivo
+  };
+  if (meta.tipo_ajuste) objetivos.tipo_ajuste = meta.tipo_ajuste;
+  if (meta.ajuste_kcal != null) objetivos.ajuste_kcal = meta.ajuste_kcal;
+  if (meta.etiqueta) objetivos.etiqueta = meta.etiqueta;
+
   return {
     datos_dieta: comidas,
-    macros_totales: {
-      objetivos: {
-        cal: meta.calorias_objetivo,
-        prot: meta.proteina_objetivo,
-        carb: meta.carbos_objetivo,
-        gras: meta.grasas_objetivo,
-        sodio: meta.sodio_objetivo
-      },
-      consumido
-    },
+    macros_totales: { objetivos, consumido },
     notas_dieta: meta.notas_dieta || ""
   };
 }

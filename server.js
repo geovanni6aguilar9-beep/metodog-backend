@@ -33,6 +33,17 @@ const {
   notificarClientePlanActualizado
 } = require("./notificaciones");
 const { buildMeso2Payload, PROGRAMA_MESO2 } = require("./data/programa-meso2-geovanni");
+const { buildCorsOptions, isProduction } = require("./corsConfig");
+
+const DEV_JWT_FALLBACK = "metodog-dev-cambiar-en-produccion";
+if (isProduction()) {
+  const secret = (process.env.JWT_SECRET || "").trim();
+  if (!secret || secret === DEV_JWT_FALLBACK || secret.length < 32) {
+    console.error(
+      "❌ JWT_SECRET ausente o débil en producción. Define un secreto aleatorio ≥32 caracteres en Render."
+    );
+  }
+}
 
 const app = express();
 
@@ -42,7 +53,7 @@ app.post(
   (req, res) => handleStripeWebhook(req, res, db)
 );
 
-app.use(cors());
+app.use(cors(buildCorsOptions()));
 app.use(express.json());
 
 /** Público — ANTES del JWT (UptimeRobot usa HEAD) */
