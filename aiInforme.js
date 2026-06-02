@@ -3,19 +3,6 @@
  * Requiere OPENAI_API_KEY en Render. Sin key → null (frontend usa reglas).
  */
 
-function getFetch() {
-  if (typeof fetch === "function") return fetch;
-  try {
-    // Node 18+ suele exponer fetch o undici.
-    // eslint-disable-next-line global-require
-    const undici = require("undici");
-    if (typeof undici?.fetch === "function") return undici.fetch;
-  } catch (_) {
-    // ignore
-  }
-  return null;
-}
-
 function parseJsonSeguro(text) {
   if (!text) return null;
   try {
@@ -57,9 +44,6 @@ async function generarOpinionInformeMensual(payload) {
   const apiKey = (process.env.OPENAI_API_KEY || '').trim();
   if (!apiKey) return { ok: false, motivo: 'sin_api_key' };
 
-  const fetchFn = getFetch();
-  if (!fetchFn) return { ok: false, motivo: "no_fetch" };
-
   const model = (process.env.OPENAI_MODEL || 'gpt-4o-mini').trim();
   const { mes, grupos, balanceScore, fuenteGrupos, reglasBase } = payload || {};
 
@@ -89,7 +73,7 @@ Reglas: español México, directo y motivador; NO inventes datos; si hay grupos 
   const timeout = setTimeout(() => controller.abort(), 25000);
 
   try {
-    const res = await fetchFn('https://api.openai.com/v1/chat/completions', {
+    const res = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
       signal: controller.signal,
       headers: {
@@ -110,15 +94,8 @@ Reglas: español México, directo y motivador; NO inventes datos; si hay grupos 
 
     if (!res.ok) {
       const errText = await res.text().catch(() => '');
-      let detalle = null;
-      try {
-        const j = errText ? JSON.parse(errText) : null;
-        detalle = j?.error?.message || j?.message || null;
-      } catch (_) {
-        detalle = errText ? errText.slice(0, 200).replace(/\s+/g, ' ') : null;
-      }
-      console.warn('[aiInforme] OpenAI HTTP', res.status, detalle || errText.slice(0, 200));
-      return { ok: false, motivo: `openai_http_${res.status}`, detalle };
+      console.warn('[aiInforme] OpenAI HTTP', res.status, errText.slice(0, 200));
+      return { ok: false, motivo: 'openai_error' };
     }
 
     const data = await res.json();
