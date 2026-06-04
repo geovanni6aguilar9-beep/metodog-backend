@@ -1,5 +1,8 @@
 const crypto = require("crypto");
 
+/** Sube cuando cambia la lógica/prompt del informe → invalida caché Turso sin tocar volumen. */
+const INFORME_IA_VERSION = "v2-dia-estricto";
+
 function fingerprintGrupos(grupos = [], balanceScore = 0, rutinaFingerprint = "") {
   const lista = (grupos || [])
     .map((g) => ({
@@ -8,7 +11,12 @@ function fingerprintGrupos(grupos = [], balanceScore = 0, rutinaFingerprint = ""
       t: Math.round(Number(g.tonelaje || 0))
     }))
     .sort((a, b) => a.g.localeCompare(b.g));
-  const raw = JSON.stringify({ b: balanceScore, lista, r: rutinaFingerprint || "" });
+  const raw = JSON.stringify({
+    b: balanceScore,
+    lista,
+    r: rutinaFingerprint || "",
+    pv: INFORME_IA_VERSION
+  });
   return crypto.createHash("sha256").update(raw).digest("hex").slice(0, 32);
 }
 
