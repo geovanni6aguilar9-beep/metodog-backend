@@ -57,9 +57,13 @@ Responde SOLO JSON válido (sin markdown):
   "recomendaciones": ["2 bullets máximo; cada uno ≤80 caracteres"]
 }
 Reglas: español México, directo y motivador; NO inventes datos.
-${tienePlan ? `PLAN ASIGNADO (respeta este contexto): si un grupo está en 0 en el mes pero NO forma parte del plan actual, NO lo critiques como "rezago" — explica que el bloque no lo prioriza o sugiere ejecutar el día correspondiente.` : "Sin rutina asignada en sistema: usa solo volumen registrado."}
-NUNCA sugieras ejercicios que no estén en el plan del coach. Solo ajustes de ejecución, registro o prioridad dentro del mes.
-Empuje = pecho+tríceps; tirón = espalda+bíceps; NUNCA bíceps para empuje. Texto para móvil.`;
+${tienePlan ? `PLAN ASIGNADO — reglas absolutas:
+- Usa calendario_dias y grupo_a_dia del JSON: cada músculo solo se entrena/recupera en SU día asignado.
+- PROHIBIDO mezclar grupos en un día que no les corresponde (ej. si Lunes = Hombro+Espalda+Bíceps, NO sugieras Pectoral el lunes).
+- Si falta volumen en un grupo, di "recupéralo en tu día de [nombre del día]" según grupo_a_dia, no inventes días híbridos.
+- Si un grupo está en 0 en el mes pero NO está en el plan, no lo critiques.
+- Si hay muchos ceros, prioriza "registra tus series en la app" antes de rearmar el plan.` : "Sin rutina asignada: usa solo volumen registrado."}
+NUNCA sugieras ejercicios nuevos fuera del plan. Texto para móvil.`;
 
   const user = JSON.stringify({
     mes: mes || '—',
@@ -68,7 +72,8 @@ Empuje = pecho+tríceps; tirón = espalda+bíceps; NUNCA bíceps para empuje. Te
     plan_coach: tienePlan
       ? {
           resumen: resumenRutina.resumen_texto,
-          dias: resumenRutina.dias,
+          calendario_dias: resumenRutina.calendario_dias,
+          grupo_a_dia: resumenRutina.grupo_a_dia,
           series_planeadas_por_grupo: resumenRutina.grupos_planeados
         }
       : null,

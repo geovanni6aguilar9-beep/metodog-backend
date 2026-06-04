@@ -88,9 +88,24 @@ function buildResumenRutina(datosRutina) {
 
   const dias = [...porDia.keys()].sort().map((dia) => {
     const slot = porDia.get(dia);
-    const foco = [...slot.grupos].filter((g) => g !== "Otros").join(", ") || "General";
-    return { dia, foco, ejercicios: slot.nombres };
+    const gruposDia = [...slot.grupos].filter((g) => g !== "Otros");
+    const foco = gruposDia.join(", ") || "General";
+    return { dia, foco, grupos: gruposDia, ejercicios: slot.nombres };
   });
+
+  /** Qué día del plan corresponde a cada grupo (para no mezclar músculos). */
+  const grupo_a_dia = {};
+  for (const d of dias) {
+    for (const g of d.grupos) {
+      if (!grupo_a_dia[g]) grupo_a_dia[g] = d.dia;
+    }
+  }
+
+  const calendario_dias = dias.map((d) => ({
+    dia: d.dia,
+    grupos_permitidos: d.grupos,
+    ejercicios: d.ejercicios
+  }));
 
   const compacto = filas
     .map((f) => `${f.dia}:${f.grupo}:${f.nombre}:${f.series_plan}`)
@@ -107,6 +122,8 @@ function buildResumenRutina(datosRutina) {
     fingerprint,
     resumen_texto,
     dias: dias.map((d) => d.dia),
+    calendario_dias,
+    grupo_a_dia,
     grupos_planeados: porGrupo,
     total_ejercicios: filas.length
   };
