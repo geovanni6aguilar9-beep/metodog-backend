@@ -45,8 +45,19 @@ async function generarOpinionInformeMensual(payload) {
   if (!apiKey) return { ok: false, motivo: 'sin_api_key' };
 
   const model = (process.env.OPENAI_MODEL || 'gpt-4o-mini').trim();
-  const { mes, grupos, balanceScore, fuenteGrupos, reglasBase, resumenRutina } = payload || {};
+  const {
+    mes,
+    grupos,
+    balanceScore,
+    fuenteGrupos,
+    reglasBase,
+    resumenRutina,
+    corteParcial,
+    diaMes,
+    pctMes
+  } = payload || {};
   const tienePlan = resumenRutina?.tiene_rutina && resumenRutina?.resumen_texto;
+  const esParcial = !!corteParcial;
 
   const system = `Eres un asistente analítico de MétodoG (México). El plan de entrenamiento lo define el COACH del usuario.
 Analiza el volumen REAL registrado este mes (series con peso×reps) vs el contexto del plan asignado.
@@ -57,16 +68,19 @@ Responde SOLO JSON válido (sin markdown):
   "recomendaciones": ["2 bullets máximo; cada uno ≤80 caracteres"]
 }
 Reglas: español México, directo y motivador; NO inventes datos.
+${esParcial ? `CORTE PARCIAL DEL MES (aún no termina): NO evalúes el mes como final ni hables de "fracaso". Es seguimiento en curso (${pctMes ?? "?"}% del mes). Prioriza registrar series y cumplir los días que vienen.` : ""}
 ${tienePlan ? `PLAN ASIGNADO — reglas absolutas:
-- Usa calendario_dias y grupo_a_dia del JSON: cada músculo solo se entrena/recupera en SU día asignado.
-- PROHIBIDO mezclar grupos en un día que no les corresponde (ej. si Lunes = Hombro+Espalda+Bíceps, NO sugieras Pectoral el lunes).
-- Si falta volumen en un grupo, di "recupéralo en tu día de [nombre del día]" según grupo_a_dia, no inventes días híbridos.
-- Si un grupo está en 0 en el mes pero NO está en el plan, no lo critiques.
-- Si hay muchos ceros, prioriza "registra tus series en la app" antes de rearmar el plan.` : "Sin rutina asignada: usa solo volumen registrado."}
+- Lee grupo_a_dia: cada grupo muscular tiene UN solo día. NUNCA pongas un grupo en un día distinto al de grupo_a_dia (ej. si Espalda→Lunes, JAMÁS digas espalda el Miércoles aunque Pectoral sí esté el Miércoles).
+- PROHIBIDO juntar dos grupos en un paso si no comparten el mismo día en grupo_a_dia.
+- Si falta volumen: "en tu [día según grupo_a_dia]" o "registra cuando hagas ese día".
+- Muchos ceros con poco volumen total = probable falta de registro en la app, dilo primero.` : "Sin rutina asignada: usa solo volumen registrado."}
 NUNCA sugieras ejercicios nuevos fuera del plan. Texto para móvil.`;
 
   const user = JSON.stringify({
     mes: mes || '—',
+    corte_parcial: esParcial,
+    dia_mes: diaMes ?? null,
+    pct_mes: pctMes ?? null,
     balance_score: balanceScore ?? 0,
     fuente_grupos: fuenteGrupos || 'nombre',
     plan_coach: tienePlan

@@ -41,6 +41,7 @@ const {
   guardarInformeCache
 } = require("./informeIaCache");
 const { buildResumenRutina } = require("./resumenRutinaInforme");
+const { contextoMesInforme } = require("./informeMesContext");
 const { seedAlimentosMetodog } = require("./seedAlimentos");
 const { calcularSustitutos, SIN_SUSTITUTO } = require("./equivalenciasNutricion");
 
@@ -495,13 +496,17 @@ app.post("/api/rendimiento/informe-ia", async (req, res) => {
       }
     }
 
+    const ctxMes = contextoMesInforme(mes);
     const resultado = await generarOpinionInformeMensual({
       mes,
       grupos,
       balanceScore: balance_score,
       fuenteGrupos: resumenRutina.tiene_rutina ? "rutina" : (fuente_grupos || "nombre"),
       reglasBase: reglas_base,
-      resumenRutina
+      resumenRutina,
+      corteParcial: ctxMes.corteParcial,
+      diaMes: ctxMes.diaMes,
+      pctMes: ctxMes.pctMes
     });
 
     if (!resultado.ok) {

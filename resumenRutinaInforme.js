@@ -37,7 +37,9 @@ function ejerciciosPorDia(datosRutina) {
 
     for (const ej of lista) {
       if (!ej?.nombre) continue;
-      const grupo = String(ej.grupo || "Otros").trim() || "Otros";
+      let grupo = String(ej.grupo || ej.musculo || "Otros").trim() || "Otros";
+      if (/hombro/i.test(grupo)) grupo = "Hombro";
+      if (!GRUPOS.includes(grupo)) grupo = "Otros";
       const seriesPlan = parseInt(ej.series, 10) || (Array.isArray(ej.sets) ? ej.sets.length : 0) || 0;
       salida.push({
         dia,
