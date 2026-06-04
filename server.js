@@ -40,6 +40,7 @@ const {
   leerInformeCache,
   guardarInformeCache
 } = require("./informeIaCache");
+const { buildResumenRutina } = require("./resumenRutinaInforme");
 const { seedAlimentosMetodog } = require("./seedAlimentos");
 const { calcularSustitutos, SIN_SUSTITUTO } = require("./equivalenciasNutricion");
 
@@ -459,7 +460,25 @@ app.post("/api/rendimiento/informe-ia", async (req, res) => {
   if (!mes) return res.status(400).json({ ok: false, error: "mes requerido" });
 
   const regenerar = req.query.regenerar === "1" || req.query.regenerar === 1;
-  const fp = fingerprintGrupos(grupos || [], balance_score ?? 0);
+
+  let resumenRutina = { tiene_rutina: false, fingerprint: "" };
+  try {
+    const rutRes = await db.execute({
+      sql: "SELECT datos_rutina FROM rutinas WHERE usuario_id = ?",
+      args: [usuario_id]
+    });
+    if (rutRes.rows[0]?.datos_rutina) {
+      resumenRutina = buildResumenRutina(rutRes.rows[0].datos_rutina);
+    }
+  } catch (err) {
+    console.warn("[informe-ia] rutina:", err?.message);
+  }
+
+  const fp = fingerprintGrupos(
+    grupos || [],
+    balance_score ?? 0,
+    resumenRutina.fingerprint || ""
+  );
 
   try {
     if (!regenerar) {
@@ -480,8 +499,9 @@ app.post("/api/rendimiento/informe-ia", async (req, res) => {
       mes,
       grupos,
       balanceScore: balance_score,
-      fuenteGrupos: fuente_grupos,
-      reglasBase: reglas_base
+      fuenteGrupos: resumenRutina.tiene_rutina ? "rutina" : (fuente_grupos || "nombre"),
+      reglasBase: reglas_base,
+      resumenRutina
     });
 
     if (!resultado.ok) {

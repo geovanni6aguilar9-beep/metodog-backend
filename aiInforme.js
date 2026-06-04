@@ -45,23 +45,34 @@ async function generarOpinionInformeMensual(payload) {
   if (!apiKey) return { ok: false, motivo: 'sin_api_key' };
 
   const model = (process.env.OPENAI_MODEL || 'gpt-4o-mini').trim();
-  const { mes, grupos, balanceScore, fuenteGrupos, reglasBase } = payload || {};
+  const { mes, grupos, balanceScore, fuenteGrupos, reglasBase, resumenRutina } = payload || {};
+  const tienePlan = resumenRutina?.tiene_rutina && resumenRutina?.resumen_texto;
 
-  const system = `Eres un coach de fuerza en la app MétodoG (México).
-Analiza el volumen mensual por grupo muscular (series con peso×reps registradas).
+  const system = `Eres un asistente analítico de MétodoG (México). El plan de entrenamiento lo define el COACH del usuario.
+Analiza el volumen REAL registrado este mes (series con peso×reps) vs el contexto del plan asignado.
 Responde SOLO JSON válido (sin markdown):
 {
   "opinion": "máximo 2 frases cortas (≤220 caracteres total)",
-  "siguiente_paso": ["exactamente 3 acciones para la PRÓXIMA semana; cada una ≤90 caracteres; incluye series aprox"],
+  "siguiente_paso": ["exactamente 3 acciones para la PRÓXIMA semana; cada una ≤90 caracteres; alinea con el plan del coach"],
   "recomendaciones": ["2 bullets máximo; cada uno ≤80 caracteres"]
 }
-Reglas: español México, directo y motivador; NO inventes datos; si hay grupos en 0, dilo; empuje = pecho+tríceps+hombro anterior; tirón = espalda+bíceps; NUNCA digas bíceps para empuje; texto pensado para pantalla móvil pequeña.`;
+Reglas: español México, directo y motivador; NO inventes datos.
+${tienePlan ? `PLAN ASIGNADO (respeta este contexto): si un grupo está en 0 en el mes pero NO forma parte del plan actual, NO lo critiques como "rezago" — explica que el bloque no lo prioriza o sugiere ejecutar el día correspondiente.` : "Sin rutina asignada en sistema: usa solo volumen registrado."}
+NUNCA sugieras ejercicios que no estén en el plan del coach. Solo ajustes de ejecución, registro o prioridad dentro del mes.
+Empuje = pecho+tríceps; tirón = espalda+bíceps; NUNCA bíceps para empuje. Texto para móvil.`;
 
   const user = JSON.stringify({
     mes: mes || '—',
     balance_score: balanceScore ?? 0,
     fuente_grupos: fuenteGrupos || 'nombre',
-    grupos: (grupos || []).map((g) => ({
+    plan_coach: tienePlan
+      ? {
+          resumen: resumenRutina.resumen_texto,
+          dias: resumenRutina.dias,
+          series_planeadas_por_grupo: resumenRutina.grupos_planeados
+        }
+      : null,
+    volumen_real_mes: (grupos || []).map((g) => ({
       grupo: g.grupo,
       series: g.series || 0,
       tonelaje_kg: Math.round(g.tonelaje || 0)

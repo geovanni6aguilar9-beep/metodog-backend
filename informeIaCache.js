@@ -1,6 +1,6 @@
 const crypto = require("crypto");
 
-function fingerprintGrupos(grupos = [], balanceScore = 0) {
+function fingerprintGrupos(grupos = [], balanceScore = 0, rutinaFingerprint = "") {
   const lista = (grupos || [])
     .map((g) => ({
       g: String(g.grupo || ""),
@@ -8,7 +8,7 @@ function fingerprintGrupos(grupos = [], balanceScore = 0) {
       t: Math.round(Number(g.tonelaje || 0))
     }))
     .sort((a, b) => a.g.localeCompare(b.g));
-  const raw = JSON.stringify({ b: balanceScore, lista });
+  const raw = JSON.stringify({ b: balanceScore, lista, r: rutinaFingerprint || "" });
   return crypto.createHash("sha256").update(raw).digest("hex").slice(0, 32);
 }
 
