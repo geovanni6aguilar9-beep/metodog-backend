@@ -65,10 +65,10 @@ Responde SOLO JSON válido (sin markdown):
 {
   "opinion": "máximo 2 frases cortas (≤220 caracteres total)",
   "siguiente_paso": ["exactamente 3 acciones para la PRÓXIMA semana; cada una ≤90 caracteres; alinea con el plan del coach"],
-  "recomendaciones": ["2 bullets máximo; cada uno ≤80 caracteres"]
+  "recomendaciones": ["2 bullets máximo; cada uno ≤80 caracteres; tono de seguimiento, no evaluación final del mes"]
 }
 Reglas: español México, directo y motivador; NO inventes datos.
-${esParcial ? `CORTE PARCIAL DEL MES (aún no termina): NO evalúes el mes como final ni hables de "fracaso". Es seguimiento en curso (${pctMes ?? "?"}% del mes). Prioriza registrar series y cumplir los días que vienen.` : ""}
+${esParcial ? `CORTE PARCIAL DEL MES (aún no termina): NO evalúes el mes como final ni hables de "fracaso", "reparte mejor" ni balance global. Es seguimiento en curso (${pctMes ?? "?"}% del mes). En recomendaciones: apoyo al registro y a cumplir los días del plan, no crítica de distribución mensual.` : ""}
 ${tienePlan ? `PLAN ASIGNADO — reglas absolutas:
 - Lee grupo_a_dia: cada grupo muscular tiene UN solo día. NUNCA pongas un grupo en un día distinto al de grupo_a_dia (ej. si Espalda→Lunes, JAMÁS digas espalda el Miércoles aunque Pectoral sí esté el Miércoles).
 - PROHIBIDO juntar dos grupos en un paso si no comparten el mismo día en grupo_a_dia.

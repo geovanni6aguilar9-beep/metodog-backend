@@ -1,7 +1,7 @@
 const crypto = require("crypto");
 
 /** Sube cuando cambia la lógica/prompt del informe → invalida caché Turso sin tocar volumen. */
-const INFORME_IA_VERSION = "v3-corte-parcial";
+const INFORME_IA_VERSION = "v4-recom-seguimiento";
 
 function fingerprintGrupos(grupos = [], balanceScore = 0, rutinaFingerprint = "") {
   const lista = (grupos || [])
