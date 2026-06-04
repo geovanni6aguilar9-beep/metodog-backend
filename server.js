@@ -29,6 +29,8 @@ const {
   contarNotificacionesNoLeidas,
   marcarNotificacionLeida,
   marcarTodasNotificacionesLeidas,
+  borrarNotificacion,
+  borrarTodasNotificaciones,
   cancelarSolicitudesPendientesCliente,
   notificarClientePlanActualizado
 } = require("./notificaciones");
@@ -773,6 +775,27 @@ app.post("/api/notificaciones/:id/leer", async (req, res) => {
     const ok = await marcarNotificacionLeida(db, req.user.id, notifId);
     if (!ok) return res.status(404).json({ error: "Notificación no encontrada" });
     res.json({ mensaje: "Ok" });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete("/api/notificaciones/todas", async (req, res) => {
+  try {
+    const borradas = await borrarTodasNotificaciones(db, req.user.id);
+    res.json({ mensaje: "Ok", borradas });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete("/api/notificaciones/:id", async (req, res) => {
+  const notifId = parseInt(req.params.id, 10);
+  if (!notifId) return res.status(400).json({ error: "id inválido" });
+  try {
+    const ok = await borrarNotificacion(db, req.user.id, notifId);
+    if (!ok) return res.status(404).json({ error: "Notificación no encontrada" });
+    res.json({ mensaje: "Ok", borrada: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

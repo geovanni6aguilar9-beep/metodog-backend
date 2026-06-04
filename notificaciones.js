@@ -415,6 +415,22 @@ async function marcarTodasNotificacionesLeidas(db, userId) {
   return r.rowsAffected ?? 0;
 }
 
+async function borrarNotificacion(db, userId, notifId) {
+  const r = await db.execute({
+    sql: "DELETE FROM notificaciones WHERE id = ? AND usuario_id = ?",
+    args: [notifId, userId]
+  });
+  return (r.rowsAffected ?? 0) > 0;
+}
+
+async function borrarTodasNotificaciones(db, userId) {
+  const r = await db.execute({
+    sql: "DELETE FROM notificaciones WHERE usuario_id = ?",
+    args: [userId]
+  });
+  return r.rowsAffected ?? 0;
+}
+
 module.exports = {
   ensureTablesNotificaciones,
   enrichUsuarioVinculo,
@@ -424,6 +440,8 @@ module.exports = {
   contarNotificacionesNoLeidas,
   marcarNotificacionLeida,
   marcarTodasNotificacionesLeidas,
+  borrarNotificacion,
+  borrarTodasNotificaciones,
   cancelarSolicitudesPendientesCliente,
   notificarClientePlanActualizado
 };
