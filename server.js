@@ -148,11 +148,20 @@ async function inicializarBD() {
       usuario_id INTEGER PRIMARY KEY,
       edad INTEGER,
       estatura REAL,
+      peso_kg REAL,
+      genero TEXT,
       gustos TEXT,
       disgustos TEXT,
       enfermedades TEXT,
       FOREIGN KEY(usuario_id) REFERENCES usuarios(id)
     )`);
+
+    for (const sql of [
+      'ALTER TABLE perfiles_clientes ADD COLUMN peso_kg REAL',
+      'ALTER TABLE perfiles_clientes ADD COLUMN genero TEXT'
+    ]) {
+      try { await db.execute(sql); } catch (_) { /* columna ya existe */ }
+    }
 
     await db.execute(`CREATE TABLE IF NOT EXISTS perfiles_coach_publicos (
       usuario_id INTEGER PRIMARY KEY,
@@ -638,20 +647,23 @@ app.delete("/api/mediciones/:id", async (req, res) => {
 
 // 🔥 NUEVA RUTA: GUARDAR O ACTUALIZAR EL FORMULARIO DEL CLIENTE
 app.post("/api/clientes/guardar-perfil", async (req, res) => {
-  const { usuario_id, edad, estatura, gustos, disgustos, enfermedades } = req.body;
+  const { usuario_id, edad, estatura, peso_kg, genero, gustos, disgustos, enfermedades } = req.body;
   if (!(await assertAccesoUsuario(db, req, res, usuario_id))) return;
+  const generoNorm = genero === 'F' ? 'F' : genero === 'M' ? 'M' : null;
   try {
     await db.execute({
-      sql: `INSERT INTO perfiles_clientes (usuario_id, edad, estatura, gustos, disgustos, enfermedades) 
-            VALUES (?, ?, ?, ?, ?, ?) 
+      sql: `INSERT INTO perfiles_clientes (usuario_id, edad, estatura, peso_kg, genero, gustos, disgustos, enfermedades) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?) 
             ON CONFLICT(usuario_id) 
-            DO UPDATE SET edad = excluded.edad, estatura = excluded.estatura, gustos = excluded.gustos, disgustos = excluded.disgustos, enfermedades = excluded.enfermedades`,
+            DO UPDATE SET edad = excluded.edad, estatura = excluded.estatura, peso_kg = excluded.peso_kg, genero = excluded.genero, gustos = excluded.gustos, disgustos = excluded.disgustos, enfermedades = excluded.enfermedades`,
       args: [
-        usuario_id, 
-        edad || null, 
-        estatura || null, 
-        gustos ? gustos.trim() : "", 
-        disgustos ? disgustos.trim() : "", 
+        usuario_id,
+        edad || null,
+        estatura || null,
+        peso_kg != null && peso_kg !== '' ? parseFloat(peso_kg) : null,
+        generoNorm,
+        gustos ? gustos.trim() : "",
+        disgustos ? disgustos.trim() : "",
         enfermedades ? enfermedades.trim() : ""
       ]
     });
@@ -880,8 +892,8 @@ app.get("/api/clientes/:id/resumen", async (req, res) => {
     if (infoRes.rows.length === 0) return res.status(404).json({ error: "Usuario no encontrado" });
     
     // 2. Obtener su perfil extendido (si no lo ha llenado, manda valores vacíos por defecto)
-    const perfilRes = await db.execute({ sql: "SELECT edad, estatura, gustos, disgustos, enfermedades FROM perfiles_clientes WHERE usuario_id = ?", args: [req.params.id] });
-    const perfil = perfilRes.rows.length > 0 ? perfilRes.rows[0] : { edad: null, estatura: null, gustos: "", disgustos: "", enfermedades: "" };
+    const perfilRes = await db.execute({ sql: "SELECT edad, estatura, peso_kg, genero, gustos, disgustos, enfermedades FROM perfiles_clientes WHERE usuario_id = ?", args: [req.params.id] });
+    const perfil = perfilRes.rows.length > 0 ? perfilRes.rows[0] : { edad: null, estatura: null, peso_kg: null, genero: null, gustos: "", disgustos: "", enfermedades: "" };
 
     // 3. Obtener su historial de pesajes ordenados del más reciente al más antiguo
     const histRes = await db.execute({ sql: "SELECT id, peso, grasa, datos_extra, fecha FROM mediciones WHERE usuario_id = ? ORDER BY fecha DESC", args: [req.params.id] });
