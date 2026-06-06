@@ -655,6 +655,53 @@ async function eliminarUsuarioCompleto(db, userId) {
   return (del.rowsAffected ?? 0) > 0;
 }
 
+app.get("/api/admin/usuarios", async (req, res) => {
+  if (!assertSuperAdmin(req, res)) return;
+
+  const q = String(req.query.q || "").trim().toLowerCase();
+  const limite = Math.min(parseInt(req.query.limit, 10) || 200, 500);
+
+  try {
+    let sql = `
+      SELECT u.id, u.nombre, u.email, u.rol, u.coach_id, u.fecha_inicio,
+        sc.status AS coach_sub_status,
+        sc.plan AS coach_plan,
+        sa.status AS atleta_sub_status,
+        COALESCE(p.verificado, 0) AS directorio_verificado
+      FROM usuarios u
+      LEFT JOIN suscripciones_coach sc ON sc.usuario_id = u.id
+      LEFT JOIN suscripciones_atleta sa ON sa.usuario_id = u.id
+      LEFT JOIN perfiles_coach_publicos p ON p.usuario_id = u.id
+      WHERE u.rol != 'SUPERADMIN'
+    `;
+    const args = [];
+    if (q) {
+      sql += ` AND (LOWER(u.nombre) LIKE ? OR LOWER(u.email) LIKE ?)`;
+      args.push(`%${q}%`, `%${q}%`);
+    }
+    sql += ` ORDER BY u.fecha_inicio DESC, u.nombre ASC LIMIT ?`;
+    args.push(limite);
+
+    const result = await db.execute({ sql, args });
+    const rows = (result.rows || []).map(r => ({
+      id: Number(r.id),
+      nombre: r.nombre,
+      email: r.email,
+      rol: r.rol,
+      coach_id: r.coach_id != null ? Number(r.coach_id) : null,
+      fecha_inicio: r.fecha_inicio,
+      coach_sub_status: r.coach_sub_status || null,
+      coach_plan: r.coach_plan || null,
+      atleta_sub_status: r.atleta_sub_status || null,
+      directorio_verificado: !!Number(r.directorio_verificado)
+    }));
+    res.json(rows);
+  } catch (err) {
+    console.error("Error admin listar usuarios:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.delete("/api/admin/usuarios/:id", async (req, res) => {
   if (!assertSuperAdmin(req, res)) return;
 
