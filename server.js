@@ -586,51 +586,122 @@ app.post("/api/pagos/portal-coach", async (req, res) => {
   return crearPortalCoach(req, res, db);
 });
 
+async function cancelarSuscripcionesStripeUsuario(db, userId) {
+  try {
+    const Stripe = require("stripe");
+    const key = (process.env.STRIPE_SECRET_KEY || "").trim();
+    if (!key) return;
+
+    const stripe = new Stripe(key);
+    for (const tabla of ["suscripciones_coach", "suscripciones_atleta"]) {
+      const subRes = await db.execute({
+        sql: `SELECT stripe_subscription_id FROM ${tabla} WHERE usuario_id = ?`,
+        args: [userId]
+      });
+      const subId = subRes.rows[0]?.stripe_subscription_id;
+      if (subId) await stripe.subscriptions.cancel(subId);
+    }
+  } catch (err) {
+    console.warn("cancelarSuscripcionesStripeUsuario:", err.message);
+  }
+}
+
+async function eliminarUsuarioCompleto(db, userId) {
+  await cancelarSuscripcionesStripeUsuario(db, userId);
+
+  await db.execute({
+    sql: "UPDATE usuarios SET coach_id = NULL WHERE coach_id = ?",
+    args: [userId]
+  });
+
+  const tablasUsuario = [
+    ["rutinas", "usuario_id"],
+    ["dietas", "usuario_id"],
+    ["mediciones", "usuario_id"],
+    ["historial_fuerza", "usuario_id"],
+    ["perfiles_clientes", "usuario_id"],
+    ["perfiles_coach_publicos", "usuario_id"],
+    ["suscripciones_coach", "usuario_id"],
+    ["suscripciones_atleta", "usuario_id"],
+    ["informes_anatomia_ia", "usuario_id"],
+    ["notificaciones", "usuario_id"]
+  ];
+  for (const [tabla, col] of tablasUsuario) {
+    await db.execute({ sql: `DELETE FROM ${tabla} WHERE ${col} = ?`, args: [userId] });
+  }
+
+  await db.execute({
+    sql: "DELETE FROM solicitudes_vinculo WHERE cliente_id = ? OR coach_id = ?",
+    args: [userId, userId]
+  });
+  await db.execute({
+    sql: "DELETE FROM planes_archivados WHERE coach_id = ? OR cliente_id = ?",
+    args: [userId, userId]
+  });
+  await db.execute({
+    sql: "DELETE FROM valoraciones WHERE coach_id = ? OR cliente_id = ?",
+    args: [userId, userId]
+  });
+  await db.execute({
+    sql: "DELETE FROM notas_ejercicio_coach WHERE coach_id = ?",
+    args: [userId]
+  });
+  await db.execute({
+    sql: "DELETE FROM recuperacion WHERE email = (SELECT email FROM usuarios WHERE id = ?)",
+    args: [userId]
+  });
+
+  const del = await db.execute({ sql: "DELETE FROM usuarios WHERE id = ?", args: [userId] });
+  return (del.rowsAffected ?? 0) > 0;
+}
+
+app.delete("/api/admin/usuarios/:id", async (req, res) => {
+  if (!assertSuperAdmin(req, res)) return;
+
+  const targetId = parseInt(req.params.id, 10);
+  const adminId = parseInt(req.user.id, 10);
+  if (!targetId || Number.isNaN(targetId)) {
+    return res.status(400).json({ error: "ID de usuario inválido" });
+  }
+  if (targetId === adminId) {
+    return res.status(400).json({ error: "No puedes eliminar tu propia cuenta SUPERADMIN" });
+  }
+
+  try {
+    const userRes = await db.execute({
+      sql: "SELECT id, nombre, email, rol FROM usuarios WHERE id = ?",
+      args: [targetId]
+    });
+    if (userRes.rows.length === 0) {
+      return res.status(404).json({ error: "Usuario no encontrado" });
+    }
+    const target = userRes.rows[0];
+    if (target.rol === "SUPERADMIN") {
+      return res.status(403).json({ error: "No se puede eliminar otra cuenta SUPERADMIN" });
+    }
+
+    const ok = await eliminarUsuarioCompleto(db, targetId);
+    if (!ok) return res.status(404).json({ error: "Usuario no encontrado" });
+
+    res.json({
+      deleted: true,
+      id: targetId,
+      email: target.email,
+      mensaje: `Cuenta ${target.email} eliminada permanentemente.`
+    });
+  } catch (err) {
+    console.error("Error admin eliminar usuario:", err.message);
+    res.status(500).json({ error: err.message || "No se pudo eliminar la cuenta" });
+  }
+});
+
 app.delete("/api/usuarios/me", async (req, res) => {
   const userId = parseInt(req.user.id, 10);
   if (!userId || Number.isNaN(userId)) return res.status(400).json({ error: "Usuario inválido" });
 
   try {
-    // 0) Si hay suscripción Stripe ligada, intentamos cancelarla para evitar cobros futuros.
-    try {
-      const subRes = await db.execute({
-        sql: "SELECT stripe_subscription_id FROM suscripciones_coach WHERE usuario_id = ?",
-        args: [userId]
-      });
-      const subId = subRes.rows[0]?.stripe_subscription_id;
-      if (subId) {
-        const Stripe = require("stripe");
-        const key = (process.env.STRIPE_SECRET_KEY || "").trim();
-        if (key) {
-          const stripe = new Stripe(key);
-          await stripe.subscriptions.cancel(subId);
-        }
-      }
-    } catch (_) { /* si falla Stripe, seguimos con borrado local */ }
-
-    // 1) Si es coach, desvincular clientes para no dejar coach_id apuntando a un usuario borrado.
-    await db.execute({
-      sql: "UPDATE usuarios SET coach_id = NULL WHERE coach_id = ?",
-      args: [userId]
-    });
-
-    // 2) Borrar datos dependientes del usuario.
-    await db.execute({ sql: "DELETE FROM rutinas WHERE usuario_id = ?", args: [userId] });
-    await db.execute({ sql: "DELETE FROM dietas WHERE usuario_id = ?", args: [userId] });
-    await db.execute({ sql: "DELETE FROM mediciones WHERE usuario_id = ?", args: [userId] });
-    await db.execute({ sql: "DELETE FROM historial_fuerza WHERE usuario_id = ?", args: [userId] });
-    await db.execute({ sql: "DELETE FROM perfiles_clientes WHERE usuario_id = ?", args: [userId] });
-    await db.execute({ sql: "DELETE FROM perfiles_coach_publicos WHERE usuario_id = ?", args: [userId] });
-    await db.execute({ sql: "DELETE FROM suscripciones_coach WHERE usuario_id = ?", args: [userId] });
-    await db.execute({ sql: "DELETE FROM planes_archivados WHERE coach_id = ? OR cliente_id = ?", args: [userId, userId] });
-    await db.execute({ sql: "DELETE FROM valoraciones WHERE coach_id = ? OR cliente_id = ?", args: [userId, userId] });
-    await db.execute({ sql: "DELETE FROM recuperacion WHERE email = (SELECT email FROM usuarios WHERE id = ?)", args: [userId] });
-
-    // 3) Borrar el usuario.
-    const del = await db.execute({ sql: "DELETE FROM usuarios WHERE id = ?", args: [userId] });
-    const affected = del.rowsAffected ?? 0;
-    if (affected === 0) return res.status(404).json({ error: "Usuario no encontrado" });
-
+    const ok = await eliminarUsuarioCompleto(db, userId);
+    if (!ok) return res.status(404).json({ error: "Usuario no encontrado" });
     res.json({ deleted: true });
   } catch (err) {
     console.error("Error eliminar cuenta:", err.message);
@@ -1056,8 +1127,9 @@ app.post("/api/directorio/guardar-perfil", async (req, res) => {
       return res.status(403).json({ error: "Solo coaches pueden guardar perfil público" });
     }
     await db.execute({
-      sql: `INSERT INTO perfiles_coach_publicos (usuario_id, foto_url, bio, especialidad, logros, tarifa_base, whatsapp, visible_en_directorio)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      sql: `INSERT INTO perfiles_coach_publicos (
+              usuario_id, foto_url, bio, especialidad, logros, tarifa_base, whatsapp, visible_en_directorio
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(usuario_id) DO UPDATE SET
               foto_url = excluded.foto_url,
               bio = excluded.bio,
@@ -1077,8 +1149,14 @@ app.post("/api/directorio/guardar-perfil", async (req, res) => {
         visible_en_directorio === false || visible_en_directorio === 0 ? 0 : 1
       ]
     });
+    const perfilGuardado = await db.execute({
+      sql: `SELECT foto_url, bio, especialidad, logros, tarifa_base, whatsapp, visible_en_directorio, verificado
+            FROM perfiles_coach_publicos WHERE usuario_id = ?`,
+      args: [usuario_id]
+    });
     res.json({
-      mensaje: "Perfil público guardado. Aparecerás en el catálogo cuando MétodoG verifique tu cuenta."
+      mensaje: "Perfil público guardado. Aparecerás en el catálogo cuando MétodoG verifique tu cuenta.",
+      perfil: perfilGuardado.rows[0] || null
     });
   } catch (err) {
     console.error("Error guardar perfil coach:", err.message);
@@ -1087,6 +1165,35 @@ app.post("/api/directorio/guardar-perfil", async (req, res) => {
 });
 
 /** SUPERADMIN — revisión manual de coaches para el directorio público (§15 paso 4). */
+function mapCoachRevisionRow(row) {
+  const bio = String(row.bio ?? "").trim();
+  const especialidad = String(row.especialidad ?? "").trim();
+  const logros = String(row.logros ?? "").trim();
+  const whatsapp = String(row.whatsapp ?? "").trim();
+  const fotoUrl = String(row.foto_url ?? "").trim();
+  const tarifaBase = row.tarifa_base != null && row.tarifa_base !== "" ? Number(row.tarifa_base) : null;
+  const perfilPublicado = !!(bio || especialidad || logros || whatsapp || fotoUrl || tarifaBase != null);
+
+  return {
+    id: Number(row.id),
+    nombre: row.nombre,
+    email: row.email,
+    calificacion: row.calificacion,
+    codigo_invitacion: row.codigo_invitacion,
+    foto_url: fotoUrl,
+    bio,
+    especialidad,
+    logros,
+    tarifa_base: tarifaBase,
+    whatsapp,
+    verificado: !!Number(row.verificado),
+    visible_en_directorio: !!Number(row.visible_en_directorio ?? 1),
+    sub_status: row.sub_status || null,
+    sub_plan: row.sub_plan || null,
+    perfil_publicado: perfilPublicado
+  };
+}
+
 app.get("/api/directorio/admin/revision", async (req, res) => {
   if (!assertSuperAdmin(req, res)) return;
   try {
@@ -1102,7 +1209,7 @@ app.get("/api/directorio/admin/revision", async (req, res) => {
       WHERE u.rol = 'COACH'
       ORDER BY COALESCE(p.verificado, 0) ASC, u.nombre ASC
     `);
-    res.json(result.rows || []);
+    res.json((result.rows || []).map(mapCoachRevisionRow));
   } catch (err) {
     console.error("Error admin revision directorio:", err.message);
     res.status(500).json({ error: err.message });
@@ -1151,12 +1258,22 @@ app.put("/api/directorio/admin/verificar", async (req, res) => {
     }
 
     await db.execute({
-      sql: `INSERT INTO perfiles_coach_publicos (usuario_id, verificado, visible_en_directorio)
-            VALUES (?, ?, ?)
-            ON CONFLICT(usuario_id) DO UPDATE SET
-              verificado = excluded.verificado,
-              visible_en_directorio = excluded.visible_en_directorio`,
-      args: [uid, flagVerificado, visibleFinal]
+      sql: `INSERT INTO perfiles_coach_publicos (usuario_id, visible_en_directorio, verificado)
+            VALUES (?, 1, 0)
+            ON CONFLICT(usuario_id) DO NOTHING`,
+      args: [uid]
+    });
+    await db.execute({
+      sql: `UPDATE perfiles_coach_publicos
+            SET verificado = ?, visible_en_directorio = ?
+            WHERE usuario_id = ?`,
+      args: [flagVerificado, visibleFinal, uid]
+    });
+
+    const perfilRes = await db.execute({
+      sql: `SELECT foto_url, bio, especialidad, logros, tarifa_base, whatsapp, verificado, visible_en_directorio
+            FROM perfiles_coach_publicos WHERE usuario_id = ?`,
+      args: [uid]
     });
 
     res.json({
@@ -1164,6 +1281,7 @@ app.put("/api/directorio/admin/verificar", async (req, res) => {
       usuario_id: uid,
       verificado: !!flagVerificado,
       visible_en_directorio: !!visibleFinal,
+      perfil: perfilRes.rows[0] || null,
       mensaje: flagVerificado
         ? "Coach verificado — visible en el directorio público."
         : "Verificación revocada — ya no aparece en el catálogo."
