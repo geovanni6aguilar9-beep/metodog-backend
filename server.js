@@ -295,6 +295,37 @@ async function inicializarBD() {
 }
 inicializarBD();
 
+function validarStripeEnProduccion() {
+  if (!isProduction()) return;
+  const key = (process.env.STRIPE_SECRET_KEY || "").trim();
+  if (!key) {
+    console.warn("⚠️ STRIPE_SECRET_KEY no definida — checkout deshabilitado.");
+    return;
+  }
+  if (key.startsWith("sk_test_")) {
+    console.error(
+      "❌ STRIPE en modo TEST en producción (sk_test_…). Paso 5: sustituye por sk_live_ y Price IDs live en Render."
+    );
+    return;
+  }
+  if (key.startsWith("sk_live_")) {
+    console.log("💳 Stripe LIVE configurado.");
+  }
+  const precios = [
+    "STRIPE_PRICE_FULL_WEEK",
+    "STRIPE_PRICE_COACH_STARTER",
+    "STRIPE_PRICE_COACH_GROWTH",
+    "STRIPE_PRICE_COACH_PRO",
+    "STRIPE_PRICE_COACH_STUDIO",
+    "STRIPE_PRICE_COACH_ELITE"
+  ];
+  const faltantes = precios.filter(k => !(process.env[k] || "").trim());
+  if (faltantes.length > 0) {
+    console.warn(`⚠️ Price IDs live faltantes en Render: ${faltantes.join(", ")}`);
+  }
+}
+validarStripeEnProduccion();
+
 // 🚀 RUTAS GENERALES DE LA APP
 app.get("/api/alimentos", async (req, res) => {
   try {
