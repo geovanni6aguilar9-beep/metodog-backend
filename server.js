@@ -208,13 +208,14 @@ async function inicializarBD() {
 
     await db.execute(`CREATE TABLE IF NOT EXISTS suscripciones_coach (
       usuario_id INTEGER PRIMARY KEY,
-      plan TEXT NOT NULL DEFAULT 'pro',
+      plan TEXT NOT NULL DEFAULT 'starter',
       stripe_customer_id TEXT,
       stripe_subscription_id TEXT UNIQUE,
       status TEXT NOT NULL DEFAULT 'active',
-      limite_clientes INTEGER DEFAULT 25,
+      limite_clientes INTEGER DEFAULT 5,
       current_period_end TEXT,
       cancel_at_period_end INTEGER DEFAULT 0,
+      trial_end TEXT,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY(usuario_id) REFERENCES usuarios(id)
     )`);

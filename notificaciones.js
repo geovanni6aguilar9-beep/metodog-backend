@@ -2,7 +2,7 @@
  * Solicitudes de vínculo coach↔cliente e inbox in-app.
  */
 
-const { evaluarSuscripcionCoach } = require("./pagos");
+const { evaluarSuscripcionCoach } = require("./coachSuscripcion");
 
 function toNum(v) {
   if (v == null) return null;

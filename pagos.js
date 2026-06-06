@@ -12,6 +12,7 @@ const {
   trialEndIsoDesdeAhora,
   trialExpirado
 } = require("./planesSuscripcion");
+const { evaluarSuscripcionCoach } = require("./coachSuscripcion");
 
 const MONTO_PAQUETE_MXN_DEFAULT = 149;
 const PRODUCTO_PAQUETE_LEGACY_NOMBRE = "MétodoG — Rutina Full Week (6 días)";
@@ -181,33 +182,6 @@ async function migrarPaquetesGrandfathered(db) {
   }
 }
 
-async function evaluarSuscripcionCoach(db, coachId) {
-  const subRes = await db.execute({
-    sql: `SELECT plan, status, limite_clientes, trial_end
-          FROM suscripciones_coach WHERE usuario_id = ?`,
-    args: [coachId]
-  });
-  if (subRes.rows.length === 0) return null;
-
-  const s = subRes.rows[0];
-  if (s.status === "trialing" && trialExpirado(s.trial_end)) {
-    await db.execute({
-      sql: `UPDATE suscripciones_coach SET status = 'canceled', updated_at = datetime('now') WHERE usuario_id = ?`,
-      args: [coachId]
-    });
-    return null;
-  }
-
-  if (!suscripcionActiva(s.status)) return null;
-
-  return {
-    plan: s.plan,
-    status: s.status,
-    limite_efectivo: limiteAlumnosCoach(s.plan, s.status),
-    trial_end: s.trial_end
-  };
-}
-
 async function ascenderUsuarioACoach(db, usuarioId) {
   const userRes = await db.execute({
     sql: "SELECT id, rol, codigo_invitacion, coach_id FROM usuarios WHERE id = ?",
@@ -366,64 +340,86 @@ async function syncSuscripcionCoachPorStripeId(db, stripe, stripeSubscriptionId)
 }
 
 async function iniciarTrialCoach(req, res, db) {
-  const userId = parseInt(req.user.id, 10);
+  try {
+    const userId = parseInt(req.user.id, 10);
 
-  const userRes = await db.execute({
-    sql: "SELECT id, rol, coach_id FROM usuarios WHERE id = ?",
-    args: [userId]
-  });
-  if (userRes.rows.length === 0) return res.status(404).json({ error: "Usuario no encontrado" });
-
-  const user = userRes.rows[0];
-  if (user.coach_id != null && user.coach_id !== "") {
-    return res.status(400).json({
-      error: "Tienes un coach asignado. Desvincúlate antes de probar como coach."
+    const userRes = await db.execute({
+      sql: "SELECT id, rol, coach_id FROM usuarios WHERE id = ?",
+      args: [userId]
     });
-  }
-  if (user.rol === "SUPERADMIN") {
-    return res.status(400).json({ error: "Tu cuenta ya tiene acceso total." });
-  }
-
-  const subRes = await db.execute({
-    sql: "SELECT status, trial_end FROM suscripciones_coach WHERE usuario_id = ?",
-    args: [userId]
-  });
-
-  if (subRes.rows.length > 0) {
-    const prev = subRes.rows[0];
-    if (suscripcionActiva(prev.status) && !(prev.status === "trialing" && trialExpirado(prev.trial_end))) {
-      return res.status(400).json({ error: "Ya tienes una suscripción o trial activo." });
+    if (userRes.rows.length === 0) {
+      return res.status(404).json({ error: "Usuario no encontrado" });
     }
-    return res.status(400).json({
-      error: "Ya usaste tu periodo de prueba. Elige un plan Coach PRO para continuar."
+
+    const user = userRes.rows[0];
+    if (user.coach_id != null && user.coach_id !== "") {
+      return res.status(400).json({
+        error: "Tienes un coach asignado. Desvincúlate en Ajustes → Mi Coach antes de probar como coach."
+      });
+    }
+    if (user.rol === "SUPERADMIN") {
+      return res.status(400).json({ error: "Tu cuenta ya tiene acceso total." });
+    }
+
+    const subRes = await db.execute({
+      sql: `SELECT status, trial_end, stripe_subscription_id FROM suscripciones_coach WHERE usuario_id = ?`,
+      args: [userId]
+    });
+
+    if (subRes.rows.length > 0) {
+      const prev = subRes.rows[0];
+      if (prev.status === "trialing" && !trialExpirado(prev.trial_end)) {
+        return res.status(400).json({ error: "Ya tienes un trial activo." });
+      }
+      if (prev.status === "active") {
+        return res.status(400).json({ error: "Ya tienes una suscripción Coach activa." });
+      }
+      if (prev.trial_end) {
+        return res.status(400).json({
+          error: "Ya usaste tu periodo de prueba. Elige un plan Coach PRO para continuar."
+        });
+      }
+      if (prev.stripe_subscription_id) {
+        return res.status(400).json({
+          error: "Ya tuviste una suscripción de pago. Elige un plan en la lista."
+        });
+      }
+      // Fila legacy cancelada sin trial → se reutiliza vía upsert
+    }
+
+    const ok = await ascenderUsuarioACoach(db, userId);
+    if (!ok) {
+      return res.status(400).json({
+        error: "No se pudo activar el trial (¿tienes un coach asignado?)."
+      });
+    }
+
+    const trialEnd = trialEndIsoDesdeAhora();
+    await upsertSuscripcionCoach(db, {
+      usuarioId: userId,
+      plan: "trial",
+      stripeCustomerId: null,
+      stripeSubscriptionId: null,
+      status: "trialing",
+      limiteClientes: limiteAlumnosCoach("trial", "trialing"),
+      currentPeriodEnd: trialEnd,
+      cancelAtPeriodEnd: false,
+      trialEnd
+    });
+
+    return res.json({
+      ok: true,
+      trial_dias: TRIAL_DIAS,
+      trial_end: trialEnd,
+      limite_alumnos: limiteAlumnosCoach("trial", "trialing"),
+      mensaje: `Trial activo ${TRIAL_DIAS} días · hasta 2 alumnos.`
+    });
+  } catch (err) {
+    console.error("iniciarTrialCoach:", err.message);
+    return res.status(500).json({
+      error: err.message || "Error interno al iniciar trial. Revisa logs del servidor."
     });
   }
-
-  const ok = await ascenderUsuarioACoach(db, userId);
-  if (!ok) {
-    return res.status(400).json({ error: "No se pudo activar el trial." });
-  }
-
-  const trialEnd = trialEndIsoDesdeAhora();
-  await upsertSuscripcionCoach(db, {
-    usuarioId: userId,
-    plan: "trial",
-    stripeCustomerId: null,
-    stripeSubscriptionId: null,
-    status: "trialing",
-    limiteClientes: limiteAlumnosCoach("trial", "trialing"),
-    currentPeriodEnd: trialEnd,
-    cancelAtPeriodEnd: false,
-    trialEnd
-  });
-
-  res.json({
-    ok: true,
-    trial_dias: TRIAL_DIAS,
-    trial_end: trialEnd,
-    limite_alumnos: limiteAlumnosCoach("trial", "trialing"),
-    mensaje: `Trial activo ${TRIAL_DIAS} días · hasta 2 alumnos.`
-  });
 }
 
 async function crearCheckoutAtleta(req, res, db) {
