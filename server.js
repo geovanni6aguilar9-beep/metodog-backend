@@ -11,6 +11,7 @@ const {
   requireAuthMiddleware,
   assertAccesoUsuario,
   assertCoachOAdmin,
+  assertSuperAdmin,
   assertComunidadSelf
 } = require("./auth");
 const {
@@ -174,8 +175,22 @@ async function inicializarBD() {
       tarifa_base REAL,
       whatsapp TEXT,
       visible_en_directorio INTEGER DEFAULT 1,
+      verificado INTEGER DEFAULT 0,
       FOREIGN KEY(usuario_id) REFERENCES usuarios(id)
     )`);
+    try {
+      await db.execute(
+        "ALTER TABLE perfiles_coach_publicos ADD COLUMN verificado INTEGER DEFAULT 0"
+      );
+    } catch (_) { /* columna ya existe */ }
+    try {
+      await db.execute(`
+        UPDATE perfiles_coach_publicos SET verificado = 1
+        WHERE usuario_id IN (SELECT id FROM usuarios WHERE rol = 'SUPERADMIN')
+      `);
+    } catch (err) {
+      console.warn("migrar verificado SUPERADMIN:", err.message);
+    }
 
     await db.execute(`CREATE TABLE IF NOT EXISTS planes_archivados (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -974,14 +989,14 @@ app.get("/api/directorio/coaches", async (req, res) => {
       SELECT u.id, u.nombre, u.calificacion, u.codigo_invitacion,
         p.foto_url, p.bio, p.especialidad, p.logros, p.tarifa_base, p.whatsapp
       FROM usuarios u
-      LEFT JOIN perfiles_coach_publicos p ON p.usuario_id = u.id
-      LEFT JOIN suscripciones_coach s ON s.usuario_id = u.id
+      INNER JOIN perfiles_coach_publicos p ON p.usuario_id = u.id
+      INNER JOIN suscripciones_coach s ON s.usuario_id = u.id
       WHERE u.rol IN ('COACH', 'SUPERADMIN')
-        AND (p.visible_en_directorio IS NULL OR p.visible_en_directorio = 1)
+        AND COALESCE(p.verificado, 0) = 1
+        AND COALESCE(p.visible_en_directorio, 1) = 1
         AND (
           u.rol = 'SUPERADMIN'
-          OR s.usuario_id IS NULL
-          OR s.status IN ('active', 'trialing')
+          OR s.status = 'active'
         )
       ORDER BY u.calificacion DESC, u.nombre ASC
     `);
@@ -1007,13 +1022,23 @@ app.get("/api/directorio/mi-perfil/:usuario_id", async (req, res) => {
       return res.status(403).json({ error: "Solo coaches pueden tener perfil público" });
     }
     const perfilRes = await db.execute({
-      sql: "SELECT foto_url, bio, especialidad, logros, tarifa_base, whatsapp, visible_en_directorio FROM perfiles_coach_publicos WHERE usuario_id = ?",
+      sql: `SELECT foto_url, bio, especialidad, logros, tarifa_base, whatsapp, visible_en_directorio, verificado
+            FROM perfiles_coach_publicos WHERE usuario_id = ?`,
+      args: [req.params.usuario_id]
+    });
+    const subRes = await db.execute({
+      sql: "SELECT status, plan FROM suscripciones_coach WHERE usuario_id = ?",
       args: [req.params.usuario_id]
     });
     const perfil = perfilRes.rows[0] || {
-      foto_url: '', bio: '', especialidad: '', logros: '', tarifa_base: null, whatsapp: '', visible_en_directorio: 1
+      foto_url: '', bio: '', especialidad: '', logros: '', tarifa_base: null, whatsapp: '',
+      visible_en_directorio: 1, verificado: 0
     };
-    res.json({ usuario: user, perfil });
+    res.json({
+      usuario: user,
+      perfil,
+      suscripcion: subRes.rows[0] || null
+    });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -1052,9 +1077,99 @@ app.post("/api/directorio/guardar-perfil", async (req, res) => {
         visible_en_directorio === false || visible_en_directorio === 0 ? 0 : 1
       ]
     });
-    res.json({ mensaje: "Perfil público guardado" });
+    res.json({
+      mensaje: "Perfil público guardado. Aparecerás en el catálogo cuando MétodoG verifique tu cuenta."
+    });
   } catch (err) {
     console.error("Error guardar perfil coach:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/** SUPERADMIN — revisión manual de coaches para el directorio público (§15 paso 4). */
+app.get("/api/directorio/admin/revision", async (req, res) => {
+  if (!assertSuperAdmin(req, res)) return;
+  try {
+    const result = await db.execute(`
+      SELECT u.id, u.nombre, u.email, u.calificacion, u.codigo_invitacion,
+        p.foto_url, p.bio, p.especialidad, p.logros, p.tarifa_base, p.whatsapp,
+        COALESCE(p.verificado, 0) AS verificado,
+        COALESCE(p.visible_en_directorio, 1) AS visible_en_directorio,
+        s.status AS sub_status, s.plan AS sub_plan
+      FROM usuarios u
+      LEFT JOIN perfiles_coach_publicos p ON p.usuario_id = u.id
+      LEFT JOIN suscripciones_coach s ON s.usuario_id = u.id
+      WHERE u.rol = 'COACH'
+      ORDER BY COALESCE(p.verificado, 0) ASC, u.nombre ASC
+    `);
+    res.json(result.rows || []);
+  } catch (err) {
+    console.error("Error admin revision directorio:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put("/api/directorio/admin/verificar", async (req, res) => {
+  if (!assertSuperAdmin(req, res)) return;
+  const { usuario_id, verificado, visible_en_directorio } = req.body || {};
+  const uid = parseInt(usuario_id, 10);
+  if (!uid || Number.isNaN(uid)) {
+    return res.status(400).json({ error: "usuario_id requerido" });
+  }
+
+  const flagVerificado = verificado === true || verificado === 1 || verificado === "1" ? 1 : 0;
+  let visibleFinal = 0;
+  if (visible_en_directorio != null) {
+    visibleFinal =
+      visible_en_directorio === false || visible_en_directorio === 0 || visible_en_directorio === "0"
+        ? 0
+        : 1;
+  } else {
+    visibleFinal = flagVerificado ? 1 : 0;
+  }
+
+  try {
+    const userRes = await db.execute({
+      sql: "SELECT id, rol FROM usuarios WHERE id = ?",
+      args: [uid]
+    });
+    if (userRes.rows.length === 0) return res.status(404).json({ error: "Usuario no encontrado" });
+    if (userRes.rows[0].rol !== "COACH") {
+      return res.status(400).json({ error: "Solo coaches pueden verificarse en el directorio" });
+    }
+
+    if (flagVerificado) {
+      const subRes = await db.execute({
+        sql: "SELECT status FROM suscripciones_coach WHERE usuario_id = ?",
+        args: [uid]
+      });
+      if (subRes.rows[0]?.status !== "active") {
+        return res.status(400).json({
+          error: "El coach debe tener suscripción de pago activa (no trial) para aparecer en el directorio."
+        });
+      }
+    }
+
+    await db.execute({
+      sql: `INSERT INTO perfiles_coach_publicos (usuario_id, verificado, visible_en_directorio)
+            VALUES (?, ?, ?)
+            ON CONFLICT(usuario_id) DO UPDATE SET
+              verificado = excluded.verificado,
+              visible_en_directorio = excluded.visible_en_directorio`,
+      args: [uid, flagVerificado, visibleFinal]
+    });
+
+    res.json({
+      ok: true,
+      usuario_id: uid,
+      verificado: !!flagVerificado,
+      visible_en_directorio: !!visibleFinal,
+      mensaje: flagVerificado
+        ? "Coach verificado — visible en el directorio público."
+        : "Verificación revocada — ya no aparece en el catálogo."
+    });
+  } catch (err) {
+    console.error("Error admin verificar coach:", err.message);
     res.status(500).json({ error: err.message });
   }
 });

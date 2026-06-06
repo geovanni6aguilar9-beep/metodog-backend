@@ -115,6 +115,12 @@ async function assertCoachOAdmin(db, req, res) {
   return false;
 }
 
+function assertSuperAdmin(req, res) {
+  if (req.user.rol === "SUPERADMIN") return true;
+  res.status(403).json({ error: "Solo SUPERADMIN puede usar esta función" });
+  return false;
+}
+
 /** Comunidad: solo el propio id en la URL (no suplantar a otro coach/admin). */
 function assertComunidadSelf(req, res) {
   if (parseInt(req.params.id, 10) !== parseInt(req.user.id, 10)) {
@@ -132,6 +138,7 @@ module.exports = {
   puedeAccederUsuario,
   assertAccesoUsuario,
   assertCoachOAdmin,
+  assertSuperAdmin,
   assertComunidadSelf,
   isPublicApiRoute
 };
