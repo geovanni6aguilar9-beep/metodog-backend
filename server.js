@@ -17,8 +17,10 @@ const {
   crearCheckoutAtleta,
   crearCheckoutCoach,
   crearPortalCoach,
+  iniciarTrialCoach,
   handleStripeWebhook,
-  enrichUsuarioConSuscripcion
+  enrichUsuarioConSuscripcion,
+  migrarPaquetesGrandfathered
 } = require("./pagos");
 const {
   ensureTablesNotificaciones,
@@ -189,6 +191,20 @@ async function inicializarBD() {
     try {
       await db.execute("ALTER TABLE usuarios ADD COLUMN paquete_rutina_6_dias INTEGER DEFAULT 0");
     } catch (_) { /* columna ya existe */ }
+    try {
+      await db.execute("ALTER TABLE usuarios ADD COLUMN paquete_grandfathered INTEGER DEFAULT 0");
+    } catch (_) { /* columna ya existe */ }
+
+    await db.execute(`CREATE TABLE IF NOT EXISTS suscripciones_atleta (
+      usuario_id INTEGER PRIMARY KEY,
+      stripe_customer_id TEXT,
+      stripe_subscription_id TEXT UNIQUE,
+      status TEXT NOT NULL DEFAULT 'active',
+      current_period_end TEXT,
+      cancel_at_period_end INTEGER DEFAULT 0,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY(usuario_id) REFERENCES usuarios(id)
+    )`);
 
     await db.execute(`CREATE TABLE IF NOT EXISTS suscripciones_coach (
       usuario_id INTEGER PRIMARY KEY,
@@ -207,6 +223,13 @@ async function inicializarBD() {
         "ALTER TABLE suscripciones_coach ADD COLUMN cancel_at_period_end INTEGER DEFAULT 0"
       );
     } catch (_) { /* columna ya existe */ }
+    try {
+      await db.execute(
+        "ALTER TABLE suscripciones_coach ADD COLUMN trial_end TEXT"
+      );
+    } catch (_) { /* columna ya existe */ }
+
+    await migrarPaquetesGrandfathered(db);
 
     await ensureTablesNotificaciones(db);
 
@@ -246,7 +269,7 @@ async function inicializarBD() {
     )`);
 
     await seedAlimentosMetodog(db);
-    console.log("✅ Base de datos conectada y lista (historial_fuerza + paquete_6_dias).");
+    console.log("✅ Base de datos conectada (suscripciones atleta/coach + tiers).");
   } catch (error) {
     console.error("❌ Error al conectar con la base de datos:", error.message);
     if (process.env.USE_LOCAL_DB !== "true") {
@@ -539,6 +562,10 @@ app.post("/api/pagos/crear-checkout-coach", async (req, res) => {
   return crearCheckoutCoach(req, res, db);
 });
 
+app.post("/api/pagos/iniciar-trial-coach", async (req, res) => {
+  return iniciarTrialCoach(req, res, db);
+});
+
 app.post("/api/pagos/portal-coach", async (req, res) => {
   return crearPortalCoach(req, res, db);
 });
@@ -596,15 +623,22 @@ app.delete("/api/usuarios/me", async (req, res) => {
 });
 
 app.put("/api/usuarios/paquete-6-dias", async (req, res) => {
+  if (isProduction() && req.user.rol !== "SUPERADMIN") {
+    return res.status(403).json({
+      error: "Activa Full Week PRO desde Paquetes (Stripe). Solo SUPERADMIN puede simular en producción."
+    });
+  }
   const { usuario_id, activo } = req.body;
   if (!usuario_id) return res.status(400).json({ error: "usuario_id requerido" });
   if (parseInt(usuario_id, 10) !== parseInt(req.user.id, 10) && req.user.rol !== "SUPERADMIN") {
     return res.status(403).json({ error: "Solo puedes activar tu propio paquete" });
   }
   try {
+    const flag = activo ? 1 : 0;
+    const grandfather = activo ? 1 : 0;
     const result = await db.execute({
-      sql: "UPDATE usuarios SET paquete_rutina_6_dias = ? WHERE id = ?",
-      args: [activo ? 1 : 0, usuario_id]
+      sql: "UPDATE usuarios SET paquete_rutina_6_dias = ?, paquete_grandfathered = ? WHERE id = ?",
+      args: [flag, grandfather, usuario_id]
     });
     if ((result.rowsAffected ?? 0) === 0) return res.status(404).json({ error: "Usuario no encontrado" });
     res.json({ paquete_rutina_6_dias: !!activo });
@@ -1095,6 +1129,11 @@ app.get("/api/auth/me", async (req, res) => {
 });
 
 app.post("/api/upgrade", async (req, res) => {
+  if (isProduction() && req.user.rol !== "SUPERADMIN") {
+    return res.status(403).json({
+      error: "Conviértete en coach con una suscripción Coach PRO o el trial de 14 días."
+    });
+  }
   if (parseInt(req.body.usuario_id, 10) !== parseInt(req.user.id, 10)) {
     return res.status(403).json({ error: "Solo puedes actualizar tu propia cuenta" });
   }

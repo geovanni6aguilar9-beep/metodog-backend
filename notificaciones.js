@@ -2,6 +2,8 @@
  * Solicitudes de vínculo coach↔cliente e inbox in-app.
  */
 
+const { evaluarSuscripcionCoach } = require("./pagos");
+
 function toNum(v) {
   if (v == null) return null;
   if (typeof v === "bigint") return Number(v);
@@ -56,14 +58,8 @@ async function validarCoachRecibeCliente(db, coachId) {
     return { ok: false, error: "El usuario no es coach", status: 400 };
   }
   if (coach.rol === "COACH") {
-    const subRes = await db.execute({
-      sql: "SELECT status, limite_clientes FROM suscripciones_coach WHERE usuario_id = ?",
-      args: [coachId]
-    });
-    const status = subRes.rows[0]?.status;
-    const limite = subRes.rows[0]?.limite_clientes ?? 0;
-    const activa = status === "active" || status === "trialing";
-    if (!activa) {
+    const sub = await evaluarSuscripcionCoach(db, coachId);
+    if (!sub) {
       return { ok: false, error: "Este coach no tiene suscripción activa en MétodoG", status: 400 };
     }
     const countRes = await db.execute({
@@ -71,7 +67,7 @@ async function validarCoachRecibeCliente(db, coachId) {
       args: [coachId]
     });
     const count = Number(countRes.rows[0]?.count || 0);
-    if (limite && count >= Number(limite)) {
+    if (sub.limite_efectivo && count >= Number(sub.limite_efectivo)) {
       return { ok: false, error: "Este coach alcanzó su límite de alumnos", status: 400 };
     }
   }

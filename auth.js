@@ -32,6 +32,7 @@ function sanitizeUsuario(row) {
     usuario.coach_id = null;
   }
   usuario.paquete_rutina_6_dias = !!usuario.paquete_rutina_6_dias;
+  usuario.paquete_grandfathered = !!usuario.paquete_grandfathered;
   return usuario;
 }
 
