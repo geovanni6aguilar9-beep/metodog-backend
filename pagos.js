@@ -52,6 +52,53 @@ function montoCoachCentavos(plan) {
   return Math.max(1000, monto * 100);
 }
 
+/** Price ID de Stripe Dashboard (modo test/live). Si falta, checkout usa price_data inline. */
+function stripePriceIdAtleta() {
+  return (process.env.STRIPE_PRICE_FULL_WEEK || process.env.STRIPE_PRICE_ATLETA || "").trim();
+}
+
+function stripePriceIdCoach(plan) {
+  const p = normalizarPlanCoach(plan).toUpperCase();
+  return (process.env[`STRIPE_PRICE_COACH_${p}`] || "").trim();
+}
+
+function planDesdePriceId(priceId) {
+  if (!priceId) return null;
+  const tiers = ["starter", "growth", "pro", "studio", "elite"];
+  for (const tier of tiers) {
+    if (stripePriceIdCoach(tier) === priceId) return tier;
+  }
+  return null;
+}
+
+function productoDesdeMetadata(meta) {
+  const producto = (meta?.producto || "").trim();
+  if (producto === PRODUCTO_ATLETA || producto === PRODUCTO_COACH || producto === PRODUCTO_PAQUETE_LEGACY) {
+    return producto;
+  }
+  return null;
+}
+
+function inferirProductoSuscripcion(subscription) {
+  const fromMeta = productoDesdeMetadata(subscription.metadata);
+  if (fromMeta) return fromMeta;
+
+  const priceId = subscription.items?.data?.[0]?.price?.id;
+  if (priceId && priceId === stripePriceIdAtleta()) return PRODUCTO_ATLETA;
+  if (planDesdePriceId(priceId)) return PRODUCTO_COACH;
+
+  return null;
+}
+
+function inferirPlanSuscripcion(subscription, planHint) {
+  const fromMeta = normalizarPlanCoach(subscription.metadata?.plan || planHint);
+  if (subscription.metadata?.plan || planHint) return fromMeta;
+
+  const priceId = subscription.items?.data?.[0]?.price?.id;
+  const fromPrice = planDesdePriceId(priceId);
+  return fromPrice || fromMeta;
+}
+
 const generarCodigo = () => Math.random().toString(36).substring(2, 8).toUpperCase();
 
 async function upsertSuscripcionAtleta(db, {
@@ -274,7 +321,7 @@ async function activarCoachDesdeStripe(db, stripe, usuarioId, subscriptionId, cu
     const sub = await stripe.subscriptions.retrieve(subscriptionId);
     status = sub.status || "active";
     cancelAtPeriodEnd = !!sub.cancel_at_period_end;
-    plan = normalizarPlanCoach(sub.metadata?.plan || plan);
+    plan = inferirPlanSuscripcion(sub, planHint);
     if (sub.current_period_end) {
       currentPeriodEnd = new Date(sub.current_period_end * 1000).toISOString();
     }
@@ -314,7 +361,7 @@ async function syncSuscripcionCoachPorStripeId(db, stripe, stripeSubscriptionId)
 
   const uid = parseInt(usuarioId, 10);
   const status = sub.status || "canceled";
-  const plan = normalizarPlanCoach(sub.metadata?.plan);
+  const plan = inferirPlanSuscripcion(sub, null);
   const currentPeriodEnd = sub.current_period_end
     ? new Date(sub.current_period_end * 1000).toISOString()
     : null;
@@ -461,6 +508,24 @@ async function crearCheckoutAtleta(req, res, db) {
   }
 
   try {
+    const priceId = stripePriceIdAtleta();
+    const lineItems = priceId
+      ? [{ price: priceId, quantity: 1 }]
+      : [
+          {
+            quantity: 1,
+            price_data: {
+              currency: "mxn",
+              unit_amount: montoCentavos("STRIPE_ATLETA_PRECIO_MXN", MONTO_ATLETA_MXN_DEFAULT),
+              recurring: { interval: "month" },
+              product_data: {
+                name: PRODUCTO_ATLETA_NOMBRE,
+                description: "Diseño 6 días + calculadora clínica Katch. Suscripción mensual."
+              }
+            }
+          }
+        ];
+
     const session = await stripe.checkout.sessions.create({
       mode: "subscription",
       payment_method_types: ["card"],
@@ -476,24 +541,11 @@ async function crearCheckoutAtleta(req, res, db) {
           producto: PRODUCTO_ATLETA
         }
       },
-      line_items: [
-        {
-          quantity: 1,
-          price_data: {
-            currency: "mxn",
-            unit_amount: montoCentavos("STRIPE_ATLETA_PRECIO_MXN", MONTO_ATLETA_MXN_DEFAULT),
-            recurring: { interval: "month" },
-            product_data: {
-              name: PRODUCTO_ATLETA_NOMBRE,
-              description: "Diseño 6 días + calculadora clínica Katch. Suscripción mensual."
-            }
-          }
-        }
-      ],
+      line_items: lineItems,
       success_url: successUrl,
       cancel_url: cancelUrl
     });
-    res.json({ url: session.url, session_id: session.id, modo: "subscription" });
+    res.json({ url: session.url, session_id: session.id, modo: "subscription", price_id: priceId || null });
   } catch (err) {
     console.error("Stripe checkout atleta:", err.message);
     res.status(500).json({ error: err.message || "No se pudo crear la sesión de pago" });
@@ -525,7 +577,7 @@ async function crearCheckoutCoach(req, res, db) {
   if (user.rol === "SUPERADMIN") {
     return res.status(400).json({ error: "Tu cuenta ya tiene acceso total de administrador." });
   }
-  if (user.sub_status === "active" || (user.sub_status === "trialing" && !trialExpirado(user.trial_end))) {
+  if (user.sub_status === "active") {
     return res.status(400).json({ error: "Ya tienes una suscripción Coach activa." });
   }
 
@@ -543,6 +595,24 @@ async function crearCheckoutCoach(req, res, db) {
   const montoMxn = precioCoachMxn(plan);
 
   try {
+    const priceId = stripePriceIdCoach(plan);
+    const lineItems = priceId
+      ? [{ price: priceId, quantity: 1 }]
+      : [
+          {
+            quantity: 1,
+            price_data: {
+              currency: "mxn",
+              unit_amount: montoCoachCentavos(plan),
+              recurring: { interval: "month" },
+              product_data: {
+                name: `${PRODUCTO_COACH_NOMBRE} — ${plan.charAt(0).toUpperCase() + plan.slice(1)}`,
+                description: `Suscripción mensual · hasta ${limite} alumnos`
+              }
+            }
+          }
+        ];
+
     const session = await stripe.checkout.sessions.create({
       mode: "subscription",
       payment_method_types: ["card"],
@@ -560,20 +630,7 @@ async function crearCheckoutCoach(req, res, db) {
           plan
         }
       },
-      line_items: [
-        {
-          quantity: 1,
-          price_data: {
-            currency: "mxn",
-            unit_amount: montoCoachCentavos(plan),
-            recurring: { interval: "month" },
-            product_data: {
-              name: `${PRODUCTO_COACH_NOMBRE} — ${plan.charAt(0).toUpperCase() + plan.slice(1)}`,
-              description: `Suscripción mensual · hasta ${limite} alumnos`
-            }
-          }
-        }
-      ],
+      line_items: lineItems,
       success_url: successUrl,
       cancel_url: cancelUrl
     });
@@ -583,12 +640,79 @@ async function crearCheckoutCoach(req, res, db) {
       session_id: session.id,
       plan,
       precio_mxn: montoMxn,
-      limite_alumnos: limite
+      limite_alumnos: limite,
+      price_id: priceId || null
     });
   } catch (err) {
     console.error("Stripe checkout coach:", err.message);
     res.status(500).json({ error: err.message || "No se pudo crear la suscripción" });
   }
+}
+
+async function procesarCheckoutCompletado(db, stripe, session) {
+  const usuarioId = session.metadata?.usuario_id || session.client_reference_id;
+  if (!usuarioId) {
+    throw new Error(`checkout.session.completed sin usuario_id (${session.id})`);
+  }
+
+  const uid = parseInt(usuarioId, 10);
+  let producto = productoDesdeMetadata(session.metadata);
+
+  if (!producto && session.subscription) {
+    const sub = await stripe.subscriptions.retrieve(String(session.subscription));
+    producto = inferirProductoSuscripcion(sub);
+  }
+
+  if (!producto) {
+    throw new Error(`checkout.session.completed sin producto reconocido (${session.id})`);
+  }
+
+  if (producto === PRODUCTO_ATLETA) {
+    await activarAtletaDesdeStripe(db, stripe, uid, session.subscription, session.customer);
+    console.log(`✅ Webhook: Full Week PRO activado usuario ${usuarioId}`);
+    return;
+  }
+
+  if (producto === PRODUCTO_COACH) {
+    const ok = await activarCoachDesdeStripe(
+      db,
+      stripe,
+      uid,
+      session.subscription,
+      session.customer,
+      session.metadata?.plan
+    );
+    if (!ok) throw new Error(`coach no activado usuario ${usuarioId}`);
+    console.log(`✅ Webhook: Coach PRO (${session.metadata?.plan || "?"}) usuario ${usuarioId}`);
+    return;
+  }
+
+  if (producto === PRODUCTO_PAQUETE_LEGACY) {
+    const ok = await activarPaqueteGrandfathered(db, uid);
+    if (!ok) throw new Error(`paquete legacy no actualizado usuario ${usuarioId}`);
+    console.log(`✅ Webhook: paquete legacy grandfathered usuario ${usuarioId}`);
+  }
+}
+
+async function procesarSuscripcionStripe(db, stripe, subscription, eventType) {
+  const producto = inferirProductoSuscripcion(subscription);
+
+  if (producto === PRODUCTO_ATLETA) {
+    await syncSuscripcionAtletaPorStripeId(db, stripe, subscription.id);
+    console.log(`🔄 Webhook ${eventType}: atleta sub ${subscription.id} → ${subscription.status}`);
+    return;
+  }
+
+  if (producto === PRODUCTO_COACH || !producto) {
+    await syncSuscripcionCoachPorStripeId(db, stripe, subscription.id);
+    console.log(
+      `🔄 Webhook ${eventType}: coach sub ${subscription.id} → ${subscription.status}` +
+        (producto ? "" : " (producto inferido por fila DB)")
+    );
+    return;
+  }
+
+  console.warn(`Webhook ${eventType}: suscripción ${subscription.id} sin producto reconocido`);
 }
 
 async function handleStripeWebhook(req, res, db) {
@@ -611,69 +735,27 @@ async function handleStripeWebhook(req, res, db) {
   }
 
   try {
-    if (event.type === "checkout.session.completed") {
-      const session = event.data.object;
-      const usuarioId = session.metadata?.usuario_id || session.client_reference_id;
-      const producto = session.metadata?.producto;
+    switch (event.type) {
+      case "checkout.session.completed":
+        await procesarCheckoutCompletado(db, stripe, event.data.object);
+        break;
 
-      if (!usuarioId) {
-        console.error("Webhook sin usuario_id en sesión", session.id);
-        return res.status(400).send("Sin usuario_id");
-      }
+      case "customer.subscription.updated":
+      case "customer.subscription.deleted":
+        await procesarSuscripcionStripe(db, stripe, event.data.object, event.type);
+        break;
 
-      const uid = parseInt(usuarioId, 10);
-
-      if (producto === PRODUCTO_ATLETA) {
-        await activarAtletaDesdeStripe(db, stripe, uid, session.subscription, session.customer);
-        console.log(`✅ Full Week PRO activado usuario ${usuarioId}`);
-      } else if (producto === PRODUCTO_COACH) {
-        const ok = await activarCoachDesdeStripe(
-          db,
-          stripe,
-          uid,
-          session.subscription,
-          session.customer,
-          session.metadata?.plan
-        );
-        if (!ok) {
-          console.error("Webhook: coach no activado", usuarioId);
-          return res.status(500).send("Usuario no encontrado");
+      case "invoice.payment_failed": {
+        const invoice = event.data.object;
+        if (invoice.subscription) {
+          const sub = await stripe.subscriptions.retrieve(String(invoice.subscription));
+          await procesarSuscripcionStripe(db, stripe, sub, event.type);
         }
-        console.log(`✅ Coach PRO (${session.metadata?.plan}) usuario ${usuarioId}`);
-      } else if (producto === PRODUCTO_PAQUETE_LEGACY) {
-        const ok = await activarPaqueteGrandfathered(db, uid);
-        if (!ok) {
-          console.error("Webhook: paquete legacy no actualizado", usuarioId);
-          return res.status(500).send("Usuario no encontrado");
-        }
-        console.log(`✅ Paquete legacy grandfathered usuario ${usuarioId}`);
+        break;
       }
-    }
 
-    if (
-      event.type === "customer.subscription.updated" ||
-      event.type === "customer.subscription.deleted"
-    ) {
-      const subscription = event.data.object;
-      const producto = subscription.metadata?.producto;
-      if (producto === PRODUCTO_ATLETA) {
-        await syncSuscripcionAtletaPorStripeId(db, stripe, subscription.id);
-      } else {
-        await syncSuscripcionCoachPorStripeId(db, stripe, subscription.id);
-      }
-      console.log(`🔄 Suscripción ${subscription.id} (${subscription.status})`);
-    }
-
-    if (event.type === "invoice.payment_failed") {
-      const invoice = event.data.object;
-      if (invoice.subscription) {
-        const sub = await stripe.subscriptions.retrieve(invoice.subscription);
-        if (sub.metadata?.producto === PRODUCTO_ATLETA) {
-          await syncSuscripcionAtletaPorStripeId(db, stripe, invoice.subscription);
-        } else {
-          await syncSuscripcionCoachPorStripeId(db, stripe, invoice.subscription);
-        }
-      }
+      default:
+        console.log(`Webhook ignorado: ${event.type}`);
     }
 
     res.json({ received: true });
