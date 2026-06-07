@@ -25,9 +25,13 @@ function getStripe() {
   return new Stripe(key);
 }
 
+const { withMetodogAliases } = require("./corsConfig");
+
 function getFrontendOrigins() {
-  const raw = (process.env.FRONTEND_URL || "http://localhost:5173").trim();
-  return raw.split(",").map(s => s.trim()).filter(Boolean);
+  const raw = (process.env.FRONTEND_URL || process.env.CORS_ORIGINS || "http://localhost:5173").trim();
+  const list = raw.split(",").map(s => s.trim()).filter(Boolean);
+  if (list.length === 0) return ["http://localhost:5173"];
+  return withMetodogAliases(list);
 }
 
 function isAllowedReturnUrl(url) {
