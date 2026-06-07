@@ -513,24 +513,25 @@ async function crearCheckoutAtleta(req, res, db) {
 
   try {
     const priceId = stripePriceIdAtleta();
-    const lineItems = priceId
-      ? [{ price: priceId, quantity: 1 }]
-      : [
-          {
-            quantity: 1,
-            price_data: {
-              currency: "mxn",
-              unit_amount: montoCentavos("STRIPE_ATLETA_PRECIO_MXN", MONTO_ATLETA_MXN_DEFAULT),
-              recurring: { interval: "month" },
-              product_data: {
-                name: PRODUCTO_ATLETA_NOMBRE,
-                description: "Diseño 6 días + calculadora clínica Katch. Suscripción mensual."
+    const buildLineItems = (usePriceId) =>
+      usePriceId
+        ? [{ price: usePriceId, quantity: 1 }]
+        : [
+            {
+              quantity: 1,
+              price_data: {
+                currency: "mxn",
+                unit_amount: montoCentavos("STRIPE_ATLETA_PRECIO_MXN", MONTO_ATLETA_MXN_DEFAULT),
+                recurring: { interval: "month" },
+                product_data: {
+                  name: PRODUCTO_ATLETA_NOMBRE,
+                  description: "Diseño 6 días + calculadora clínica Katch. Suscripción mensual."
+                }
               }
             }
-          }
-        ];
+          ];
 
-    const session = await stripe.checkout.sessions.create({
+    const sessionPayload = {
       mode: "subscription",
       payment_method_types: ["card"],
       customer_email: user.email || undefined,
@@ -545,10 +546,30 @@ async function crearCheckoutAtleta(req, res, db) {
           producto: PRODUCTO_ATLETA
         }
       },
-      line_items: lineItems,
       success_url: successUrl,
       cancel_url: cancelUrl
-    });
+    };
+
+    let session;
+    try {
+      session = await stripe.checkout.sessions.create({
+        ...sessionPayload,
+        line_items: buildLineItems(priceId)
+      });
+    } catch (err) {
+      if (priceId && /no such price/i.test(err.message)) {
+        console.error(
+          `Stripe checkout atleta: Price ID inválido (${priceId}). Usando precio inline. Actualiza STRIPE_PRICE_FULL_WEEK en Render con un price_ live.`
+        );
+        session = await stripe.checkout.sessions.create({
+          ...sessionPayload,
+          line_items: buildLineItems(null)
+        });
+      } else {
+        throw err;
+      }
+    }
+
     res.json({ url: session.url, session_id: session.id, modo: "subscription", price_id: priceId || null });
   } catch (err) {
     console.error("Stripe checkout atleta:", err.message);
@@ -600,24 +621,25 @@ async function crearCheckoutCoach(req, res, db) {
 
   try {
     const priceId = stripePriceIdCoach(plan);
-    const lineItems = priceId
-      ? [{ price: priceId, quantity: 1 }]
-      : [
-          {
-            quantity: 1,
-            price_data: {
-              currency: "mxn",
-              unit_amount: montoCoachCentavos(plan),
-              recurring: { interval: "month" },
-              product_data: {
-                name: `${PRODUCTO_COACH_NOMBRE} — ${plan.charAt(0).toUpperCase() + plan.slice(1)}`,
-                description: `Suscripción mensual · hasta ${limite} alumnos`
+    const buildLineItems = (usePriceId) =>
+      usePriceId
+        ? [{ price: usePriceId, quantity: 1 }]
+        : [
+            {
+              quantity: 1,
+              price_data: {
+                currency: "mxn",
+                unit_amount: montoCoachCentavos(plan),
+                recurring: { interval: "month" },
+                product_data: {
+                  name: `${PRODUCTO_COACH_NOMBRE} — ${plan.charAt(0).toUpperCase() + plan.slice(1)}`,
+                  description: `Suscripción mensual · hasta ${limite} alumnos`
+                }
               }
             }
-          }
-        ];
+          ];
 
-    const session = await stripe.checkout.sessions.create({
+    const sessionPayload = {
       mode: "subscription",
       payment_method_types: ["card"],
       customer_email: user.email || undefined,
@@ -634,10 +656,29 @@ async function crearCheckoutCoach(req, res, db) {
           plan
         }
       },
-      line_items: lineItems,
       success_url: successUrl,
       cancel_url: cancelUrl
-    });
+    };
+
+    let session;
+    try {
+      session = await stripe.checkout.sessions.create({
+        ...sessionPayload,
+        line_items: buildLineItems(priceId)
+      });
+    } catch (err) {
+      if (priceId && /no such price/i.test(err.message)) {
+        console.error(
+          `Stripe checkout coach: Price ID inválido (${priceId}). Usando precio inline. Actualiza STRIPE_PRICE_COACH_${plan.toUpperCase()} en Render.`
+        );
+        session = await stripe.checkout.sessions.create({
+          ...sessionPayload,
+          line_items: buildLineItems(null)
+        });
+      } else {
+        throw err;
+      }
+    }
 
     res.json({
       url: session.url,

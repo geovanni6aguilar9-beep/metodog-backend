@@ -323,6 +323,30 @@ function validarStripeEnProduccion() {
   if (faltantes.length > 0) {
     console.warn(`⚠️ Price IDs live faltantes en Render: ${faltantes.join(", ")}`);
   }
+
+  if (!key.startsWith("sk_live_") && !key.startsWith("sk_test_")) return;
+
+  const Stripe = require("stripe");
+  const stripe = new Stripe(key);
+  (async () => {
+    for (const envKey of precios) {
+      const priceId = (process.env[envKey] || "").trim();
+      if (!priceId) continue;
+      try {
+        const price = await stripe.prices.retrieve(priceId);
+        if (!price.active) {
+          console.error(`❌ ${envKey}=${priceId} existe pero está INACTIVO en Stripe.`);
+        } else {
+          console.log(`✓ ${envKey} OK (${priceId}, ${price.currency} ${price.unit_amount / 100})`);
+        }
+      } catch (err) {
+        console.error(
+          `❌ ${envKey}=${priceId} NO válido con tu STRIPE_SECRET_KEY: ${err.message}\n` +
+          `   → Copia el Price ID desde Stripe Dashboard en el MISMO modo (Live) y actualiza Render.`
+        );
+      }
+    }
+  })().catch(err => console.warn("validarStripeEnProduccion:", err.message));
 }
 validarStripeEnProduccion();
 
