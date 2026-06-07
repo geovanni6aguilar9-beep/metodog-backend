@@ -38,6 +38,7 @@ const {
   cancelarSolicitudesPendientesCliente,
   notificarClientePlanActualizado
 } = require("./notificaciones");
+const { evaluarSuscripcionCoach } = require("./coachSuscripcion");
 const { buildMeso2Payload, PROGRAMA_MESO2 } = require("./data/programa-meso2-geovanni");
 const { buildCorsOptions, isProduction } = require("./corsConfig");
 const { generarOpinionInformeMensual } = require("./aiInforme");
@@ -1434,9 +1435,32 @@ app.post("/api/registro", async (req, res) => {
   
   try {
     if (codigoIngresado && codigoIngresado.trim() !== '') {
-      const coachRes = await db.execute({ sql: "SELECT id FROM usuarios WHERE codigo_invitacion = ?", args: [codigoIngresado.toUpperCase()] });
-      if (coachRes.rows.length === 0) return res.status(400).json({ error: "El código de Coach que ingresaste no es válido." });
-      await db.execute({ sql: query, args: [nombre, emailLimpio, hash, 'CLIENTE', null, coachRes.rows[0].id] });
+      const coachRes = await db.execute({
+        sql: "SELECT id FROM usuarios WHERE codigo_invitacion = ?",
+        args: [codigoIngresado.toUpperCase()]
+      });
+      if (coachRes.rows.length === 0) {
+        return res.status(400).json({ error: "El código de Coach que ingresaste no es válido." });
+      }
+      const coachId = coachRes.rows[0].id;
+      const sub = await evaluarSuscripcionCoach(db, coachId);
+      if (!sub) {
+        return res.status(400).json({
+          error: "Este coach no tiene suscripción activa. No puedes registrarte con su código ahora."
+        });
+      }
+      const countRes = await db.execute({
+        sql: "SELECT COUNT(*) as count FROM usuarios WHERE coach_id = ?",
+        args: [coachId]
+      });
+      const count = Number(countRes.rows[0]?.count || 0);
+      if (sub.limite_efectivo && count >= Number(sub.limite_efectivo)) {
+        return res.status(400).json({ error: "Este coach alcanzó su límite de alumnos." });
+      }
+      await db.execute({
+        sql: query,
+        args: [nombre, emailLimpio, hash, 'CLIENTE', null, coachId]
+      });
       res.json({ mensaje: "Ok" });
     } else {
       await db.execute({ sql: query, args: [nombre, emailLimpio, hash, rol, (rol === 'SUPERADMIN' ? generarCodigo() : null), null] });

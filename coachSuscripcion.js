@@ -22,10 +22,16 @@ async function evaluarSuscripcionCoach(db, coachId) {
 
   if (!suscripcionActiva(s.status)) return null;
 
+  const limiteDb = Number(s.limite_clientes);
+  const limiteEfectivo =
+    Number.isFinite(limiteDb) && limiteDb > 0
+      ? limiteDb
+      : limiteAlumnosCoach(s.plan, s.status);
+
   return {
     plan: s.plan,
     status: s.status,
-    limite_efectivo: limiteAlumnosCoach(s.plan, s.status),
+    limite_efectivo: limiteEfectivo,
     trial_end: s.trial_end
   };
 }
