@@ -244,15 +244,17 @@ async function upsertSuscripcionCoach(db, {
   limiteClientes,
   currentPeriodEnd,
   cancelAtPeriodEnd,
-  trialEnd
+  trialEnd,
+  trialUsado
 }) {
   const planNorm = normalizarPlanCoach(plan);
   const limite = limiteClientes ?? limiteAlumnosCoach(planNorm, status);
+  const marcarTrial = trialUsado ? 1 : status === "trialing" ? 1 : 0;
   await db.execute({
     sql: `INSERT INTO suscripciones_coach (
             usuario_id, plan, stripe_customer_id, stripe_subscription_id, status,
-            limite_clientes, current_period_end, cancel_at_period_end, trial_end, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+            limite_clientes, current_period_end, cancel_at_period_end, trial_end, trial_usado, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
           ON CONFLICT(usuario_id) DO UPDATE SET
             plan = excluded.plan,
             stripe_customer_id = excluded.stripe_customer_id,
@@ -262,6 +264,7 @@ async function upsertSuscripcionCoach(db, {
             current_period_end = excluded.current_period_end,
             cancel_at_period_end = excluded.cancel_at_period_end,
             trial_end = excluded.trial_end,
+            trial_usado = MAX(COALESCE(suscripciones_coach.trial_usado, 0), COALESCE(excluded.trial_usado, 0)),
             updated_at = datetime('now')`,
     args: [
       usuarioId,
@@ -272,7 +275,8 @@ async function upsertSuscripcionCoach(db, {
       limite,
       currentPeriodEnd || null,
       cancelAtPeriodEnd ? 1 : 0,
-      trialEnd || null
+      trialEnd || null,
+      marcarTrial
     ]
   });
 }
@@ -523,22 +527,22 @@ async function iniciarTrialCoach(req, res, db) {
     }
 
     const subRes = await db.execute({
-      sql: `SELECT status, trial_end, stripe_subscription_id FROM suscripciones_coach WHERE usuario_id = ?`,
+      sql: `SELECT status, trial_end, stripe_subscription_id, trial_usado FROM suscripciones_coach WHERE usuario_id = ?`,
       args: [userId]
     });
 
     if (subRes.rows.length > 0) {
       const prev = subRes.rows[0];
+      if (Number(prev.trial_usado) === 1 || prev.trial_end || prev.stripe_subscription_id) {
+        return res.status(400).json({
+          error: "Ya usaste tu periodo de prueba. Elige un plan Coach PRO para continuar."
+        });
+      }
       if (prev.status === "trialing" && !trialExpirado(prev.trial_end)) {
         return res.status(400).json({ error: "Ya tienes un trial activo." });
       }
       if (prev.status === "active") {
         return res.status(400).json({ error: "Ya tienes una suscripción Coach activa." });
-      }
-      if (prev.trial_end || prev.stripe_subscription_id) {
-        return res.status(400).json({
-          error: "Ya usaste tu periodo de prueba. Elige un plan Coach PRO para continuar."
-        });
       }
     }
 
@@ -736,6 +740,62 @@ async function crearCheckoutAtleta(req, res, db) {
   }
 }
 
+async function upgradeCoachPlanStripe(req, res, db, stripe, userId, plan) {
+  const subRes = await db.execute({
+    sql: `SELECT stripe_subscription_id, status FROM suscripciones_coach WHERE usuario_id = ?`,
+    args: [userId]
+  });
+  const row = subRes.rows[0];
+  if (!row?.stripe_subscription_id) {
+    return res.status(400).json({ error: "No hay suscripción Stripe para actualizar." });
+  }
+  if (row.status !== "trialing") {
+    return res.status(400).json({ error: "Solo puedes hacer upgrade automático durante el trial activo." });
+  }
+
+  const planNorm = normalizarPlanCoach(plan);
+  const priceId = stripePriceIdCoach(planNorm);
+  if (!priceId) {
+    return res.status(503).json({
+      error: `Falta STRIPE_PRICE_COACH_${planNorm.toUpperCase()} en el servidor para upgrade.`
+    });
+  }
+
+  try {
+    const sub = await stripe.subscriptions.retrieve(row.stripe_subscription_id);
+    const itemId = sub.items?.data?.[0]?.id;
+    if (!itemId) {
+      return res.status(500).json({ error: "Suscripción Stripe sin ítems de precio." });
+    }
+
+    const updated = await stripe.subscriptions.update(row.stripe_subscription_id, {
+      items: [{ id: itemId, price: priceId }],
+      trial_end: "now",
+      cancel_at_period_end: false,
+      metadata: {
+        ...(sub.metadata || {}),
+        usuario_id: String(userId),
+        producto: PRODUCTO_COACH,
+        plan: planNorm
+      },
+      proration_behavior: "none"
+    });
+
+    await syncSuscripcionCoachPorStripeId(db, stripe, updated.id);
+
+    return res.json({
+      ok: true,
+      upgraded: true,
+      plan: planNorm,
+      limite_alumnos: limiteAlumnosCoach(planNorm, updated.status),
+      mensaje: `Plan ${planNorm.charAt(0).toUpperCase() + planNorm.slice(1)} activado. Ya puedes vincular más alumnos.`
+    });
+  } catch (err) {
+    console.error("upgradeCoachPlanStripe:", err.message);
+    return res.status(500).json({ error: err.message || "No se pudo actualizar el plan." });
+  }
+}
+
 async function crearCheckoutCoach(req, res, db) {
   const stripe = getStripe();
   if (!stripe) {
@@ -744,7 +804,8 @@ async function crearCheckoutCoach(req, res, db) {
 
   const userId = parseInt(req.user.id, 10);
   const userRes = await db.execute({
-    sql: `SELECT u.id, u.email, u.nombre, u.rol, u.coach_id, s.status AS sub_status, s.trial_end
+    sql: `SELECT u.id, u.email, u.nombre, u.rol, u.coach_id,
+          s.status AS sub_status, s.trial_end, s.stripe_subscription_id, s.trial_usado
           FROM usuarios u
           LEFT JOIN suscripciones_coach s ON s.usuario_id = u.id
           WHERE u.id = ?`,
@@ -761,12 +822,17 @@ async function crearCheckoutCoach(req, res, db) {
   if (user.rol === "SUPERADMIN") {
     return res.status(400).json({ error: "Tu cuenta ya tiene acceso total de administrador." });
   }
-  if (user.sub_status === "active") {
-    return res.status(400).json({ error: "Ya tienes una suscripción Coach activa." });
-  }
 
   const { success_url, cancel_url, plan: planBody } = req.body || {};
   const plan = normalizarPlanCoach(planBody || process.env.STRIPE_COACH_PLAN || "starter");
+
+  if (user.sub_status === "trialing" && user.stripe_subscription_id) {
+    return upgradeCoachPlanStripe(req, res, db, stripe, userId, plan);
+  }
+
+  if (user.sub_status === "active") {
+    return res.status(400).json({ error: "Ya tienes una suscripción Coach activa." });
+  }
   const base = getFrontendOrigins()[0];
   const successUrl = success_url || `${base}/?coach_success=true`;
   const cancelUrl = cancel_url || `${base}/?coach_canceled=true`;
@@ -1047,7 +1113,7 @@ async function enrichUsuarioConSuscripcion(db, usuario) {
 
   const subRes = await db.execute({
     sql: `SELECT plan, status, limite_clientes, current_period_end, cancel_at_period_end, trial_end,
-          stripe_customer_id, stripe_subscription_id
+          stripe_customer_id, stripe_subscription_id, trial_usado
           FROM suscripciones_coach WHERE usuario_id = ?`,
     args: [usuario.id]
   });
@@ -1072,6 +1138,7 @@ async function enrichUsuarioConSuscripcion(db, usuario) {
     usuario.coach_trial_end = s.trial_end;
     usuario.coach_necesita_suscripcion = false;
     usuario.coach_stripe_vinculado = !!(s.stripe_subscription_id && s.stripe_customer_id);
+    usuario.coach_trial_usado = !!s.trial_usado;
   } else {
     usuario.coach_plan = null;
     usuario.coach_suscripcion_status = null;
@@ -1083,6 +1150,7 @@ async function enrichUsuarioConSuscripcion(db, usuario) {
     usuario.coach_trial_end = null;
     usuario.coach_necesita_suscripcion = usuario.rol === "COACH";
     usuario.coach_stripe_vinculado = false;
+    usuario.coach_trial_usado = false;
   }
 
   if (usuario.rol === "SUPERADMIN") {
@@ -1090,6 +1158,7 @@ async function enrichUsuarioConSuscripcion(db, usuario) {
     usuario.coach_necesita_suscripcion = false;
     usuario.coach_stripe_vinculado = false;
     usuario.coach_en_trial = false;
+    usuario.coach_trial_usado = false;
   }
 
   return usuario;

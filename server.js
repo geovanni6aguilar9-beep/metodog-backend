@@ -245,6 +245,18 @@ async function inicializarBD() {
         "ALTER TABLE suscripciones_coach ADD COLUMN trial_end TEXT"
       );
     } catch (_) { /* columna ya existe */ }
+    try {
+      await db.execute(
+        "ALTER TABLE suscripciones_coach ADD COLUMN trial_usado INTEGER DEFAULT 0"
+      );
+    } catch (_) { /* columna ya existe */ }
+    try {
+      await db.execute(`
+        UPDATE suscripciones_coach SET trial_usado = 1
+        WHERE COALESCE(trial_usado, 0) = 0
+          AND (trial_end IS NOT NULL OR stripe_subscription_id IS NOT NULL)
+      `);
+    } catch (_) { /* ignore */ }
 
     await migrarPaquetesGrandfathered(db);
 
