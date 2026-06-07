@@ -178,11 +178,52 @@ async function resetSuscripcionCoachStripeObsoleto(db, userId) {
             current_period_end = NULL,
             trial_end = NULL,
             limite_clientes = 0,
+            trial_usado = 1,
             updated_at = datetime('now')
           WHERE usuario_id = ?`,
     args: [userId]
   });
   return (result.rowsAffected ?? 0) > 0;
+}
+
+function mensajeErrorPagoStripe(err) {
+  const code = err?.code || err?.raw?.code;
+  const decline = err?.decline_code || err?.raw?.decline_code;
+  if (
+    code === "card_declined" ||
+    decline === "insufficient_funds" ||
+    decline === "generic_decline"
+  ) {
+    return "Tu tarjeta no tiene fondos suficientes o fue rechazada. No se activó el plan.";
+  }
+  if ((err?.statusCode || err?.raw?.statusCode) === 402) {
+    return "No se pudo cobrar la suscripción. Verifica tu tarjeta e inténtalo de nuevo.";
+  }
+  return err?.message || "No se pudo procesar el pago.";
+}
+
+async function pagoUpgradeCoachConfirmado(stripe, subscription) {
+  const subStatus = subscription?.status;
+  if (
+    subStatus === "past_due" ||
+    subStatus === "incomplete" ||
+    subStatus === "incomplete_expired" ||
+    subStatus === "trialing"
+  ) {
+    return false;
+  }
+
+  const invRef = subscription?.latest_invoice;
+  if (!invRef) {
+    return subStatus === "active";
+  }
+
+  const invoice =
+    typeof invRef === "string" ? await stripe.invoices.retrieve(invRef) : invRef;
+
+  if (invoice?.status === "paid") return true;
+  if (invoice?.status === "open" || invoice?.status === "uncollectible") return false;
+  return subStatus === "active" && invoice?.status !== "void";
 }
 
 async function resetCoachStripeLive(req, res, db) {
@@ -772,14 +813,24 @@ async function upgradeCoachPlanStripe(req, res, db, stripe, userId, plan) {
       items: [{ id: itemId, price: priceId }],
       trial_end: "now",
       cancel_at_period_end: false,
+      payment_behavior: "error_if_incomplete",
       metadata: {
         ...(sub.metadata || {}),
         usuario_id: String(userId),
         producto: PRODUCTO_COACH,
         plan: planNorm
       },
-      proration_behavior: "none"
+      proration_behavior: "none",
+      expand: ["latest_invoice"]
     });
+
+    const pagoOk = await pagoUpgradeCoachConfirmado(stripe, updated);
+    if (!pagoOk) {
+      await syncSuscripcionCoachPorStripeId(db, stripe, row.stripe_subscription_id);
+      return res.status(402).json({
+        error: "Tu tarjeta no tiene fondos suficientes o fue rechazada. No se activó el plan."
+      });
+    }
 
     await syncSuscripcionCoachPorStripeId(db, stripe, updated.id);
 
@@ -792,7 +843,18 @@ async function upgradeCoachPlanStripe(req, res, db, stripe, userId, plan) {
     });
   } catch (err) {
     console.error("upgradeCoachPlanStripe:", err.message);
-    return res.status(500).json({ error: err.message || "No se pudo actualizar el plan." });
+    try {
+      await syncSuscripcionCoachPorStripeId(db, stripe, row.stripe_subscription_id);
+    } catch (syncErr) {
+      console.warn("Re-sync tras fallo upgrade:", syncErr.message);
+    }
+    const http = err?.statusCode || err?.raw?.statusCode;
+    const esPago =
+      http === 402 ||
+      err?.code === "card_declined" ||
+      err?.decline_code === "insufficient_funds" ||
+      /payment|card|fund|declin/i.test(String(err?.message || ""));
+    return res.status(esPago ? 402 : 500).json({ error: mensajeErrorPagoStripe(err) });
   }
 }
 
@@ -1109,6 +1171,23 @@ async function enrichUsuarioConSuscripcion(db, usuario) {
     usuario.atleta_suscripcion_activa = !!usuario.paquete_grandfathered;
     usuario.atleta_periodo_fin = null;
     usuario.atleta_cancel_at_period_end = false;
+  }
+
+  const stripe = getStripe();
+  if (stripe) {
+    const stripeSubRow = await db.execute({
+      sql: `SELECT stripe_subscription_id FROM suscripciones_coach
+            WHERE usuario_id = ? AND stripe_subscription_id IS NOT NULL`,
+      args: [usuario.id]
+    });
+    const stripeSubId = stripeSubRow.rows[0]?.stripe_subscription_id;
+    if (stripeSubId) {
+      try {
+        await syncSuscripcionCoachPorStripeId(db, stripe, stripeSubId);
+      } catch (err) {
+        console.warn("Sync coach Stripe al login:", err.message);
+      }
+    }
   }
 
   const subRes = await db.execute({
