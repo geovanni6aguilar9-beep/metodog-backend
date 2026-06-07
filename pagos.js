@@ -1,6 +1,7 @@
 const Stripe = require("stripe");
 const {
   TRIAL_DIAS,
+  TRIAL_LIMITE_ALUMNOS,
   MONTO_ATLETA_MXN_DEFAULT,
   PRODUCTO_ATLETA,
   PRODUCTO_COACH,
@@ -95,12 +96,52 @@ function inferirProductoSuscripcion(subscription) {
 }
 
 function inferirPlanSuscripcion(subscription, planHint) {
-  const fromMeta = normalizarPlanCoach(subscription.metadata?.plan || planHint);
-  if (subscription.metadata?.plan || planHint) return fromMeta;
-
   const priceId = subscription.items?.data?.[0]?.price?.id;
   const fromPrice = planDesdePriceId(priceId);
-  return fromPrice || fromMeta;
+  const status = subscription?.status || "canceled";
+
+  if (status === "trialing") {
+    return fromPrice || "starter";
+  }
+
+  if (fromPrice) return fromPrice;
+  return normalizarPlanCoach(subscription.metadata?.plan || planHint);
+}
+
+async function coachSuscripcionPagada(stripe, subscription) {
+  const status = subscription?.status;
+  if (status === "trialing") return true;
+  if (status === "past_due" || status === "incomplete" || status === "incomplete_expired") {
+    return false;
+  }
+  if (status !== "active") return false;
+
+  const invRef = subscription.latest_invoice;
+  if (!invRef) return true;
+
+  const invoice =
+    typeof invRef === "string" ? await stripe.invoices.retrieve(invRef) : invRef;
+
+  if (!invoice) return true;
+  return invoice.status === "paid";
+}
+
+async function inferirPlanCoachDesdeStripe(stripe, subscription, planHint) {
+  const status = subscription?.status || "canceled";
+  const priceId = subscription.items?.data?.[0]?.price?.id;
+  const fromPrice = planDesdePriceId(priceId);
+
+  if (status === "trialing") {
+    return fromPrice || "starter";
+  }
+
+  const pagoOk = await coachSuscripcionPagada(stripe, subscription);
+  if (!pagoOk) {
+    return fromPrice || "starter";
+  }
+
+  if (fromPrice) return fromPrice;
+  return normalizarPlanCoach(subscription.metadata?.plan || planHint);
 }
 
 function trialEndIsoFromStripeSub(sub) {
@@ -467,10 +508,12 @@ async function activarCoachDesdeStripe(db, stripe, usuarioId, subscriptionId, cu
 
   let trialEnd = null;
   if (subscriptionId) {
-    const sub = await stripe.subscriptions.retrieve(subscriptionId);
+    const sub = await stripe.subscriptions.retrieve(subscriptionId, {
+      expand: ["latest_invoice"]
+    });
     status = sub.status || "active";
     cancelAtPeriodEnd = !!sub.cancel_at_period_end;
-    plan = inferirPlanSuscripcion(sub, planHint);
+    plan = await inferirPlanCoachDesdeStripe(stripe, sub, planHint);
     if (sub.current_period_end) {
       currentPeriodEnd = new Date(sub.current_period_end * 1000).toISOString();
     }
@@ -499,7 +542,9 @@ async function activarCoachDesdeStripe(db, stripe, usuarioId, subscriptionId, cu
 }
 
 async function syncSuscripcionCoachPorStripeId(db, stripe, stripeSubscriptionId) {
-  const sub = await stripe.subscriptions.retrieve(stripeSubscriptionId);
+  const sub = await stripe.subscriptions.retrieve(stripeSubscriptionId, {
+    expand: ["latest_invoice"]
+  });
   const usuarioId =
     sub.metadata?.usuario_id ||
     (await db.execute({
@@ -514,7 +559,12 @@ async function syncSuscripcionCoachPorStripeId(db, stripe, stripeSubscriptionId)
 
   const uid = parseInt(usuarioId, 10);
   const status = sub.status || "canceled";
-  const plan = inferirPlanSuscripcion(sub, null);
+  const plan = await inferirPlanCoachDesdeStripe(stripe, sub, null);
+  const pagoOk = await coachSuscripcionPagada(stripe, sub);
+  let limiteClientes = limiteAlumnosCoach(plan, status);
+  if (!pagoOk && status !== "trialing") {
+    limiteClientes = TRIAL_LIMITE_ALUMNOS;
+  }
   const currentPeriodEnd = sub.current_period_end
     ? new Date(sub.current_period_end * 1000).toISOString()
     : null;
@@ -527,7 +577,7 @@ async function syncSuscripcionCoachPorStripeId(db, stripe, stripeSubscriptionId)
     stripeCustomerId: typeof sub.customer === "string" ? sub.customer : sub.customer?.id,
     stripeSubscriptionId: sub.id,
     status,
-    limiteClientes: limiteAlumnosCoach(plan, status),
+    limiteClientes,
     currentPeriodEnd,
     cancelAtPeriodEnd,
     trialEnd
@@ -1207,10 +1257,12 @@ async function enrichUsuarioConSuscripcion(db, usuario) {
       s = { ...s, status: "canceled" };
     }
 
-    usuario.coach_plan = s.plan;
+    const planEfectivo = s.status === "trialing" ? "starter" : s.plan;
+    usuario.coach_plan = planEfectivo;
     usuario.coach_suscripcion_status = s.status;
     usuario.coach_suscripcion_activa = suscripcionActiva(s.status);
-    usuario.coach_limite_clientes = limiteAlumnosCoach(s.plan, s.status);
+    usuario.coach_limite_clientes =
+      s.limite_clientes != null ? s.limite_clientes : limiteAlumnosCoach(planEfectivo, s.status);
     usuario.coach_periodo_fin = s.current_period_end || s.trial_end;
     usuario.coach_cancel_at_period_end = !!s.cancel_at_period_end;
     usuario.coach_en_trial = s.status === "trialing";
