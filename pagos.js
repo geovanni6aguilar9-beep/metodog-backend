@@ -137,7 +137,7 @@ async function inferirPlanCoachDesdeStripe(stripe, subscription, planHint) {
 
   const pagoOk = await coachSuscripcionPagada(stripe, subscription);
   if (!pagoOk) {
-    return fromPrice || "starter";
+    return "starter";
   }
 
   if (fromPrice) return fromPrice;
@@ -218,6 +218,7 @@ async function resetSuscripcionCoachStripeObsoleto(db, userId) {
             cancel_at_period_end = 0,
             current_period_end = NULL,
             trial_end = NULL,
+            plan = 'starter',
             limite_clientes = 0,
             trial_usado = 1,
             updated_at = datetime('now')
@@ -559,8 +560,11 @@ async function syncSuscripcionCoachPorStripeId(db, stripe, stripeSubscriptionId)
 
   const uid = parseInt(usuarioId, 10);
   const status = sub.status || "canceled";
-  const plan = await inferirPlanCoachDesdeStripe(stripe, sub, null);
+  let plan = await inferirPlanCoachDesdeStripe(stripe, sub, null);
   const pagoOk = await coachSuscripcionPagada(stripe, sub);
+  if (!pagoOk && status !== "trialing") {
+    plan = "starter";
+  }
   let limiteClientes = limiteAlumnosCoach(plan, status);
   if (!pagoOk && status !== "trialing") {
     limiteClientes = TRIAL_LIMITE_ALUMNOS;
@@ -1257,19 +1261,38 @@ async function enrichUsuarioConSuscripcion(db, usuario) {
       s = { ...s, status: "canceled" };
     }
 
-    const planEfectivo = s.status === "trialing" ? "starter" : s.plan;
-    usuario.coach_plan = planEfectivo;
-    usuario.coach_suscripcion_status = s.status;
-    usuario.coach_suscripcion_activa = suscripcionActiva(s.status);
-    usuario.coach_limite_clientes =
-      s.limite_clientes != null ? s.limite_clientes : limiteAlumnosCoach(planEfectivo, s.status);
-    usuario.coach_periodo_fin = s.current_period_end || s.trial_end;
-    usuario.coach_cancel_at_period_end = !!s.cancel_at_period_end;
-    usuario.coach_en_trial = s.status === "trialing";
-    usuario.coach_trial_end = s.trial_end;
-    usuario.coach_necesita_suscripcion = false;
-    usuario.coach_stripe_vinculado = !!(s.stripe_subscription_id && s.stripe_customer_id);
-    usuario.coach_trial_usado = !!s.trial_usado;
+    const activa = suscripcionActiva(s.status);
+    if (!activa) {
+      usuario.coach_plan = null;
+      usuario.coach_suscripcion_status = s.status;
+      usuario.coach_suscripcion_activa = false;
+      usuario.coach_limite_clientes = null;
+      usuario.coach_periodo_fin = null;
+      usuario.coach_cancel_at_period_end = false;
+      usuario.coach_en_trial = false;
+      usuario.coach_trial_end = null;
+      usuario.coach_necesita_suscripcion = usuario.rol === "COACH";
+      usuario.coach_stripe_vinculado = !!(s.stripe_subscription_id && s.stripe_customer_id);
+      usuario.coach_trial_usado = !!s.trial_usado;
+    } else {
+      const planEfectivo = s.status === "trialing" ? "starter" : normalizarPlanCoach(s.plan);
+      const limiteCalc = limiteAlumnosCoach(planEfectivo, s.status);
+      const limiteDb = Number(s.limite_clientes);
+      const limiteEfectivo =
+        Number.isFinite(limiteDb) && limiteDb > 0 ? limiteDb : limiteCalc;
+
+      usuario.coach_plan = planEfectivo;
+      usuario.coach_suscripcion_status = s.status;
+      usuario.coach_suscripcion_activa = true;
+      usuario.coach_limite_clientes = limiteEfectivo;
+      usuario.coach_periodo_fin = s.current_period_end || s.trial_end;
+      usuario.coach_cancel_at_period_end = !!s.cancel_at_period_end;
+      usuario.coach_en_trial = s.status === "trialing";
+      usuario.coach_trial_end = s.trial_end;
+      usuario.coach_necesita_suscripcion = false;
+      usuario.coach_stripe_vinculado = !!(s.stripe_subscription_id && s.stripe_customer_id);
+      usuario.coach_trial_usado = !!s.trial_usado;
+    }
   } else {
     usuario.coach_plan = null;
     usuario.coach_suscripcion_status = null;
