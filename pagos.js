@@ -103,6 +103,69 @@ function inferirPlanSuscripcion(subscription, planHint) {
   return fromPrice || fromMeta;
 }
 
+function trialEndIsoFromStripeSub(sub) {
+  if (!sub?.trial_end) return null;
+  return new Date(sub.trial_end * 1000).toISOString();
+}
+
+async function stripeCustomerValido(stripe, customerId) {
+  if (!customerId) return false;
+  try {
+    await stripe.customers.retrieve(customerId);
+    return true;
+  } catch (err) {
+    if (/no such customer/i.test(err.message)) return false;
+    throw err;
+  }
+}
+
+/** Recupera customer live si la BD tiene un cus_ de test u obsoleto. */
+async function recuperarStripeCustomerCoach(db, stripe, userId) {
+  const subRes = await db.execute({
+    sql: `SELECT stripe_customer_id, stripe_subscription_id FROM suscripciones_coach WHERE usuario_id = ?`,
+    args: [userId]
+  });
+  if (subRes.rows.length === 0) {
+    return {
+      customerId: null,
+      error: "No hay suscripción Stripe vinculada. Si estás en trial, elige un plan pagado."
+    };
+  }
+
+  const row = subRes.rows[0];
+  let customerId = row.stripe_customer_id || null;
+  const subId = row.stripe_subscription_id || null;
+
+  if (await stripeCustomerValido(stripe, customerId)) {
+    return { customerId };
+  }
+
+  if (subId) {
+    try {
+      const sub = await stripe.subscriptions.retrieve(subId);
+      const fixed = typeof sub.customer === "string" ? sub.customer : sub.customer?.id;
+      if (fixed && (await stripeCustomerValido(stripe, fixed))) {
+        await db.execute({
+          sql: `UPDATE suscripciones_coach SET stripe_customer_id = ?, updated_at = datetime('now') WHERE usuario_id = ?`,
+          args: [fixed, userId]
+        });
+        console.log(`✓ Stripe customer sincronizado usuario ${userId}: ${fixed}`);
+        return { customerId: fixed };
+      }
+    } catch (err) {
+      if (!/no such subscription/i.test(err.message)) {
+        console.error("recuperarStripeCustomerCoach sub:", err.message);
+      }
+    }
+  }
+
+  return {
+    customerId: null,
+    error:
+      "Tu suscripción en Stripe no coincide con el modo live. Vuelve a suscribirte desde «Elegir plan» o contacta soporte."
+  };
+}
+
 const generarCodigo = () => Math.random().toString(36).substring(2, 8).toUpperCase();
 
 async function upsertSuscripcionAtleta(db, {
@@ -321,6 +384,7 @@ async function activarCoachDesdeStripe(db, stripe, usuarioId, subscriptionId, cu
   let cancelAtPeriodEnd = false;
   let plan = normalizarPlanCoach(planHint);
 
+  let trialEnd = null;
   if (subscriptionId) {
     const sub = await stripe.subscriptions.retrieve(subscriptionId);
     status = sub.status || "active";
@@ -328,6 +392,10 @@ async function activarCoachDesdeStripe(db, stripe, usuarioId, subscriptionId, cu
     plan = inferirPlanSuscripcion(sub, planHint);
     if (sub.current_period_end) {
       currentPeriodEnd = new Date(sub.current_period_end * 1000).toISOString();
+    }
+    trialEnd = trialEndIsoFromStripeSub(sub);
+    if (!customerId) {
+      customerId = typeof sub.customer === "string" ? sub.customer : sub.customer?.id;
     }
   }
 
@@ -343,7 +411,7 @@ async function activarCoachDesdeStripe(db, stripe, usuarioId, subscriptionId, cu
     limiteClientes: limiteAlumnosCoach(plan, status),
     currentPeriodEnd,
     cancelAtPeriodEnd,
-    trialEnd: null
+    trialEnd
   });
 
   return true;
@@ -370,6 +438,7 @@ async function syncSuscripcionCoachPorStripeId(db, stripe, stripeSubscriptionId)
     ? new Date(sub.current_period_end * 1000).toISOString()
     : null;
   const cancelAtPeriodEnd = !!sub.cancel_at_period_end;
+  const trialEnd = trialEndIsoFromStripeSub(sub);
 
   await upsertSuscripcionCoach(db, {
     usuarioId: uid,
@@ -380,7 +449,7 @@ async function syncSuscripcionCoachPorStripeId(db, stripe, stripeSubscriptionId)
     limiteClientes: limiteAlumnosCoach(plan, status),
     currentPeriodEnd,
     cancelAtPeriodEnd,
-    trialEnd: null
+    trialEnd
   });
 
   if (suscripcionActiva(status)) {
@@ -392,10 +461,15 @@ async function syncSuscripcionCoachPorStripeId(db, stripe, stripeSubscriptionId)
 
 async function iniciarTrialCoach(req, res, db) {
   try {
+    const stripe = getStripe();
+    if (!stripe) {
+      return res.status(503).json({ error: "Pagos no configurados (falta STRIPE_SECRET_KEY)" });
+    }
+
     const userId = parseInt(req.user.id, 10);
 
     const userRes = await db.execute({
-      sql: "SELECT id, rol, coach_id FROM usuarios WHERE id = ?",
+      sql: "SELECT id, rol, coach_id, email, nombre FROM usuarios WHERE id = ?",
       args: [userId]
     });
     if (userRes.rows.length === 0) {
@@ -425,45 +499,94 @@ async function iniciarTrialCoach(req, res, db) {
       if (prev.status === "active") {
         return res.status(400).json({ error: "Ya tienes una suscripción Coach activa." });
       }
-      if (prev.trial_end) {
+      if (prev.trial_end || prev.stripe_subscription_id) {
         return res.status(400).json({
           error: "Ya usaste tu periodo de prueba. Elige un plan Coach PRO para continuar."
         });
       }
-      if (prev.stripe_subscription_id) {
-        return res.status(400).json({
-          error: "Ya tuviste una suscripción de pago. Elige un plan en la lista."
-        });
-      }
-      // Fila legacy cancelada sin trial → se reutiliza vía upsert
     }
 
-    const ok = await ascenderUsuarioACoach(db, userId);
-    if (!ok) {
-      return res.status(400).json({
-        error: "No se pudo activar el trial (¿tienes un coach asignado?)."
+    const { success_url, cancel_url } = req.body || {};
+    const base = getFrontendOrigins()[0];
+    const successUrl = success_url || `${base}/?coach_success=true`;
+    const cancelUrl = cancel_url || `${base}/?coach_canceled=true`;
+
+    if (!isAllowedReturnUrl(successUrl) || !isAllowedReturnUrl(cancelUrl)) {
+      return res.status(400).json({ error: "URL de retorno no permitida" });
+    }
+
+    const plan = "starter";
+    const priceId = stripePriceIdCoach(plan);
+    const montoMxn = precioCoachMxn(plan);
+
+    const buildLineItems = (usePriceId) =>
+      usePriceId
+        ? [{ price: usePriceId, quantity: 1 }]
+        : [
+            {
+              quantity: 1,
+              price_data: {
+                currency: "mxn",
+                unit_amount: montoCoachCentavos(plan),
+                recurring: { interval: "month" },
+                product_data: {
+                  name: `${PRODUCTO_COACH_NOMBRE} — Starter`,
+                  description: `Trial ${TRIAL_DIAS} días · luego $${montoMxn} MXN/mes. Tarjeta requerida.`
+                }
+              }
+            }
+          ];
+
+    const sessionPayload = {
+      mode: "subscription",
+      payment_method_types: ["card"],
+      payment_method_collection: "always",
+      customer_email: user.email || undefined,
+      client_reference_id: String(userId),
+      metadata: {
+        usuario_id: String(userId),
+        producto: PRODUCTO_COACH,
+        plan,
+        es_trial: "1"
+      },
+      subscription_data: {
+        trial_period_days: TRIAL_DIAS,
+        metadata: {
+          usuario_id: String(userId),
+          producto: PRODUCTO_COACH,
+          plan
+        }
+      },
+      success_url: successUrl,
+      cancel_url: cancelUrl
+    };
+
+    let session;
+    try {
+      session = await stripe.checkout.sessions.create({
+        ...sessionPayload,
+        line_items: buildLineItems(priceId)
       });
+    } catch (err) {
+      if (priceId && /no such price/i.test(err.message)) {
+        console.error(
+          `Stripe trial coach: Price ID inválido (${priceId}). Usando precio inline.`
+        );
+        session = await stripe.checkout.sessions.create({
+          ...sessionPayload,
+          line_items: buildLineItems(null)
+        });
+      } else {
+        throw err;
+      }
     }
-
-    const trialEnd = trialEndIsoDesdeAhora();
-    await upsertSuscripcionCoach(db, {
-      usuarioId: userId,
-      plan: "trial",
-      stripeCustomerId: null,
-      stripeSubscriptionId: null,
-      status: "trialing",
-      limiteClientes: limiteAlumnosCoach("trial", "trialing"),
-      currentPeriodEnd: trialEnd,
-      cancelAtPeriodEnd: false,
-      trialEnd
-    });
 
     return res.json({
-      ok: true,
+      url: session.url,
+      session_id: session.id,
       trial_dias: TRIAL_DIAS,
-      trial_end: trialEnd,
       limite_alumnos: limiteAlumnosCoach("trial", "trialing"),
-      mensaje: `Trial activo ${TRIAL_DIAS} días · hasta 2 alumnos.`
+      mensaje: `Confirma tu tarjeta en Stripe para activar ${TRIAL_DIAS} días de prueba (sin cargo hoy).`
     });
   } catch (err) {
     console.error("iniciarTrialCoach:", err.message);
@@ -817,18 +940,14 @@ async function crearPortalCoach(req, res, db) {
   }
 
   const userId = parseInt(req.user.id, 10);
-  const subRes = await db.execute({
-    sql: `SELECT stripe_customer_id FROM suscripciones_coach WHERE usuario_id = ?`,
-    args: [userId]
-  });
+  const { customerId, error: recoverError } = await recuperarStripeCustomerCoach(db, stripe, userId);
 
-  if (subRes.rows.length === 0 || !subRes.rows[0]?.stripe_customer_id) {
+  if (!customerId) {
     return res.status(400).json({
-      error: "No hay suscripción Stripe vinculada. Si estás en trial, elige un plan pagado."
+      error: recoverError || "No hay suscripción Stripe vinculada. Si estás en trial, elige un plan pagado."
     });
   }
 
-  const customerId = subRes.rows[0].stripe_customer_id;
   const { return_url } = req.body || {};
   const base = getFrontendOrigins()[0];
   const returnUrl = return_url || `${base}/?coach_portal=1`;
@@ -882,7 +1001,8 @@ async function enrichUsuarioConSuscripcion(db, usuario) {
   }
 
   const subRes = await db.execute({
-    sql: `SELECT plan, status, limite_clientes, current_period_end, cancel_at_period_end, trial_end
+    sql: `SELECT plan, status, limite_clientes, current_period_end, cancel_at_period_end, trial_end,
+          stripe_customer_id, stripe_subscription_id
           FROM suscripciones_coach WHERE usuario_id = ?`,
     args: [usuario.id]
   });
@@ -906,6 +1026,7 @@ async function enrichUsuarioConSuscripcion(db, usuario) {
     usuario.coach_en_trial = s.status === "trialing";
     usuario.coach_trial_end = s.trial_end;
     usuario.coach_necesita_suscripcion = false;
+    usuario.coach_stripe_vinculado = !!(s.stripe_subscription_id && s.stripe_customer_id);
   } else {
     usuario.coach_plan = null;
     usuario.coach_suscripcion_status = null;
@@ -916,6 +1037,7 @@ async function enrichUsuarioConSuscripcion(db, usuario) {
     usuario.coach_en_trial = false;
     usuario.coach_trial_end = null;
     usuario.coach_necesita_suscripcion = usuario.rol === "COACH";
+    usuario.coach_stripe_vinculado = false;
   }
 
   return usuario;
