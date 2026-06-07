@@ -161,9 +161,45 @@ async function recuperarStripeCustomerCoach(db, stripe, userId) {
 
   return {
     customerId: null,
+    stale: true,
     error:
       "Tu suscripción en Stripe no coincide con el modo live. Vuelve a suscribirte desde «Elegir plan» o contacta soporte."
   };
+}
+
+/** Quita IDs Stripe obsoletos (test) para permitir checkout live limpio. */
+async function resetSuscripcionCoachStripeObsoleto(db, userId) {
+  const result = await db.execute({
+    sql: `UPDATE suscripciones_coach SET
+            stripe_customer_id = NULL,
+            stripe_subscription_id = NULL,
+            status = 'canceled',
+            cancel_at_period_end = 0,
+            current_period_end = NULL,
+            trial_end = NULL,
+            limite_clientes = 0,
+            updated_at = datetime('now')
+          WHERE usuario_id = ?`,
+    args: [userId]
+  });
+  return (result.rowsAffected ?? 0) > 0;
+}
+
+async function resetCoachStripeLive(req, res, db) {
+  const userId = parseInt(req.user.id, 10);
+  if (req.user?.rol === "SUPERADMIN") {
+    return res.status(400).json({ error: "Las cuentas SUPERADMIN no usan suscripción Stripe." });
+  }
+  try {
+    await resetSuscripcionCoachStripeObsoleto(db, userId);
+    return res.json({
+      ok: true,
+      mensaje: "Datos de prueba eliminados. Elige un plan para suscribirte en Stripe Live."
+    });
+  } catch (err) {
+    console.error("resetCoachStripeLive:", err.message);
+    return res.status(500).json({ error: err.message || "No se pudo limpiar la suscripción." });
+  }
 }
 
 const generarCodigo = () => Math.random().toString(36).substring(2, 8).toUpperCase();
@@ -940,9 +976,18 @@ async function crearPortalCoach(req, res, db) {
   }
 
   const userId = parseInt(req.user.id, 10);
-  const { customerId, error: recoverError } = await recuperarStripeCustomerCoach(db, stripe, userId);
+  const { customerId, error: recoverError, stale } = await recuperarStripeCustomerCoach(db, stripe, userId);
 
   if (!customerId) {
+    if (stale) {
+      await resetSuscripcionCoachStripeObsoleto(db, userId);
+      return res.status(409).json({
+        error: recoverError,
+        needs_resubscribe: true,
+        mensaje:
+          "Limpiamos datos de prueba en tu cuenta. Elige un plan para suscribirte de nuevo en Stripe Live."
+      });
+    }
     return res.status(400).json({
       error: recoverError || "No hay suscripción Stripe vinculada. Si estás en trial, elige un plan pagado."
     });
@@ -1040,6 +1085,13 @@ async function enrichUsuarioConSuscripcion(db, usuario) {
     usuario.coach_stripe_vinculado = false;
   }
 
+  if (usuario.rol === "SUPERADMIN") {
+    usuario.coach_suscripcion_activa = true;
+    usuario.coach_necesita_suscripcion = false;
+    usuario.coach_stripe_vinculado = false;
+    usuario.coach_en_trial = false;
+  }
+
   return usuario;
 }
 
@@ -1048,6 +1100,7 @@ module.exports = {
   crearCheckoutCoach,
   crearPortalCoach,
   iniciarTrialCoach,
+  resetCoachStripeLive,
   handleStripeWebhook,
   enrichUsuarioConSuscripcion,
   evaluarSuscripcionCoach,

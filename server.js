@@ -19,6 +19,7 @@ const {
   crearCheckoutCoach,
   crearPortalCoach,
   iniciarTrialCoach,
+  resetCoachStripeLive,
   handleStripeWebhook,
   enrichUsuarioConSuscripcion,
   migrarPaquetesGrandfathered
@@ -639,6 +640,10 @@ app.post("/api/pagos/iniciar-trial-coach", async (req, res) => {
 
 app.post("/api/pagos/portal-coach", async (req, res) => {
   return crearPortalCoach(req, res, db);
+});
+
+app.post("/api/pagos/reset-coach-stripe-live", async (req, res) => {
+  return resetCoachStripeLive(req, res, db);
 });
 
 async function cancelarSuscripcionesStripeUsuario(db, userId) {
