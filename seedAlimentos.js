@@ -24,8 +24,27 @@ async function ensureAlimentosSchema(db) {
     /* columna ya existe */
   }
   try {
+    await db.execute("ALTER TABLE alimentos ADD COLUMN coach_id INTEGER");
+  } catch (_) {
+    /* columna ya existe */
+  }
+  try {
+    await db.execute("DROP INDEX idx_alimentos_nombre");
+  } catch (_) {
+    /* índice legacy */
+  }
+  try {
     await db.execute(
-      "CREATE UNIQUE INDEX IF NOT EXISTS idx_alimentos_nombre ON alimentos(nombre)"
+      `CREATE UNIQUE INDEX IF NOT EXISTS idx_alimentos_global_nombre
+       ON alimentos(nombre) WHERE coach_id IS NULL`
+    );
+  } catch (_) {
+    /* ignore */
+  }
+  try {
+    await db.execute(
+      `CREATE UNIQUE INDEX IF NOT EXISTS idx_alimentos_coach_nombre
+       ON alimentos(coach_id, nombre) WHERE coach_id IS NOT NULL`
     );
   } catch (_) {
     /* ignore */
@@ -43,37 +62,38 @@ async function seedAlimentosMetodog(db) {
     });
   }
 
-  const sql = `INSERT INTO alimentos (
-    nombre, grupo, grupo_equivalencia, porcion_base, unidad,
-    calorias, proteinas, carbohidratos, grasas, sodio
-  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  ON CONFLICT(nombre) DO UPDATE SET
-    grupo = excluded.grupo,
-    grupo_equivalencia = excluded.grupo_equivalencia,
-    porcion_base = excluded.porcion_base,
-    unidad = excluded.unidad,
-    calorias = excluded.calorias,
-    proteinas = excluded.proteinas,
-    carbohidratos = excluded.carbohidratos,
-    grasas = excluded.grasas,
-    sodio = excluded.sodio`;
-
   for (const a of ALIMENTOS_METODOG) {
-    await db.execute({
-      sql,
-      args: [
-        a.nombre,
-        a.grupo,
-        a.grupo_equivalencia,
-        a.porcion_base,
-        a.unidad,
-        a.calorias,
-        a.proteinas,
-        a.carbohidratos,
-        a.grasas,
-        a.sodio
-      ]
+    const existente = await db.execute({
+      sql: "SELECT id FROM alimentos WHERE coach_id IS NULL AND LOWER(nombre) = LOWER(?)",
+      args: [a.nombre]
     });
+    const args = [
+      a.grupo,
+      a.grupo_equivalencia,
+      a.porcion_base,
+      a.unidad,
+      a.calorias,
+      a.proteinas,
+      a.carbohidratos,
+      a.grasas,
+      a.sodio
+    ];
+    if (existente.rows.length > 0) {
+      await db.execute({
+        sql: `UPDATE alimentos SET grupo = ?, grupo_equivalencia = ?, porcion_base = ?, unidad = ?,
+              calorias = ?, proteinas = ?, carbohidratos = ?, grasas = ?, sodio = ?
+              WHERE id = ?`,
+        args: [...args, existente.rows[0].id]
+      });
+    } else {
+      await db.execute({
+        sql: `INSERT INTO alimentos (
+          nombre, grupo, grupo_equivalencia, porcion_base, unidad,
+          calorias, proteinas, carbohidratos, grasas, sodio, coach_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+        args: [a.nombre, ...args]
+      });
+    }
   }
 
   const count = await db.execute("SELECT COUNT(*) AS n FROM alimentos");
