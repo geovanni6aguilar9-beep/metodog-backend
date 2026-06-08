@@ -1,4 +1,8 @@
 const jwt = require("jsonwebtoken");
+const { coachPuedeEditarPerfilAjeno } = require("./coachSuscripcion");
+
+const MSG_GRACIA_SOLO_LECTURA =
+  "Reactiva tu suscripción coach para actualizar el plan de tus atletas.";
 
 const JWT_SECRET = (process.env.JWT_SECRET || "metodog-dev-cambiar-en-produccion").trim();
 const JWT_EXPIRES = process.env.JWT_EXPIRES || "7d";
@@ -101,6 +105,22 @@ async function assertAccesoUsuario(db, req, res, targetUserId) {
   return true;
 }
 
+/** Lectura permitida; escritura sobre alumnos bloqueada si el coach no tiene suscripción activa. */
+async function assertAccesoUsuarioEdicion(db, req, res, targetUserId) {
+  if (!(await assertAccesoUsuario(db, req, res, targetUserId))) return false;
+  const tid = parseInt(targetUserId, 10);
+  const aid = parseInt(req.user.id, 10);
+  if (tid === aid) return true;
+  if (!(await coachPuedeEditarPerfilAjeno(db, req.user, targetUserId))) {
+    res.status(402).json({
+      error: MSG_GRACIA_SOLO_LECTURA,
+      coach_solo_lectura: true
+    });
+    return false;
+  }
+  return true;
+}
+
 async function assertCoachOAdmin(db, req, res) {
   if (req.user.rol === "COACH" || req.user.rol === "SUPERADMIN") return true;
   try {
@@ -137,6 +157,7 @@ module.exports = {
   requireAuthMiddleware,
   puedeAccederUsuario,
   assertAccesoUsuario,
+  assertAccesoUsuarioEdicion,
   assertCoachOAdmin,
   assertSuperAdmin,
   assertComunidadSelf,

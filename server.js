@@ -10,6 +10,7 @@ const {
   sanitizeUsuario,
   requireAuthMiddleware,
   assertAccesoUsuario,
+  assertAccesoUsuarioEdicion,
   assertCoachOAdmin,
   assertSuperAdmin,
   assertComunidadSelf
@@ -460,7 +461,7 @@ app.put("/api/coach/notas-ejercicio", async (req, res) => {
 
 app.post("/api/dietas/guardar", async (req, res) => {
   const { usuario_id, datos_dieta, macros_totales, notas_dieta } = req.body;
-  if (!(await assertAccesoUsuario(db, req, res, usuario_id))) return;
+  if (!(await assertAccesoUsuarioEdicion(db, req, res, usuario_id))) return;
   try {
     await db.execute({
       sql: `INSERT INTO dietas (usuario_id, datos_dieta, macros_totales, notas_dieta) VALUES (?, ?, ?, ?) ON CONFLICT(usuario_id) DO UPDATE SET datos_dieta = excluded.datos_dieta, macros_totales = excluded.macros_totales, notas_dieta = excluded.notas_dieta`,
@@ -493,7 +494,7 @@ const generarCodigo = () => Math.random().toString(36).substring(2, 8).toUpperCa
 
 app.post("/api/rutinas/guardar", async (req, res) => {
   const { usuario_id, datos_rutina, notas_generales } = req.body;
-  if (!(await assertAccesoUsuario(db, req, res, usuario_id))) return;
+  if (!(await assertAccesoUsuarioEdicion(db, req, res, usuario_id))) return;
   try {
     await db.execute({
       sql: `INSERT INTO rutinas (usuario_id, datos_rutina, notas_generales) VALUES (?, ?, ?) ON CONFLICT(usuario_id) DO UPDATE SET datos_rutina = excluded.datos_rutina, notas_generales = excluded.notas_generales`,
@@ -519,7 +520,7 @@ app.get("/api/rutinas/:usuario_id", async (req, res) => {
 
 app.post("/api/fuerza/guardar", async (req, res) => {
   const { usuario_id, ejercicio, peso, reps, numero_serie, dia_rutina } = req.body;
-  if (!(await assertAccesoUsuario(db, req, res, usuario_id))) return;
+  if (!(await assertAccesoUsuarioEdicion(db, req, res, usuario_id))) return;
   if (!usuario_id || !ejercicio || peso == null || peso === "") {
     return res.status(400).json({ error: "usuario_id, ejercicio y peso son obligatorios" });
   }
@@ -576,7 +577,7 @@ app.post("/api/rendimiento/informe-ia", async (req, res) => {
     fuente_grupos,
     reglas_base
   } = req.body || {};
-  if (!(await assertAccesoUsuario(db, req, res, usuario_id))) return;
+  if (!(await assertAccesoUsuarioEdicion(db, req, res, usuario_id))) return;
   if (!mes) return res.status(400).json({ ok: false, error: "mes requerido" });
 
   const regenerar = req.query.regenerar === "1" || req.query.regenerar === 1;
@@ -854,7 +855,7 @@ app.put("/api/usuarios/paquete-6-dias", async (req, res) => {
 
 app.post("/api/mediciones/guardar", async (req, res) => {
   const { usuario_id, peso, grasa, datos_extra } = req.body;
-  if (!(await assertAccesoUsuario(db, req, res, usuario_id))) return;
+  if (!(await assertAccesoUsuarioEdicion(db, req, res, usuario_id))) return;
   try {
     await db.execute({ sql: "INSERT INTO mediciones (usuario_id, peso, grasa, datos_extra) VALUES (?, ?, ?, ?)", args: [usuario_id, peso, grasa, datos_extra] });
     res.json({ mensaje: "Ok" });
@@ -869,7 +870,7 @@ app.delete("/api/mediciones/:id", async (req, res) => {
   try {
     const owner = await db.execute({ sql: "SELECT usuario_id FROM mediciones WHERE id = ?", args: [id] });
     if (owner.rows.length === 0) return res.status(404).json({ error: "Registro no encontrado" });
-    if (!(await assertAccesoUsuario(db, req, res, owner.rows[0].usuario_id))) return;
+    if (!(await assertAccesoUsuarioEdicion(db, req, res, owner.rows[0].usuario_id))) return;
 
     const result = await db.execute({
       sql: "DELETE FROM mediciones WHERE id = ?",
@@ -889,7 +890,7 @@ app.delete("/api/mediciones/:id", async (req, res) => {
 // 🔥 NUEVA RUTA: GUARDAR O ACTUALIZAR EL FORMULARIO DEL CLIENTE
 app.post("/api/clientes/guardar-perfil", async (req, res) => {
   const { usuario_id, edad, estatura, peso_kg, genero, gustos, disgustos, enfermedades } = req.body;
-  if (!(await assertAccesoUsuario(db, req, res, usuario_id))) return;
+  if (!(await assertAccesoUsuarioEdicion(db, req, res, usuario_id))) return;
   const generoNorm = genero === 'F' ? 'F' : genero === 'M' ? 'M' : null;
   try {
     await db.execute({

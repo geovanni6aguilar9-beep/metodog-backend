@@ -36,4 +36,16 @@ async function evaluarSuscripcionCoach(db, coachId) {
   };
 }
 
-module.exports = { evaluarSuscripcionCoach };
+/** Gracia solo lectura: coach sin suscripción activa no edita perfiles ajenos (sí el propio). */
+async function coachPuedeEditarPerfilAjeno(db, authUser, targetUserId) {
+  const tid = parseInt(targetUserId, 10);
+  const aid = parseInt(authUser?.id, 10);
+  if (!tid || Number.isNaN(tid) || !aid || Number.isNaN(aid)) return false;
+  if (tid === aid) return true;
+  if (authUser.rol === "SUPERADMIN") return true;
+  if (authUser.rol !== "COACH") return tid === aid;
+  const sub = await evaluarSuscripcionCoach(db, aid);
+  return !!sub;
+}
+
+module.exports = { evaluarSuscripcionCoach, coachPuedeEditarPerfilAjeno };
