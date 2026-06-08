@@ -2,7 +2,7 @@ const jwt = require("jsonwebtoken");
 const { coachPuedeEditarPerfilAjeno } = require("./coachSuscripcion");
 
 const MSG_GRACIA_SOLO_LECTURA =
-  "Reactiva tu suscripción coach para actualizar el plan de tus atletas.";
+  "Tu acceso de edición está en pausa. Tus alumnos siguen viendo su plan actual; reactiva tu suscripción para actualizar rutinas, dietas y medidas.";
 
 const JWT_SECRET = (process.env.JWT_SECRET || "metodog-dev-cambiar-en-produccion").trim();
 const JWT_EXPIRES = process.env.JWT_EXPIRES || "7d";

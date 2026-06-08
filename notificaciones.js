@@ -60,7 +60,12 @@ async function validarCoachRecibeCliente(db, coachId) {
   if (coach.rol === "COACH") {
     const sub = await evaluarSuscripcionCoach(db, coachId);
     if (!sub) {
-      return { ok: false, error: "Este coach no tiene suscripción activa en MétodoG", status: 400 };
+      return {
+        ok: false,
+        error: "Tu acceso de coach está en pausa. Reactiva tu plan para dar la bienvenida a nuevos alumnos.",
+        status: 402,
+        coach_solo_lectura: true
+      };
     }
     const countRes = await db.execute({
       sql: "SELECT COUNT(*) as count FROM usuarios WHERE coach_id = ?",
@@ -68,7 +73,11 @@ async function validarCoachRecibeCliente(db, coachId) {
     });
     const count = Number(countRes.rows[0]?.count || 0);
     if (sub.limite_efectivo && count >= Number(sub.limite_efectivo)) {
-      return { ok: false, error: "Este coach alcanzó su límite de alumnos", status: 400 };
+      return {
+        ok: false,
+        error: "Has llegado al límite de alumnos de tu plan. Amplía tu suscripción para seguir incorporando atletas.",
+        status: 400
+      };
     }
   }
   return { ok: true, coach };
