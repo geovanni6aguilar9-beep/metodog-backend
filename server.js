@@ -389,7 +389,7 @@ app.get("/api/alimentos/plantilla-csv", async (req, res) => {
   res.setHeader("Content-Type", "text/csv; charset=utf-8");
   res.setHeader(
     "Content-Disposition",
-    'attachment; filename="metodog-alimentos-plantilla.csv"'
+    'attachment; filename="plantilla_alimentos_metodog.csv"'
   );
   res.send(`\uFEFF${PLANTILLA_CSV}`);
 });
