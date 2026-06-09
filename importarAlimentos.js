@@ -1,5 +1,6 @@
 /**
- * Importación CSV/Excel (exportado como .csv) de biblioteca de alimentos por coach.
+ * Importación CSV/Excel de biblioteca de alimentos por coach.
+ * coachId numérico → solo biblioteca de ese coach; null → global (solo SUPERADMIN).
  */
 
 const MAX_FILAS = 500;
@@ -24,8 +25,19 @@ const GRUPOS_UI = [
 
 const EQUIVALENCIAS = new Set([
   "proteina_magra", "proteina_grasa", "carbohidrato_complejo", "legumbre",
-  "fruta", "grasa", "lacteo", "verdura", "sin_sustituto", "condimento", "libre"
+  "fruta", "grasa", "lacteo", "verdura", "sin_sustituto", "condimento", "libre", "azucar"
 ]);
+
+const GRUPO_POR_EQUIVALENCIA = {
+  proteina_magra: "Carnes",
+  proteina_grasa: "Carnes",
+  carbohidrato_complejo: "Cereales",
+  legumbre: "Leguminosas",
+  fruta: "Frutas",
+  grasa: "Grasas",
+  lacteo: "Lácteos",
+  verdura: "Verduras"
+};
 
 function normHeader(h) {
   return String(h || "")
@@ -33,6 +45,13 @@ function normHeader(h) {
     .toLowerCase()
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "");
+}
+
+function limpiarHeader(h) {
+  return normHeader(h)
+    .replace(/\([^)]*\)/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function detectarSeparador(linea) {
@@ -65,12 +84,11 @@ function parseCsvLinea(linea, sep) {
   return out;
 }
 
-function mapearColumnas(headers) {
+function mapearColumnasExacto(headersLimpios) {
   const map = {};
-  headers.forEach((h, idx) => {
-    const n = normHeader(h);
+  headersLimpios.forEach((n, idx) => {
     for (const [campo, aliases] of Object.entries(ALIAS)) {
-      if (aliases.some((a) => normHeader(a) === n)) {
+      if (aliases.some((a) => limpiarHeader(a) === n)) {
         if (map[campo] == null) map[campo] = idx;
       }
     }
@@ -78,23 +96,146 @@ function mapearColumnas(headers) {
   return map;
 }
 
+function mapearColumnasFuzzy(headersLimpios, map) {
+  headersLimpios.forEach((n, idx) => {
+    if (map.nombre == null && /comida|alimento|nombre|descripcion|food|name|tipo/.test(n) && !/kcal|calor|protein|carb|grasa|sodio/.test(n)) {
+      map.nombre = idx;
+    }
+    if (map.calorias == null && /(^kcal$|caloria|calorias|energia)/.test(n)) map.calorias = idx;
+    if (map.proteinas == null && /protein|proteina/.test(n)) map.proteinas = idx;
+    if (map.carbohidratos == null && /carbohidrato|carbo|hidratos|\bcho\b/.test(n)) map.carbohidratos = idx;
+    if (map.grasas == null && /grasa|lipid|\bfat\b/.test(n)) map.grasas = idx;
+    if (map.sodio == null && /sodio|sodium|\bna\b/.test(n)) map.sodio = idx;
+    if (map.grupo == null && /(^grupo$|categoria|category)/.test(n)) map.grupo = idx;
+  });
+  if (map.nombre == null && headersLimpios.length > 0) map.nombre = 0;
+  return map;
+}
+
+function mapearColumnas(headers) {
+  const limpios = headers.map(limpiarHeader);
+  const map = mapearColumnasExacto(limpios);
+  return mapearColumnasFuzzy(limpios, map);
+}
+
 function num(v, fallback = 0) {
   if (v == null || v === "") return fallback;
-  const s = String(v).replace(",", ".").trim();
+  let s = String(v).replace(/\s/g, "").replace(",", ".").trim();
+  const rango = s.match(/^(\d+(?:\.\d+)?)\s*[-–]\s*(\d+(?:\.\d+)?)/);
+  if (rango) {
+    const a = parseFloat(rango[1]);
+    const b = parseFloat(rango[2]);
+    if (!Number.isNaN(a) && !Number.isNaN(b)) return Math.round(((a + b) / 2) * 10) / 10;
+  }
   const n = parseFloat(s);
   return Number.isNaN(n) ? fallback : n;
 }
 
-function normalizarFila(cells, colMap, lineaNum) {
+function extraerPorcionDesdeNombre(nombreRaw) {
+  let nombre = String(nombreRaw || "").trim();
+  let porcion_base = null;
+  let unidad = null;
+
+  const m = nombre.match(/\(([^)]+)\)\s*$/);
+  if (!m) return { nombre, porcion_base, unidad };
+
+  const inner = m[1].trim();
+  const numUnit = inner.match(/^(\d+(?:[.,]\d+)?)\s*(g|gr|grs|gramos|ml|cc|pieza|piezas|rebanada|rebanadas|cucharada|cucharadas)?/i);
+  if (numUnit) {
+    porcion_base = parseFloat(String(numUnit[1]).replace(",", "."));
+    const u = (numUnit[2] || "g").toLowerCase();
+    if (/ml|cc/.test(u)) unidad = "ml";
+    else if (/pieza|rebanada/.test(u)) unidad = "pieza";
+    else if (/cucharada/.test(u)) unidad = "cucharada";
+    else unidad = "g";
+  } else {
+    const soloNum = inner.match(/^(\d+(?:[.,]\d+)?)/);
+    if (soloNum) {
+      porcion_base = parseFloat(String(soloNum[1]).replace(",", "."));
+      unidad = /rebanada|pieza|tortilla/.test(inner) ? "pieza" : "g";
+    }
+  }
+
+  if (porcion_base != null) {
+    nombre = nombre.replace(/\([^)]+\)\s*$/, "").trim();
+  }
+  return { nombre, porcion_base, unidad };
+}
+
+function inferirGrupoEquivalencia(item, contextoHoja) {
+  const ctx = String(contextoHoja || "").toLowerCase();
+  if (/carbohidrato|hidratos|cereal|arroz|pan|pasta|tortilla|avena|quinoa/.test(ctx)) return "carbohidrato_complejo";
+  if (/legumbre|frijol|lenteja|garbanzo/.test(ctx)) return "legumbre";
+  if (/fruta|plátano|platano|manzana|mango/.test(ctx)) return "fruta";
+  if (/verdura|vegetal|brocoli|espinaca|jitomate/.test(ctx)) return "verdura";
+  if (/l[aá]cteo|leche|yogur|queso|kefir/.test(ctx)) return "lacteo";
+  if (/grasa|aceite|nuez|aguacate|almendra|cacahuate/.test(ctx)) return "grasa";
+  if (/prote[ií]na|carne|pollo|pescado|huevo|atun|atún/.test(ctx)) {
+    return item.grasas > 8 ? "proteina_grasa" : "proteina_magra";
+  }
+
+  const p = item.proteinas;
+  const c = item.carbohidratos;
+  const g = item.grasas;
+
+  if (g >= 5 && g >= p && g >= c * 0.4) return "grasa";
+  if (c >= 12 && c > p * 1.2) return "carbohidrato_complejo";
+  if (p >= 6 && p >= c && p >= g) return g > 5 ? "proteina_grasa" : "proteina_magra";
+  if (c >= 8 && p >= 5) return "legumbre";
+
+  return "sin_sustituto";
+}
+
+function inferirGrupoUi(grupoEq, grupoActual) {
+  if (grupoActual && grupoActual !== "Otros" && GRUPOS_UI.includes(grupoActual)) return grupoActual;
+  return GRUPO_POR_EQUIVALENCIA[grupoEq] || "Otros";
+}
+
+function normalizarNombreParaMatch(nombre) {
+  return String(nombre || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/\([^)]*\)/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+async function buscarEnBibliotecaGlobal(db, nombre) {
+  const clave = normalizarNombreParaMatch(nombre);
+  if (!clave || clave.length < 3) return null;
+
+  const exacto = await db.execute({
+    sql: `SELECT nombre, grupo, grupo_equivalencia FROM alimentos
+          WHERE coach_id IS NULL AND LOWER(TRIM(nombre)) = LOWER(TRIM(?)) LIMIT 1`,
+    args: [nombre.replace(/\([^)]*\)\s*$/, "").trim()]
+  });
+  if (exacto.rows.length > 0) return exacto.rows[0];
+
+  const like = await db.execute({
+    sql: `SELECT nombre, grupo, grupo_equivalencia FROM alimentos
+          WHERE coach_id IS NULL AND (
+            LOWER(nombre) LIKE ? OR LOWER(?) LIKE '%' || LOWER(nombre) || '%'
+          )
+          ORDER BY LENGTH(nombre) ASC LIMIT 1`,
+    args: [`%${clave}%`, clave]
+  });
+  return like.rows.length > 0 ? like.rows[0] : null;
+}
+
+function normalizarFila(cells, colMap, lineaNum, contextoHoja) {
   const get = (campo) => {
     const idx = colMap[campo];
     return idx == null ? "" : (cells[idx] ?? "");
   };
 
-  const nombre = String(get("nombre")).trim();
+  let nombre = String(get("nombre")).trim();
   if (!nombre) {
     return { error: `Fila ${lineaNum}: falta nombre del alimento.` };
   }
+
+  const extraido = extraerPorcionDesdeNombre(nombre);
+  nombre = extraido.nombre || nombre;
 
   const calorias = num(get("calorias"), NaN);
   if (Number.isNaN(calorias) || calorias < 0) {
@@ -105,26 +246,35 @@ function normalizarFila(cells, colMap, lineaNum) {
   if (!GRUPOS_UI.includes(grupo)) grupo = "Otros";
 
   let grupoEq = String(get("grupo_equivalencia")).trim().toLowerCase().replace(/\s+/g, "_");
-  if (!grupoEq || !EQUIVALENCIAS.has(grupoEq)) grupoEq = "sin_sustituto";
+  if (!grupoEq || !EQUIVALENCIAS.has(grupoEq)) grupoEq = null;
 
-  const porcionBase = num(get("porcion_base"), 100) || 100;
-  let unidad = String(get("unidad")).trim().toLowerCase() || "g";
+  let porcionBase = extraido.porcion_base != null ? extraido.porcion_base : num(get("porcion_base"), 100);
+  if (!porcionBase || porcionBase <= 0) porcionBase = 100;
+
+  let unidad = extraido.unidad || String(get("unidad")).trim().toLowerCase() || "g";
   if (!["g", "ml", "pieza", "cucharada"].includes(unidad)) unidad = "g";
 
-  return {
-    item: {
-      nombre,
-      grupo,
-      grupo_equivalencia: grupoEq,
-      porcion_base: porcionBase,
-      unidad,
-      calorias,
-      proteinas: num(get("proteinas"), 0),
-      carbohidratos: num(get("carbohidratos"), 0),
-      grasas: num(get("grasas"), 0),
-      sodio: num(get("sodio"), 0)
-    }
+  const item = {
+    nombre,
+    grupo,
+    grupo_equivalencia: grupoEq || "sin_sustituto",
+    porcion_base: porcionBase,
+    unidad,
+    calorias,
+    proteinas: num(get("proteinas"), 0),
+    carbohidratos: num(get("carbohidratos"), 0),
+    grasas: num(get("grasas"), 0),
+    sodio: num(get("sodio"), 0),
+    _contexto_hoja: contextoHoja
   };
+
+  if (!grupoEq) {
+    item.grupo_equivalencia = inferirGrupoEquivalencia(item, contextoHoja);
+    item.grupo = inferirGrupoUi(item.grupo_equivalencia, grupo);
+  }
+
+  delete item._contexto_hoja;
+  return { item };
 }
 
 function parsearCsvTexto(csvText) {
@@ -136,18 +286,19 @@ function parsearCsvTexto(csvText) {
 
   const lineas = raw.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
   if (lineas.length < 2) {
-    return { error: "El CSV debe incluir encabezados y al menos una fila de datos." };
+    return { error: "El archivo debe incluir encabezados y al menos una fila de datos." };
   }
 
   const sep = detectarSeparador(lineas[0]);
   const headers = parseCsvLinea(lineas[0], sep);
   const colMap = mapearColumnas(headers);
+  const contextoHoja = headers.join(" ");
 
   if (colMap.nombre == null) {
-    return { error: "Falta columna «nombre» (o alimento / name)." };
+    return { error: "No encontramos una columna con el nombre del alimento." };
   }
   if (colMap.calorias == null) {
-    return { error: "Falta columna «calorias» (o kcal)." };
+    return { error: "No encontramos una columna de calorías (kcal)." };
   }
 
   const filas = [];
@@ -159,7 +310,7 @@ function parsearCsvTexto(csvText) {
       break;
     }
     const cells = parseCsvLinea(lineas[i], sep);
-    const res = normalizarFila(cells, colMap, i + 1);
+    const res = normalizarFila(cells, colMap, i + 1, contextoHoja);
     if (res.error) errores.push(res.error);
     else filas.push(res.item);
   }
@@ -168,7 +319,22 @@ function parsearCsvTexto(csvText) {
     return { error: "No hay filas válidas para importar.", errores };
   }
 
-  return { filas, errores, total_lineas: lineas.length - 1 };
+  return { filas, errores, total_lineas: lineas.length - 1, contexto_hoja: contextoHoja };
+}
+
+async function enriquecerConBibliotecaGlobal(db, item) {
+  if (item.grupo_equivalencia && item.grupo_equivalencia !== "sin_sustituto") return item;
+
+  const match = await buscarEnBibliotecaGlobal(db, item.nombre);
+  if (match?.grupo_equivalencia && match.grupo_equivalencia !== "sin_sustituto") {
+    item.grupo_equivalencia = match.grupo_equivalencia;
+    if (item.grupo === "Otros" && match.grupo) item.grupo = match.grupo;
+    return item;
+  }
+
+  item.grupo_equivalencia = inferirGrupoEquivalencia(item, "");
+  item.grupo = inferirGrupoUi(item.grupo_equivalencia, item.grupo);
+  return item;
 }
 
 async function upsertAlimento(db, coachId, item) {
@@ -226,11 +392,17 @@ async function importarAlimentosCsv(db, coachId, csvText) {
   let nuevos = 0;
   let actualizados = 0;
 
-  for (const item of parsed.filas) {
+  for (const raw of parsed.filas) {
+    const item = await enriquecerConBibliotecaGlobal(db, { ...raw });
     const accion = await upsertAlimento(db, coachId, item);
     if (accion === "nuevo") nuevos++;
     else actualizados++;
   }
+
+  const alcanceMsg =
+    coachId == null
+      ? "Biblioteca global MétodoG actualizada."
+      : "Guardado en tu biblioteca personal (solo tú la ves al armar dietas).";
 
   return {
     ok: true,
@@ -238,18 +410,20 @@ async function importarAlimentosCsv(db, coachId, csvText) {
     actualizados,
     total: parsed.filas.length,
     errores: parsed.errores || [],
-    mensaje: `Importación lista: ${nuevos} nuevo(s), ${actualizados} actualizado(s).`
+    mensaje: `Importación lista: ${nuevos} nuevo(s), ${actualizados} actualizado(s). ${alcanceMsg}`
   };
 }
 
-const PLANTILLA_CSV = `nombre,grupo,porcion_base,unidad,calorias,proteinas,carbohidratos,grasas,sodio,grupo_equivalencia
-Pechuga de Pollo,Carnes,100,g,165,31,0,3.6,74,proteina_magra
-Arroz Blanco Cocido,Cereales,100,g,130,2.7,28,0.3,1,carbohidrato_complejo
-Aguacate,Grasas,50,g,80,1,4,7.5,7,grasa`;
+const PLANTILLA_CSV = `nombre,calorias,proteinas,carbohidratos,grasas,sodio
+Arroz blanco cocido (100 g),130,2.5,29,0,2
+Pan integral (2 piezas),180,12,30,2,8
+Pechuga de pollo (100 g),165,31,0,3.6,74`;
 
 module.exports = {
   parsearCsvTexto,
   importarAlimentosCsv,
   PLANTILLA_CSV,
-  MAX_FILAS
+  MAX_FILAS,
+  inferirGrupoEquivalencia,
+  mapearColumnas
 };
