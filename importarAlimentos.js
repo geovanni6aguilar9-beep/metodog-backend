@@ -21,7 +21,7 @@ const ALIAS = {
 
 /** Etiquetas para UI de mapeo manual. */
 const CAMPOS_MAPEO_UI = [
-  { key: "nombre", label: "Nombre del alimento", requerido: true },
+  { key: "nombre", label: "Columna de cada comida", requerido: true, hint: "Suele ser la 1ª columna aunque el título diga «Tipos de comidas para…». Ahí van Arroz, Pollo, etc." },
   { key: "calorias", label: "Calorías (kcal)", requerido: true },
   { key: "proteinas", label: "Proteínas (g)", requerido: false },
   { key: "carbohidratos", label: "Carbohidratos (g)", requerido: false },
@@ -163,6 +163,27 @@ function columnasDesdeHeaders(headers) {
     index,
     titulo: String(titulo || "").trim() || `Columna ${index + 1}`
   }));
+}
+
+/** Añade un valor de ejemplo por columna (primera fila de dato real). */
+function columnasConEjemplos(headers, lineas, sep, headerIndex, colMap) {
+  let ejemploCells = null;
+  for (let i = headerIndex + 1; i < Math.min(lineas.length, headerIndex + 30); i++) {
+    const cells = parseCsvLinea(lineas[i], sep);
+    if (esFilaEncabezados(cells) || filaVacia(cells, colMap) || esTituloSeccion(cells, colMap)) continue;
+    if (tieneCalorias(cells, colMap)) {
+      ejemploCells = cells;
+      break;
+    }
+  }
+  return (headers || []).map((titulo, index) => {
+    const ej = ejemploCells ? String(ejemploCells[index] ?? "").trim() : "";
+    return {
+      index,
+      titulo: String(titulo || "").trim() || `Columna ${index + 1}`,
+      ejemplo: ej.length > 42 ? `${ej.slice(0, 40)}…` : ej
+    };
+  });
 }
 
 function num(v, fallback = 0) {
@@ -376,7 +397,7 @@ function parsearCsvTexto(csvText, mapeoManual = null) {
   const colMap = colMapManual ? { ...colMapManual } : { ...colMapAuto };
   const colMapFijo = colMapManual != null;
   const contextoHoja = headers.join(" ");
-  const columnas = columnasDesdeHeaders(headers);
+  const columnas = columnasConEjemplos(headers, lineas, sep, enc.index, colMap);
 
   if (colMap.nombre == null) {
     return { error: "Indica qué columna es el nombre del alimento.", columnas, mapeo: colMap, mapeo_auto: colMapAuto };
