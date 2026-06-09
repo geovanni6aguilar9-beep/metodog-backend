@@ -52,19 +52,7 @@ const { buildResumenRutina } = require("./resumenRutinaInforme");
 const { contextoMesInforme } = require("./informeMesContext");
 const { seedAlimentosMetodog } = require("./seedAlimentos");
 const { calcularSustitutos, SIN_SUSTITUTO } = require("./equivalenciasNutricion");
-const {
-  importarAlimentosCsv,
-  previewImportacionCsv,
-  limpiarNombresInvalidosCoach,
-  PLANTILLA_CSV
-} = require("./importarAlimentos");
-const {
-  generarRecetaComida,
-  mensajeErrorAmigable,
-  geminiConfigurado,
-  formatoKeyPareceValido,
-  probarConexionGemini
-} = require("./recetaIaGemini");
+const { importarAlimentosCsv, previewImportacionCsv, PLANTILLA_CSV } = require("./importarAlimentos");
 
 const DEV_JWT_FALLBACK = "metodog-dev-cambiar-en-produccion";
 if (isProduction()) {
@@ -96,8 +84,6 @@ function responderPing(req, res) {
     ok: true,
     message: "pong",
     service: "metodog-backend",
-    recetas_ia_gemini: geminiConfigurado(),
-    recetas_ia_key_formato_ok: formatoKeyPareceValido(),
     ts: new Date().toISOString()
   });
 }
@@ -341,11 +327,6 @@ function validarStripeEnProduccion() {
   if (key.startsWith("sk_live_")) {
     console.log("💳 Stripe LIVE configurado.");
   }
-  if (geminiConfigurado()) {
-    console.log("✨ Gemini configurado — Recetas IA activas.");
-  } else {
-    console.warn("⚠️ GEMINI_API_KEY no configurada — Recetas IA mostrarán mensaje de descanso.");
-  }
   const precios = [
     "STRIPE_PRICE_FULL_WEEK",
     "STRIPE_PRICE_COACH_STARTER",
@@ -395,7 +376,6 @@ app.get("/api/alimentos", async (req, res) => {
     const args = [];
     if (esCoachOAdmin) {
       const coachId = parseInt(user.id, 10);
-      await limpiarNombresInvalidosCoach(db, coachId);
       sql = "SELECT * FROM alimentos WHERE coach_id IS NULL OR coach_id = ?";
       args.push(coachId);
     }
@@ -452,67 +432,6 @@ app.post("/api/alimentos/importar-csv", async (req, res) => {
   } catch (err) {
     console.error("importar-csv:", err.message);
     res.status(500).json({ error: err.message || "No se pudo importar el archivo." });
-  }
-});
-
-async function usuarioPuedeRecetasIa(userId, rol) {
-  if (rol === "SUPERADMIN" || rol === "COACH") return true;
-  const r = await db.execute({
-    sql: "SELECT paquete_rutina_6_dias FROM usuarios WHERE id = ?",
-    args: [parseInt(userId, 10)]
-  });
-  return !!r.rows[0]?.paquete_rutina_6_dias;
-}
-
-app.get("/api/alimentos/receta-ia/probe", async (req, res) => {
-  const user = req.user;
-  if (!user) return res.status(401).json({ ok: false, error: "Sesión requerida" });
-  if (user.rol !== "SUPERADMIN" && user.rol !== "COACH") {
-    return res.status(403).json({ ok: false, error: "Solo coach o superadmin." });
-  }
-  try {
-    const resultado = await probarConexionGemini();
-    res.status(resultado.ok ? 200 : 503).json(resultado);
-  } catch (err) {
-    res.status(500).json({ ok: false, error: err.message });
-  }
-});
-
-app.post("/api/alimentos/receta-ia", async (req, res) => {
-  const user = req.user;
-  if (!user) return res.status(401).json({ ok: false, error: "Sesión requerida" });
-
-  const puede = await usuarioPuedeRecetasIa(user.id, user.rol);
-  if (!puede) {
-    return res.status(403).json({
-      ok: false,
-      error: "Activa Full Week PRO para usar recetas con IA."
-    });
-  }
-
-  const payload = req.body || {};
-  try {
-    const resultado = await generarRecetaComida(payload);
-    if (!resultado.ok) {
-      const esAdmin = user.rol === "SUPERADMIN" || user.rol === "COACH";
-      const mostrarDetalle = esAdmin || resultado.motivo === "formato_key";
-      const err400 = ["sin_catalogo", "sin_objetivo", "sin_ingredientes"];
-      return res.status(err400.includes(resultado.motivo) ? 400 : 503).json({
-        ok: false,
-        error: mensajeErrorAmigable(
-          resultado.motivo,
-          mostrarDetalle,
-          resultado.detalle || ""
-        )
-      });
-    }
-    res.json(resultado);
-  } catch (err) {
-    console.error("receta-ia:", err.message);
-    res.status(500).json({
-      ok: false,
-      error: mensajeErrorAmigable("api_error")
-    });
   }
 });
 

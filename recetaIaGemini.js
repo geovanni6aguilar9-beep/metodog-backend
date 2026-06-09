@@ -155,6 +155,12 @@ function mensajeErrorAmigable(motivo, esAdmin = false, detalle = "") {
   if (motivo === "sin_objetivo") {
     return "Primero ejecuta la calculadora metabólica para definir tus macros del día.";
   }
+  if (motivo === "macros_cubiertos") {
+    return detalle || "Ya cubriste tus macros del día en esta comida.";
+  }
+  if (motivo === "sin_comidas") {
+    return detalle || "Todas tus comidas ya tienen alimentos. Desmarca «solo vacías» o vacía una comida.";
+  }
   if (motivo === "formato_key") {
     return detalle || "La clave de Gemini parece incompleta. Revisa GEMINI_API_KEY en Render.";
   }
@@ -216,11 +222,14 @@ async function generarRecetaComida(payload) {
   const plan = payload?.plan || null;
   const macrosObjetivo =
     payload?.macros_objetivo_comida ||
+    plan?.macros_objetivo_combo ||
     plan?.referencia_comida_equilibrada ||
-    plan?.macros_faltantes_comida ||
     null;
 
   if (!macrosObjetivo || num(macrosObjetivo.calorias) <= 0) {
+    if (plan?.mensaje_objetivo) {
+      return { ok: false, motivo: "macros_cubiertos", detalle: plan.mensaje_objetivo };
+    }
     return { ok: false, motivo: "sin_objetivo" };
   }
 
@@ -257,6 +266,14 @@ CONTEXTO DEL PLAN:
 - objetivo "definir" = déficit — ligero, proteína alta.
 - objetivo "subir" = volumen — saciante, más carbs/kcal.
 - objetivo "mantener" = equilibrio.
+
+MODO OBJETIVO (campo plan.modo_objetivo):
+- ultima_comida: el combo debe cubrir casi todo restante_dia (última comida vacía).
+- repartir_restante: parte equitativa del restante entre comidas vacías.
+- cerrar_dia: ajuste fino; prioriza restante_dia sobre referencia.
+- llenar_comida: completa esta comida hacia referencia_comida_equilibrada.
+
+Puedes incluir creatina, whey o BCAA del catálogo si ayudan a proteína sin pasarte de kcal.
 
 Si hay macros_actuales_comida, COMPLEMENTA lo ya puesto (evita duplicar el mismo id).
 
@@ -298,7 +315,10 @@ Responde SOLO JSON válido (sin markdown):
           objetivo: plan.objetivo,
           etiqueta: plan.etiqueta,
           objetivo_dia: plan.objetivo_dia,
-          restante_dia: plan.restante_dia
+          consumido_dia: plan.consumido_dia,
+          restante_dia: plan.restante_dia,
+          modo_objetivo: plan.modo_objetivo,
+          comidas_vacias: plan.comidas_vacias
         }
       : null,
     catalogo: catalogoLite
@@ -343,6 +363,143 @@ Responde SOLO JSON válido (sin markdown):
       } catch (err) {
         console.warn(`[recetaIaGemini] ${model}:`, err?.message || err);
         ultimoError = "red";
+        ultimoDetalle = err?.message || String(err);
+      }
+    }
+  }
+
+  return { ok: false, motivo: ultimoError, detalle: ultimoDetalle };
+}
+
+function normalizarDietaDia(obj, catalogoMap, nombresEsperados) {
+  if (!obj || typeof obj !== "object") return null;
+  const nombrePlan = String(obj.nombre_plan || obj.nombre || "Plan del día").trim();
+  const consejoGeneral = String(obj.consejo_general || obj.consejo || "").trim() || null;
+  const rawComidas = Array.isArray(obj.comidas) ? obj.comidas : [];
+
+  const comidas = [];
+  for (const row of rawComidas.slice(0, 8)) {
+    const nombreComida = String(row?.comida || row?.nombre_comida || "").trim();
+    if (!nombreComida) continue;
+    const combo = normalizarCombo(
+      {
+        nombre: row.nombre || row.nombre_combo,
+        consejo: row.consejo,
+        alimentos_sugeridos: row.alimentos_sugeridos || row.alimentos
+      },
+      catalogoMap
+    );
+    if (!combo) continue;
+    comidas.push({
+      comida: nombreComida,
+      nombre_comida: nombreComida,
+      nombre: combo.nombre,
+      consejo: combo.consejo,
+      alimentos_sugeridos: combo.alimentos_sugeridos,
+      macros_combo: combo.macros_combo
+    });
+  }
+
+  if (!comidas.length) return null;
+  return { nombre_plan: nombrePlan, consejo_general: consejoGeneral, comidas };
+}
+
+async function generarDietaDiaCompleta(payload) {
+  const apiKey = resolverGeminiApiKey();
+  if (!apiKey) return { ok: false, motivo: "sin_api_key" };
+
+  const catalogo = normalizarCatalogo(payload?.catalogo);
+  if (!catalogo.length) return { ok: false, motivo: "sin_catalogo" };
+
+  const plan = payload?.plan || null;
+  if (!plan?.objetivo_dia) return { ok: false, motivo: "sin_objetivo" };
+
+  const comidasInput = Array.isArray(payload?.comidas) ? payload.comidas : [];
+  const soloVacias = !!payload?.solo_vacias;
+  const comidasTarget = soloVacias
+    ? comidasInput.filter((c) => c?.vacia)
+    : comidasInput;
+
+  if (!comidasTarget.length) {
+    return { ok: false, motivo: "sin_comidas", detalle: "Todas las comidas ya tienen alimentos." };
+  }
+
+  const catalogoMap = new Map(catalogo.map((c) => [c.id, c]));
+  const envModel = (process.env.GEMINI_MODEL || "").trim();
+  const modelos = envModel
+    ? [envModel, ...MODELOS_FALLBACK.filter((m) => m !== envModel)]
+    : MODELOS_FALLBACK;
+
+  const system = `Eres un Planificador Nutricional Deportivo de MétodoG (México).
+Arma un PLAN DE DÍA COMPLETO: un combo por cada comida indicada en "comidas_a_planear".
+
+REGLAS:
+- SOLO alimentos del catálogo (id_alimento exacto).
+- La SUMA de todos los combos debe acercarse a objetivo_dia (kcal, P, C, G, sodio).
+- Respeta preferencias (gustos/disgustos/notas_medicas).
+- Gusto gastronómico: desayuno ligero, comida/cena completas, colaciones prácticas.
+- Variedad: no repitas el mismo plato en todas las comidas.
+- Puedes usar whey, creatina, BCAA del catálogo donde tenga sentido.
+
+Responde SOLO JSON válido:
+{
+  "nombre_plan": "título del día (máx. 60 caracteres)",
+  "consejo_general": "1-2 frases del enfoque del día",
+  "comidas": [
+    {
+      "comida": "nombre exacto de la comida (ej. Desayuno)",
+      "nombre": "nombre del combo",
+      "consejo": "frase corta",
+      "alimentos_sugeridos": [{ "id_alimento": id, "cantidad_sugerida": n }]
+    }
+  ]
+}`;
+
+  const catalogoLite = catalogo.map((c) => ({
+    id: c.id,
+    nombre: c.nombre,
+    porcion_base: c.porcion_base,
+    unidad: c.unidad,
+    kcal: c.calorias,
+    prot: c.proteinas,
+    carb: c.carbohidratos,
+    gras: c.grasas,
+    sodio: c.sodio
+  }));
+
+  const user = JSON.stringify({
+    comidas_a_planear: comidasTarget.map((c) => ({
+      nombre: c.nombre,
+      vacia: c.vacia,
+      macros_actuales: c.macros
+    })),
+    objetivo_dia: plan.objetivo_dia,
+    restante_dia: plan.restante_dia,
+    referencia_por_comida: plan.referencia_comida_equilibrada,
+    preferencias: payload?.preferencias || null,
+    catalogo: catalogoLite
+  });
+
+  let ultimoError = "api_error";
+  let ultimoDetalle = "";
+
+  for (const model of modelos) {
+    for (const usarJson of [true, false]) {
+      try {
+        const { res, data } = await llamarGemini(apiKey, model, system, user, usarJson);
+        if (res.status === 429) return { ok: false, motivo: "cuota" };
+        if (!res.ok) {
+          ultimoError = "api_error";
+          ultimoDetalle = data?.error?.message || `HTTP ${res.status}`;
+          continue;
+        }
+        const { text, blockReason } = extraerTextoGemini(data);
+        if (blockReason) continue;
+        const dieta = normalizarDietaDia(parseJsonSeguro(text), catalogoMap);
+        if (dieta) {
+          return { ok: true, dieta, ia: true, modelo: model };
+        }
+      } catch (err) {
         ultimoDetalle = err?.message || String(err);
       }
     }
@@ -398,6 +555,7 @@ async function probarConexionGemini() {
 
 module.exports = {
   generarRecetaComida,
+  generarDietaDiaCompleta,
   normalizarCatalogo,
   mensajeErrorAmigable,
   geminiConfigurado,

@@ -200,7 +200,11 @@ const ALIMENTOS_METODOG = [
   { nombre: "Snack de Queso y Galletas", grupo: "Lácteos", grupo_equivalencia: "lacteo", porcion_base: 1, unidad: "pieza", calorias: 145, proteinas: 8, carbohidratos: 14, grasas: 6, sodio: 280 },
   { nombre: "Barrita de Proteína", grupo: "Otros", grupo_equivalencia: "proteina_magra", porcion_base: 1, unidad: "pieza", calorias: 200, proteinas: 20, carbohidratos: 22, grasas: 6, sodio: 180 },
   { nombre: "Isopure Clear", grupo: "Otros", grupo_equivalencia: "proteina_magra", porcion_base: 1, unidad: "pieza", calorias: 90, proteinas: 20, carbohidratos: 0, grasas: 0, sodio: 45 },
-  { nombre: "Electrolitos en Polvo", grupo: "Otros", grupo_equivalencia: "libre", porcion_base: 5, unidad: "g", calorias: 5, proteinas: 0, carbohidratos: 1, grasas: 0, sodio: 200 }
+  { nombre: "Electrolitos en Polvo", grupo: "Otros", grupo_equivalencia: "libre", porcion_base: 5, unidad: "g", calorias: 5, proteinas: 0, carbohidratos: 1, grasas: 0, sodio: 200 },
+  { nombre: "Proteína Caseína", grupo: "Carnes", grupo_equivalencia: "proteina_magra", porcion_base: 30, unidad: "g", calorias: 108, proteinas: 24, carbohidratos: 2, grasas: 1, sodio: 50 },
+  { nombre: "Glutamina en Polvo", grupo: "Otros", grupo_equivalencia: "libre", porcion_base: 5, unidad: "g", calorias: 20, proteinas: 5, carbohidratos: 0, grasas: 0, sodio: 0 },
+  { nombre: "EAA en Polvo", grupo: "Otros", grupo_equivalencia: "libre", porcion_base: 10, unidad: "g", calorias: 40, proteinas: 10, carbohidratos: 0, grasas: 0, sodio: 10 },
+  { nombre: "Colágeno Hidrolizado", grupo: "Otros", grupo_equivalencia: "libre", porcion_base: 10, unidad: "g", calorias: 35, proteinas: 9, carbohidratos: 0, grasas: 0, sodio: 25 }
 ];
 
 module.exports = { ALIMENTOS_METODOG };
