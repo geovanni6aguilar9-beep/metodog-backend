@@ -52,7 +52,7 @@ const { buildResumenRutina } = require("./resumenRutinaInforme");
 const { contextoMesInforme } = require("./informeMesContext");
 const { seedAlimentosMetodog } = require("./seedAlimentos");
 const { calcularSustitutos, SIN_SUSTITUTO } = require("./equivalenciasNutricion");
-const { importarAlimentosCsv, PLANTILLA_CSV } = require("./importarAlimentos");
+const { importarAlimentosCsv, previewImportacionCsv, PLANTILLA_CSV } = require("./importarAlimentos");
 
 const DEV_JWT_FALLBACK = "metodog-dev-cambiar-en-produccion";
 if (isProduction()) {
@@ -394,9 +394,27 @@ app.get("/api/alimentos/plantilla-csv", async (req, res) => {
   res.send(`\uFEFF${PLANTILLA_CSV}`);
 });
 
+app.post("/api/alimentos/preview-import-csv", async (req, res) => {
+  if (!(await assertCoachOAdmin(db, req, res))) return;
+  const { csv, mapeo } = req.body || {};
+  if (!csv || typeof csv !== "string") {
+    return res.status(400).json({ error: "Envía el contenido del archivo en el campo «csv»." });
+  }
+  try {
+    const resultado = previewImportacionCsv(csv, mapeo);
+    if (!resultado.ok) {
+      return res.status(400).json(resultado);
+    }
+    res.json(resultado);
+  } catch (err) {
+    console.error("preview-import-csv:", err.message);
+    res.status(500).json({ error: err.message || "No se pudo analizar el archivo." });
+  }
+});
+
 app.post("/api/alimentos/importar-csv", async (req, res) => {
   if (!(await assertCoachOAdmin(db, req, res))) return;
-  const { csv, alcance } = req.body || {};
+  const { csv, alcance, mapeo } = req.body || {};
   if (!csv || typeof csv !== "string") {
     return res.status(400).json({ error: "Envía el contenido del archivo en el campo «csv»." });
   }
@@ -405,7 +423,7 @@ app.post("/api/alimentos/importar-csv", async (req, res) => {
       ? null
       : parseInt(req.user.id, 10);
   try {
-    const resultado = await importarAlimentosCsv(db, coachId, csv);
+    const resultado = await importarAlimentosCsv(db, coachId, csv, mapeo);
     if (!resultado.ok) {
       return res.status(400).json(resultado);
     }

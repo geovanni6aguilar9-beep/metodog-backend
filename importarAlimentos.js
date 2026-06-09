@@ -12,12 +12,22 @@ const ALIAS = {
   grupo_equivalencia: ["grupo_equivalencia", "equivalencia", "grupo equiv"],
   porcion_base: ["porcion_base", "porción base", "porcion", "porción", "cantidad", "serving", "porcion base"],
   unidad: ["unidad", "unit", "medida"],
-  calorias: ["calorias", "calorías", "kcal", "energia", "energía", "cal"],
-  proteinas: ["proteinas", "proteínas", "prot", "protein", "proteina"],
-  carbohidratos: ["carbohidratos", "carbos", "carb", "carbs", "cho", "hidratos"],
-  grasas: ["grasas", "grasa", "fat", "lipidos", "lípidos"],
-  sodio: ["sodio", "sodium", "na", "mg sodio"]
+  calorias: ["calorias", "calorías", "kcal", "energia", "energía", "cal", "energia kcal"],
+  proteinas: ["proteinas", "proteínas", "prot", "protes", "protein", "proteina", "prote"],
+  carbohidratos: ["carbohidratos", "carbos", "carb", "carbs", "cho", "hidratos", "hco", "glucidos", "glúcidos"],
+  grasas: ["grasas", "grasa", "fat", "lipidos", "lípidos", "lipidos totales"],
+  sodio: ["sodio", "sodium", "na", "mg sodio", "sodio mg"]
 };
+
+/** Etiquetas para UI de mapeo manual. */
+const CAMPOS_MAPEO_UI = [
+  { key: "nombre", label: "Nombre del alimento", requerido: true },
+  { key: "calorias", label: "Calorías (kcal)", requerido: true },
+  { key: "proteinas", label: "Proteínas (g)", requerido: false },
+  { key: "carbohidratos", label: "Carbohidratos (g)", requerido: false },
+  { key: "grasas", label: "Grasas (g)", requerido: false },
+  { key: "sodio", label: "Sodio (mg)", requerido: false }
+];
 
 const GRUPOS_UI = [
   "Carnes", "Lácteos", "Cereales", "Leguminosas", "Frutas", "Grasas", "Verduras", "Otros"
@@ -116,6 +126,43 @@ function mapearColumnas(headers) {
   const limpios = headers.map(limpiarHeader);
   const map = mapearColumnasExacto(limpios);
   return mapearColumnasFuzzy(limpios, map);
+}
+
+function aplicarMapeoManual(mapeo) {
+  if (!mapeo || typeof mapeo !== "object") return null;
+  const out = {};
+  const campos = new Set(Object.keys(ALIAS).concat(["nombre", "calorias", "proteinas", "carbohidratos", "grasas", "sodio", "grupo", "porcion_base", "unidad"]));
+  for (const [campo, val] of Object.entries(mapeo)) {
+    if (!campos.has(campo)) continue;
+    if (val === "" || val == null) continue;
+    const n = parseInt(val, 10);
+    if (!Number.isNaN(n) && n >= 0) out[campo] = n;
+  }
+  if (out.nombre == null || out.calorias == null) return null;
+  return out;
+}
+
+function encontrarFilaEncabezados(lineas, sep) {
+  for (let i = 0; i < Math.min(lineas.length, 25); i++) {
+    const cells = parseCsvLinea(lineas[i], sep);
+    if (cells.length < 2) continue;
+    const map = mapearColumnas(cells);
+    const tieneKcal = map.calorias != null;
+    const tieneMacro = map.proteinas != null || map.carbohidratos != null || map.grasas != null;
+    const tieneNombre = map.nombre != null;
+    if (tieneKcal && (tieneNombre || tieneMacro)) {
+      return { index: i, headers: cells, colMap: map };
+    }
+  }
+  const cells = parseCsvLinea(lineas[0], sep);
+  return { index: 0, headers: cells, colMap: mapearColumnas(cells) };
+}
+
+function columnasDesdeHeaders(headers) {
+  return (headers || []).map((titulo, index) => ({
+    index,
+    titulo: String(titulo || "").trim() || `Columna ${index + 1}`
+  }));
 }
 
 function num(v, fallback = 0) {
@@ -309,7 +356,7 @@ function normalizarFila(cells, colMap, lineaNum, contextoHoja) {
   return { item };
 }
 
-function parsearCsvTexto(csvText) {
+function parsearCsvTexto(csvText, mapeoManual = null) {
   const raw = String(csvText || "").replace(/^\uFEFF/, "").trim();
   if (!raw) return { error: "El archivo está vacío." };
   if (raw.length > MAX_BYTES) {
@@ -322,15 +369,20 @@ function parsearCsvTexto(csvText) {
   }
 
   const sep = detectarSeparador(lineas[0]);
-  const headers = parseCsvLinea(lineas[0], sep);
-  const colMap = mapearColumnas(headers);
+  const enc = encontrarFilaEncabezados(lineas, sep);
+  const headers = enc.headers;
+  const colMapAuto = enc.colMap;
+  const colMapManual = aplicarMapeoManual(mapeoManual);
+  const colMap = colMapManual ? { ...colMapManual } : { ...colMapAuto };
+  const colMapFijo = colMapManual != null;
   const contextoHoja = headers.join(" ");
+  const columnas = columnasDesdeHeaders(headers);
 
   if (colMap.nombre == null) {
-    return { error: "No encontramos una columna con el nombre del alimento." };
+    return { error: "Indica qué columna es el nombre del alimento.", columnas, mapeo: colMap, mapeo_auto: colMapAuto };
   }
   if (colMap.calorias == null) {
-    return { error: "No encontramos una columna de calorías (kcal)." };
+    return { error: "Indica qué columna son las calorías (kcal).", columnas, mapeo: colMap, mapeo_auto: colMapAuto };
   }
 
   const filas = [];
@@ -338,7 +390,7 @@ function parsearCsvTexto(csvText) {
   let omitidas = 0;
   let contextoActivo = contextoHoja;
 
-  for (let i = 1; i < lineas.length; i++) {
+  for (let i = enc.index + 1; i < lineas.length; i++) {
     if (filas.length >= MAX_FILAS) {
       errores.push(`Solo se procesan ${MAX_FILAS} filas por importación. El resto se omitió.`);
       break;
@@ -346,10 +398,12 @@ function parsearCsvTexto(csvText) {
     const cells = parseCsvLinea(lineas[i], sep);
 
     if (esFilaEncabezados(cells)) {
-      const nuevoMap = mapearColumnas(cells);
-      if (nuevoMap.calorias != null) {
-        Object.assign(colMap, nuevoMap);
-        contextoActivo = cells.join(" ");
+      if (!colMapFijo) {
+        const nuevoMap = mapearColumnas(cells);
+        if (nuevoMap.calorias != null) {
+          Object.assign(colMap, nuevoMap);
+          contextoActivo = cells.join(" ");
+        }
       }
       omitidas++;
       continue;
@@ -376,10 +430,51 @@ function parsearCsvTexto(csvText) {
   }
 
   if (filas.length === 0) {
-    return { error: "No hay filas válidas para importar.", errores, omitidas };
+    return { error: "No hay filas válidas con este mapeo.", errores, omitidas, columnas, mapeo: colMap, mapeo_auto: colMapAuto };
   }
 
-  return { filas, errores, omitidas, total_lineas: lineas.length - 1, contexto_hoja: contextoActivo };
+  return {
+    filas,
+    errores,
+    omitidas,
+    total_lineas: lineas.length - enc.index - 1,
+    contexto_hoja: contextoActivo,
+    columnas,
+    mapeo: colMap,
+    mapeo_auto: colMapAuto
+  };
+}
+
+function previewImportacionCsv(csvText, mapeoManual = null) {
+  const parsed = parsearCsvTexto(csvText, mapeoManual);
+  if (parsed.error && !parsed.filas) {
+    return {
+      ok: false,
+      error: parsed.error,
+      columnas: parsed.columnas || [],
+      mapeo: parsed.mapeo || {},
+      mapeo_auto: parsed.mapeo_auto || {},
+      errores: parsed.errores || []
+    };
+  }
+  return {
+    ok: true,
+    columnas: parsed.columnas,
+    mapeo: parsed.mapeo,
+    mapeo_auto: parsed.mapeo_auto,
+    filas_validas: parsed.filas.length,
+    muestra: parsed.filas.slice(0, 5).map((f) => ({
+      nombre: f.nombre,
+      calorias: f.calorias,
+      proteinas: f.proteinas,
+      carbohidratos: f.carbohidratos,
+      grasas: f.grasas,
+      porcion_base: f.porcion_base,
+      unidad: f.unidad
+    })),
+    omitidas: parsed.omitidas,
+    errores: parsed.errores || []
+  };
 }
 
 async function enriquecerConBibliotecaGlobal(db, item) {
@@ -443,8 +538,8 @@ async function upsertAlimento(db, coachId, item) {
   return "nuevo";
 }
 
-async function importarAlimentosCsv(db, coachId, csvText) {
-  const parsed = parsearCsvTexto(csvText);
+async function importarAlimentosCsv(db, coachId, csvText, mapeoManual = null) {
+  const parsed = parsearCsvTexto(csvText, mapeoManual);
   if (parsed.error && !parsed.filas) {
     return { ok: false, error: parsed.error, errores: parsed.errores || [] };
   }
@@ -487,9 +582,12 @@ Pechuga de pollo (100 g),165,31,0,3.6,74`;
 
 module.exports = {
   parsearCsvTexto,
+  previewImportacionCsv,
   importarAlimentosCsv,
   PLANTILLA_CSV,
   MAX_FILAS,
+  CAMPOS_MAPEO_UI,
   inferirGrupoEquivalencia,
-  mapearColumnas
+  mapearColumnas,
+  aplicarMapeoManual
 };
