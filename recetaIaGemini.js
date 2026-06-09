@@ -73,11 +73,13 @@ function normalizarReceta(obj) {
       ? obj.pasos_preparacion
       : [];
   const pasos = pasosRaw.map((p) => String(p).trim()).filter(Boolean).slice(0, 10);
+  const consejo = String(obj.consejo || obj.nota_objetivo || "").trim() || null;
   if (!nombre && !pasos.length) return null;
   return {
     nombre: nombre || "Platillo del plan",
     tiempo_minutos: Number.isNaN(tiempo) || tiempo <= 0 ? null : tiempo,
-    pasos
+    pasos,
+    consejo
   };
 }
 
@@ -172,6 +174,7 @@ async function generarRecetaComida(payload) {
   if (!ingredientes.length) return { ok: false, motivo: "sin_ingredientes" };
 
   const macros = payload?.macros_totales || {};
+  const plan = payload?.plan || null;
   const envModel = (process.env.GEMINI_MODEL || "").trim();
   const modelos = envModel
     ? [envModel, ...MODELOS_FALLBACK.filter((m) => m !== envModel)]
@@ -179,6 +182,12 @@ async function generarRecetaComida(payload) {
 
   const system = `Eres un Chef Nutricional Deportivo de MétodoG (México).
 Convierte la lista EXACTA de ingredientes del atleta en una receta creativa y práctica.
+
+CONTEXTO DEL PLAN (si viene en el JSON):
+- objetivo "definir" = déficit / pérdida de grasa — recetas ligeras, sin sugerir extras calóricos.
+- objetivo "subir" = volumen / superávit — recetas saciantes y prácticas para ganar masa.
+- objetivo "mantener" = mantenimiento — equilibrio y variedad.
+- Usa objetivo_dia, macros_esta_comida, restante_dia y referencia_comida_equilibrada para alinear tono y consejo (NO cambies cantidades de ingredientes).
 
 REGLAS ABSOLUTAS:
 - Usa ÚNICAMENTE los ingredientes y cantidades enviados. PROHIBIDO agregar aceites, mantequilla, salsas, azúcar, harina u otros ingredientes no listados.
@@ -190,18 +199,21 @@ Responde SOLO JSON válido (sin markdown):
 {
   "nombre": "nombre creativo del platillo (máx. 60 caracteres)",
   "tiempo_minutos": número entero,
+  "consejo": "1 frase corta ligada al objetivo (definir/subir/mantener) y los macros del día",
   "pasos": ["paso 1", "paso 2", "máximo 8 pasos"]
 }`;
 
   const user = JSON.stringify({
     comida,
     ingredientes,
-    macros_totales: {
+    macros_esta_comida: {
       calorias: Math.round(num(macros.calorias) * 10) / 10,
       proteinas: Math.round(num(macros.proteinas) * 10) / 10,
       carbohidratos: Math.round(num(macros.carbohidratos) * 10) / 10,
-      grasas: Math.round(num(macros.grasas) * 10) / 10
-    }
+      grasas: Math.round(num(macros.grasas) * 10) / 10,
+      sodio: Math.round(num(macros.sodio) * 10) / 10
+    },
+    plan
   });
 
   let ultimoError = "api_error";
