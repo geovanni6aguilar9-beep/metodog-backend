@@ -476,7 +476,7 @@ app.post("/api/alimentos/receta-ia", async (req, res) => {
       const esAdmin = user.rol === "SUPERADMIN" || user.rol === "COACH";
       return res.status(resultado.motivo === "sin_ingredientes" ? 400 : 503).json({
         ok: false,
-        error: mensajeErrorAmigable(resultado.motivo, esAdmin)
+        error: mensajeErrorAmigable(resultado.motivo, esAdmin, resultado.detalle || "")
       });
     }
     res.json(resultado);

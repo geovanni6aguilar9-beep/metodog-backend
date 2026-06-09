@@ -1,13 +1,13 @@
 /**
  * Recetas creativas por comida — Google Gemini.
  * Env: GEMINI_API_KEY (o GOOGLE_API_KEY / GOOGLE_GENERATIVE_AI_API_KEY)
- * Opcional: GEMINI_MODEL (default gemini-1.5-flash)
+ * Opcional: GEMINI_MODEL (default gemini-2.5-flash)
  */
 
 const MODELOS_FALLBACK = [
-  "gemini-1.5-flash",
-  "gemini-2.0-flash",
-  "gemini-1.5-flash-8b"
+  "gemini-2.5-flash",
+  "gemini-2.5-flash-lite",
+  "gemini-2.0-flash"
 ];
 
 function resolverGeminiApiKey() {
@@ -85,8 +85,15 @@ function recetaDesdeTextoLibre(text, comida) {
   const lineas = String(text || "")
     .split(/\n/)
     .map((l) => l.replace(/^\d+[\).\-\s]+/, "").trim())
-    .filter((l) => l.length > 8);
-  if (lineas.length < 2) return null;
+    .filter((l) => l.length > 6);
+  if (lineas.length === 0) return null;
+  if (lineas.length === 1) {
+    return {
+      nombre: `Platillo ${comida}`.slice(0, 60),
+      tiempo_minutos: null,
+      pasos: [lineas[0]]
+    };
+  }
   return {
     nombre: `Platillo ${comida}`.slice(0, 60),
     tiempo_minutos: null,
@@ -94,7 +101,7 @@ function recetaDesdeTextoLibre(text, comida) {
   };
 }
 
-function mensajeErrorAmigable(motivo, esAdmin = false) {
+function mensajeErrorAmigable(motivo, esAdmin = false, detalle = "") {
   if (motivo === "sin_api_key") {
     return esAdmin
       ? "Falta GEMINI_API_KEY en Render (Google AI Studio → API key)."
@@ -106,25 +113,31 @@ function mensajeErrorAmigable(motivo, esAdmin = false) {
   if (motivo === "sin_ingredientes") {
     return "Agrega al menos un alimento a esta comida para generar una receta.";
   }
+  if (esAdmin && detalle) {
+    return `Gemini: ${detalle.slice(0, 180)}`;
+  }
   return "El chef de IA está descansando en este momento. Intenta más tarde.";
 }
 
 function extraerTextoGemini(data) {
   const cand = data?.candidates?.[0];
-  if (!cand) return { text: "", blockReason: data?.promptFeedback?.blockReason || "sin_candidatos" };
+  if (!cand) {
+    const block = data?.promptFeedback?.blockReason;
+    return { text: "", blockReason: block || "sin_candidatos" };
+  }
   const text = (cand.content?.parts || []).map((p) => p.text || "").join("").trim();
-  return {
-    text,
-    blockReason: cand.finishReason === "SAFETY" ? "safety" : null
-  };
+  if (cand.finishReason === "SAFETY") {
+    return { text, blockReason: "safety" };
+  }
+  return { text, blockReason: null };
 }
 
 async function llamarGemini(apiKey, model, system, user, usarJsonMode) {
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`;
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
 
   const body = {
     systemInstruction: { parts: [{ text: system }] },
-    contents: [{ parts: [{ text: user }] }],
+    contents: [{ role: "user", parts: [{ text: user }] }],
     generationConfig: {
       temperature: 0.65,
       maxOutputTokens: 1024
@@ -136,7 +149,10 @@ async function llamarGemini(apiKey, model, system, user, usarJsonMode) {
 
   const res = await fetch(url, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      "x-goog-api-key": apiKey
+    },
     body: JSON.stringify(body)
   });
 
@@ -186,18 +202,22 @@ Responde SOLO JSON válido (sin markdown):
   });
 
   let ultimoError = "api_error";
+  let ultimoDetalle = "";
 
   for (const model of modelos) {
     for (const usarJson of [true, false]) {
       try {
         const { res, data } = await llamarGemini(apiKey, model, system, user, usarJson);
 
-        if (res.status === 429) return { ok: false, motivo: "cuota" };
+        if (res.status === 429) {
+          return { ok: false, motivo: "cuota", detalle: "Cuota Gemini agotada (429)" };
+        }
 
         if (!res.ok) {
-          const errMsg = data?.error?.message || JSON.stringify(data).slice(0, 200);
+          const errMsg = data?.error?.message || JSON.stringify(data).slice(0, 300);
           console.warn(`[recetaIaGemini] ${model} json=${usarJson} HTTP ${res.status}:`, errMsg);
           ultimoError = res.status === 404 ? "modelo_no_disponible" : "api_error";
+          ultimoDetalle = errMsg;
           continue;
         }
 
@@ -205,6 +225,7 @@ Responde SOLO JSON válido (sin markdown):
         if (blockReason) {
           console.warn(`[recetaIaGemini] ${model} bloqueado:`, blockReason);
           ultimoError = "bloqueado";
+          ultimoDetalle = String(blockReason);
           continue;
         }
 
@@ -214,16 +235,18 @@ Responde SOLO JSON válido (sin markdown):
           return { ok: true, receta, ia: true, comida, modelo: model };
         }
 
-        console.warn(`[recetaIaGemini] ${model} parse vacío:`, text.slice(0, 120));
+        console.warn(`[recetaIaGemini] ${model} parse vacío:`, text.slice(0, 200));
         ultimoError = "parse_error";
+        ultimoDetalle = text.slice(0, 120) || "respuesta vacía";
       } catch (err) {
         console.warn(`[recetaIaGemini] ${model}:`, err?.message || err);
         ultimoError = "red";
+        ultimoDetalle = err?.message || String(err);
       }
     }
   }
 
-  return { ok: false, motivo: ultimoError };
+  return { ok: false, motivo: ultimoError, detalle: ultimoDetalle };
 }
 
 function geminiConfigurado() {
