@@ -90,6 +90,7 @@ function responderPing(req, res) {
     ok: true,
     message: "pong",
     service: "metodog-backend",
+    recetas_ia_gemini: geminiConfigurado(),
     ts: new Date().toISOString()
   });
 }
