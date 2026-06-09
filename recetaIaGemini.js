@@ -1,11 +1,29 @@
 /**
  * Recetas creativas por comida — Google Gemini.
- * Requiere GEMINI_API_KEY en Render. Sin key → error amigable al cliente.
+ * Env: GEMINI_API_KEY (o GOOGLE_API_KEY / GOOGLE_GENERATIVE_AI_API_KEY)
+ * Opcional: GEMINI_MODEL (default gemini-1.5-flash)
  */
+
+const MODELOS_FALLBACK = [
+  "gemini-1.5-flash",
+  "gemini-2.0-flash",
+  "gemini-1.5-flash-8b"
+];
+
+function resolverGeminiApiKey() {
+  return (
+    process.env.GEMINI_API_KEY ||
+    process.env.GOOGLE_API_KEY ||
+    process.env.GOOGLE_GENERATIVE_AI_API_KEY ||
+    ""
+  ).trim();
+}
 
 function parseJsonSeguro(text) {
   if (!text) return null;
-  const raw = String(text).trim();
+  let raw = String(text).trim();
+  const fence = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fence) raw = fence[1].trim();
   try {
     return JSON.parse(raw);
   } catch {
@@ -63,9 +81,24 @@ function normalizarReceta(obj) {
   };
 }
 
-function mensajeErrorAmigable(motivo) {
+function recetaDesdeTextoLibre(text, comida) {
+  const lineas = String(text || "")
+    .split(/\n/)
+    .map((l) => l.replace(/^\d+[\).\-\s]+/, "").trim())
+    .filter((l) => l.length > 8);
+  if (lineas.length < 2) return null;
+  return {
+    nombre: `Platillo ${comida}`.slice(0, 60),
+    tiempo_minutos: null,
+    pasos: lineas.slice(0, 8)
+  };
+}
+
+function mensajeErrorAmigable(motivo, esAdmin = false) {
   if (motivo === "sin_api_key") {
-    return "El chef de IA está descansando en este momento. Intenta más tarde.";
+    return esAdmin
+      ? "Falta GEMINI_API_KEY en Render (Google AI Studio → API key)."
+      : "El chef de IA está descansando en este momento. Intenta más tarde.";
   }
   if (motivo === "cuota" || motivo === "429") {
     return "El chef de IA está descansando en este momento. Intenta más tarde.";
@@ -76,8 +109,43 @@ function mensajeErrorAmigable(motivo) {
   return "El chef de IA está descansando en este momento. Intenta más tarde.";
 }
 
+function extraerTextoGemini(data) {
+  const cand = data?.candidates?.[0];
+  if (!cand) return { text: "", blockReason: data?.promptFeedback?.blockReason || "sin_candidatos" };
+  const text = (cand.content?.parts || []).map((p) => p.text || "").join("").trim();
+  return {
+    text,
+    blockReason: cand.finishReason === "SAFETY" ? "safety" : null
+  };
+}
+
+async function llamarGemini(apiKey, model, system, user, usarJsonMode) {
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`;
+
+  const body = {
+    systemInstruction: { parts: [{ text: system }] },
+    contents: [{ parts: [{ text: user }] }],
+    generationConfig: {
+      temperature: 0.65,
+      maxOutputTokens: 1024
+    }
+  };
+  if (usarJsonMode) {
+    body.generationConfig.responseMimeType = "application/json";
+  }
+
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body)
+  });
+
+  const data = await res.json().catch(() => ({}));
+  return { res, data };
+}
+
 async function generarRecetaComida(payload) {
-  const apiKey = (process.env.GEMINI_API_KEY || "").trim();
+  const apiKey = resolverGeminiApiKey();
   if (!apiKey) return { ok: false, motivo: "sin_api_key" };
 
   const comida = String(payload?.comida || "Comida").trim() || "Comida";
@@ -85,25 +153,25 @@ async function generarRecetaComida(payload) {
   if (!ingredientes.length) return { ok: false, motivo: "sin_ingredientes" };
 
   const macros = payload?.macros_totales || {};
-  const model = (process.env.GEMINI_MODEL || "gemini-2.0-flash").trim();
+  const envModel = (process.env.GEMINI_MODEL || "").trim();
+  const modelos = envModel
+    ? [envModel, ...MODELOS_FALLBACK.filter((m) => m !== envModel)]
+    : MODELOS_FALLBACK;
 
   const system = `Eres un Chef Nutricional Deportivo de MétodoG (México).
-Tu trabajo es convertir la lista EXACTA de ingredientes del atleta en una receta creativa y práctica.
+Convierte la lista EXACTA de ingredientes del atleta en una receta creativa y práctica.
 
 REGLAS ABSOLUTAS:
 - Usa ÚNICAMENTE los ingredientes y cantidades enviados. PROHIBIDO agregar aceites, mantequilla, salsas, azúcar, harina u otros ingredientes no listados.
-- Sal, pimienta, ajo en polvo o especias secas en cantidad mínima están permitidos SOLO si no alteran macros de forma relevante.
+- Sal, pimienta o especias secas en pizca permitidas si no alteran macros.
 - NO sustituyas ni omitas ingredientes del plan.
-- NO inventes porciones distintas a las indicadas.
-- La receta debe respetar el perfil de macros del plan (proteína/carbos/grasas del día de esa comida).
 - Tono: directo, motivador, para atleta en preparación. Español México.
-- Pasos cortos y accionables (cocina real, no poesía).
 
-Responde SOLO JSON válido (sin markdown ni texto extra):
+Responde SOLO JSON válido (sin markdown):
 {
   "nombre": "nombre creativo del platillo (máx. 60 caracteres)",
-  "tiempo_minutos": número entero estimado de preparación,
-  "pasos": ["paso 1", "paso 2", "... máximo 8 pasos, cada uno máx. 120 caracteres"]
+  "tiempo_minutos": número entero,
+  "pasos": ["paso 1", "paso 2", "máximo 8 pasos"]
 }`;
 
   const user = JSON.stringify({
@@ -117,46 +185,55 @@ Responde SOLO JSON válido (sin markdown ni texto extra):
     }
   });
 
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`;
+  let ultimoError = "api_error";
 
-  try {
-    const res = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        systemInstruction: { parts: [{ text: system }] },
-        contents: [{ role: "user", parts: [{ text: user }] }],
-        generationConfig: {
-          temperature: 0.65,
-          maxOutputTokens: 900,
-          responseMimeType: "application/json"
+  for (const model of modelos) {
+    for (const usarJson of [true, false]) {
+      try {
+        const { res, data } = await llamarGemini(apiKey, model, system, user, usarJson);
+
+        if (res.status === 429) return { ok: false, motivo: "cuota" };
+
+        if (!res.ok) {
+          const errMsg = data?.error?.message || JSON.stringify(data).slice(0, 200);
+          console.warn(`[recetaIaGemini] ${model} json=${usarJson} HTTP ${res.status}:`, errMsg);
+          ultimoError = res.status === 404 ? "modelo_no_disponible" : "api_error";
+          continue;
         }
-      })
-    });
 
-    if (res.status === 429) return { ok: false, motivo: "cuota" };
+        const { text, blockReason } = extraerTextoGemini(data);
+        if (blockReason) {
+          console.warn(`[recetaIaGemini] ${model} bloqueado:`, blockReason);
+          ultimoError = "bloqueado";
+          continue;
+        }
 
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      console.warn("[recetaIaGemini] HTTP", res.status, JSON.stringify(data).slice(0, 300));
-      return { ok: false, motivo: res.status === 429 ? "cuota" : "api_error" };
+        let receta = normalizarReceta(parseJsonSeguro(text));
+        if (!receta && text) receta = recetaDesdeTextoLibre(text, comida);
+        if (receta) {
+          return { ok: true, receta, ia: true, comida, modelo: model };
+        }
+
+        console.warn(`[recetaIaGemini] ${model} parse vacío:`, text.slice(0, 120));
+        ultimoError = "parse_error";
+      } catch (err) {
+        console.warn(`[recetaIaGemini] ${model}:`, err?.message || err);
+        ultimoError = "red";
+      }
     }
-
-    const text =
-      data?.candidates?.[0]?.content?.parts?.map((p) => p.text).join("") || "";
-    const parsed = parseJsonSeguro(text);
-    const receta = normalizarReceta(parsed);
-    if (!receta) return { ok: false, motivo: "parse_error" };
-
-    return { ok: true, receta, ia: true, comida };
-  } catch (err) {
-    console.warn("[recetaIaGemini]", err?.message || err);
-    return { ok: false, motivo: "red" };
   }
+
+  return { ok: false, motivo: ultimoError };
+}
+
+function geminiConfigurado() {
+  return !!resolverGeminiApiKey();
 }
 
 module.exports = {
   generarRecetaComida,
   normalizarIngredientes,
-  mensajeErrorAmigable
+  mensajeErrorAmigable,
+  geminiConfigurado,
+  resolverGeminiApiKey
 };

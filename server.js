@@ -58,7 +58,7 @@ const {
   limpiarNombresInvalidosCoach,
   PLANTILLA_CSV
 } = require("./importarAlimentos");
-const { generarRecetaComida, mensajeErrorAmigable } = require("./recetaIaGemini");
+const { generarRecetaComida, mensajeErrorAmigable, geminiConfigurado } = require("./recetaIaGemini");
 
 const DEV_JWT_FALLBACK = "metodog-dev-cambiar-en-produccion";
 if (isProduction()) {
@@ -333,6 +333,11 @@ function validarStripeEnProduccion() {
   if (key.startsWith("sk_live_")) {
     console.log("💳 Stripe LIVE configurado.");
   }
+  if (geminiConfigurado()) {
+    console.log("✨ Gemini configurado — Recetas IA activas.");
+  } else {
+    console.warn("⚠️ GEMINI_API_KEY no configurada — Recetas IA mostrarán mensaje de descanso.");
+  }
   const precios = [
     "STRIPE_PRICE_FULL_WEEK",
     "STRIPE_PRICE_COACH_STARTER",
@@ -467,9 +472,10 @@ app.post("/api/alimentos/receta-ia", async (req, res) => {
   try {
     const resultado = await generarRecetaComida({ comida, alimentos, macros_totales });
     if (!resultado.ok) {
+      const esAdmin = user.rol === "SUPERADMIN" || user.rol === "COACH";
       return res.status(resultado.motivo === "sin_ingredientes" ? 400 : 503).json({
         ok: false,
-        error: mensajeErrorAmigable(resultado.motivo)
+        error: mensajeErrorAmigable(resultado.motivo, esAdmin)
       });
     }
     res.json(resultado);
