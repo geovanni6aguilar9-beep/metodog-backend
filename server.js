@@ -58,6 +58,7 @@ const {
   limpiarNombresInvalidosCoach,
   PLANTILLA_CSV
 } = require("./importarAlimentos");
+const { generarRecetaComida, mensajeErrorAmigable } = require("./recetaIaGemini");
 
 const DEV_JWT_FALLBACK = "metodog-dev-cambiar-en-produccion";
 if (isProduction()) {
@@ -438,6 +439,46 @@ app.post("/api/alimentos/importar-csv", async (req, res) => {
   } catch (err) {
     console.error("importar-csv:", err.message);
     res.status(500).json({ error: err.message || "No se pudo importar el archivo." });
+  }
+});
+
+async function usuarioPuedeRecetasIa(userId, rol) {
+  if (rol === "SUPERADMIN" || rol === "COACH") return true;
+  const r = await db.execute({
+    sql: "SELECT paquete_rutina_6_dias FROM usuarios WHERE id = ?",
+    args: [parseInt(userId, 10)]
+  });
+  return !!r.rows[0]?.paquete_rutina_6_dias;
+}
+
+app.post("/api/alimentos/receta-ia", async (req, res) => {
+  const user = req.user;
+  if (!user) return res.status(401).json({ ok: false, error: "Sesión requerida" });
+
+  const puede = await usuarioPuedeRecetasIa(user.id, user.rol);
+  if (!puede) {
+    return res.status(403).json({
+      ok: false,
+      error: "Activa Full Week PRO para usar recetas con IA."
+    });
+  }
+
+  const { comida, alimentos, macros_totales } = req.body || {};
+  try {
+    const resultado = await generarRecetaComida({ comida, alimentos, macros_totales });
+    if (!resultado.ok) {
+      return res.status(resultado.motivo === "sin_ingredientes" ? 400 : 503).json({
+        ok: false,
+        error: mensajeErrorAmigable(resultado.motivo)
+      });
+    }
+    res.json(resultado);
+  } catch (err) {
+    console.error("receta-ia:", err.message);
+    res.status(500).json({
+      ok: false,
+      error: mensajeErrorAmigable("api_error")
+    });
   }
 });
 
