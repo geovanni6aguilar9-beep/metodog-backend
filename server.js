@@ -342,13 +342,7 @@ function validarStripeEnProduccion() {
     console.log("💳 Stripe LIVE configurado.");
   }
   if (geminiConfigurado()) {
-    if (formatoKeyPareceValido()) {
-      console.log("✨ Gemini configurado — Recetas IA activas (key AIzaSy…).");
-    } else {
-      console.warn(
-        "⚠️ GEMINI_API_KEY no parece de AI Studio (debe empezar con AIzaSy). Crea una clave nueva en aistudio.google.com."
-      );
-    }
+    console.log("✨ Gemini configurado — Recetas IA activas.");
   } else {
     console.warn("⚠️ GEMINI_API_KEY no configurada — Recetas IA mostrarán mensaje de descanso.");
   }
@@ -498,17 +492,6 @@ app.post("/api/alimentos/receta-ia", async (req, res) => {
 
   const { comida, alimentos, macros_totales } = req.body || {};
   try {
-    if (!formatoKeyPareceValido()) {
-      return res.status(503).json({
-        ok: false,
-        error: mensajeErrorAmigable(
-          "formato_key",
-          true,
-          `La key empieza con "${(process.env.GEMINI_API_KEY || "").trim().slice(0, 4)}…" — crea una clave nueva en AI Studio (AIzaSy…).`
-        )
-      });
-    }
-
     const resultado = await generarRecetaComida({ comida, alimentos, macros_totales });
     if (!resultado.ok) {
       const esAdmin = user.rol === "SUPERADMIN" || user.rol === "COACH";

@@ -114,7 +114,7 @@ function mensajeErrorAmigable(motivo, esAdmin = false, detalle = "") {
     return "Agrega al menos un alimento a esta comida para generar una receta.";
   }
   if (motivo === "formato_key") {
-    return detalle || "La clave de Gemini no es válida. Crea una nueva en AI Studio (debe empezar con AIzaSy).";
+    return detalle || "La clave de Gemini parece incompleta. Revisa GEMINI_API_KEY en Render.";
   }
   if (esAdmin && detalle) {
     return `Gemini: ${detalle.slice(0, 180)}`;
@@ -256,9 +256,10 @@ function geminiConfigurado() {
   return !!resolverGeminiApiKey();
 }
 
+/** Solo longitud mínima — Google valida auth (AIzaSy… clásico o AQ… AI Studio nuevo). */
 function formatoKeyPareceValido() {
   const k = resolverGeminiApiKey();
-  return k.startsWith("AIza");
+  return k.length >= 15;
 }
 
 /** Prueba mínima de conexión (solo diagnóstico admin). */
@@ -271,7 +272,7 @@ async function probarConexionGemini() {
     return {
       ok: false,
       motivo: "formato_key",
-      detalle: `La key empieza con "${apiKey.slice(0, 4)}…" — debe ser de AI Studio y comenzar con AIzaSy. Crea una nueva con «Crear clave de API».`
+      detalle: "GEMINI_API_KEY demasiado corta o vacía en Render."
     };
   }
 
