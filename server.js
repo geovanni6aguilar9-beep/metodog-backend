@@ -490,13 +490,14 @@ app.post("/api/alimentos/receta-ia", async (req, res) => {
     });
   }
 
-  const { comida, alimentos, macros_totales } = req.body || {};
+  const payload = req.body || {};
   try {
-    const resultado = await generarRecetaComida({ comida, alimentos, macros_totales });
+    const resultado = await generarRecetaComida(payload);
     if (!resultado.ok) {
       const esAdmin = user.rol === "SUPERADMIN" || user.rol === "COACH";
       const mostrarDetalle = esAdmin || resultado.motivo === "formato_key";
-      return res.status(resultado.motivo === "sin_ingredientes" ? 400 : 503).json({
+      const err400 = ["sin_catalogo", "sin_objetivo", "sin_ingredientes"];
+      return res.status(err400.includes(resultado.motivo) ? 400 : 503).json({
         ok: false,
         error: mensajeErrorAmigable(
           resultado.motivo,

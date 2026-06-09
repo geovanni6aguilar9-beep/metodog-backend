@@ -1,7 +1,7 @@
 /**
- * Recetas creativas por comida — Google Gemini.
- * Env: GEMINI_API_KEY (o GOOGLE_API_KEY / GOOGLE_GENERATIVE_AI_API_KEY)
- * Opcional: GEMINI_MODEL (default gemini-2.5-flash)
+ * Planificador de combos por comida — Google Gemini.
+ * Selecciona alimentos SOLO del catálogo enviado y calcula porciones para cubrir macros.
+ * Env: GEMINI_API_KEY · opcional GEMINI_MODEL
  */
 
 const MODELOS_FALLBACK = [
@@ -42,64 +42,101 @@ function num(v, fallback = 0) {
   return Number.isNaN(n) ? fallback : n;
 }
 
-function normalizarIngredientes(alimentos) {
-  if (!Array.isArray(alimentos)) return [];
-  return alimentos
-    .map((a) => {
-      const cantidad = num(a?.cantidad, 0);
-      if (!cantidad || cantidad <= 0) return null;
-      const nombre = String(a?.nombre || "").trim();
-      if (!nombre) return null;
-      return {
-        nombre,
-        cantidad: Math.round(cantidad * 10) / 10,
-        unidad: String(a?.unidad || "g").trim() || "g",
-        calorias: Math.round(num(a?.calorias) * 10) / 10,
-        proteinas: Math.round(num(a?.proteinas) * 10) / 10,
-        carbohidratos: Math.round(num(a?.carbohidratos) * 10) / 10,
-        grasas: Math.round(num(a?.grasas) * 10) / 10
-      };
-    })
-    .filter(Boolean);
+function redondear(n) {
+  return Math.round(n * 10) / 10;
 }
 
-function normalizarReceta(obj) {
-  if (!obj || typeof obj !== "object") return null;
-  const nombre = String(obj.nombre || obj.titulo || "").trim();
-  const tiempo = parseInt(obj.tiempo_minutos ?? obj.tiempo ?? obj.tiempo_estimado, 10);
-  const pasosRaw = Array.isArray(obj.pasos)
-    ? obj.pasos
-    : Array.isArray(obj.pasos_preparacion)
-      ? obj.pasos_preparacion
-      : [];
-  const pasos = pasosRaw.map((p) => String(p).trim()).filter(Boolean).slice(0, 10);
-  const consejo = String(obj.consejo || obj.nota_objetivo || "").trim() || null;
-  if (!nombre && !pasos.length) return null;
+function normalizarCatalogo(catalogo) {
+  if (!Array.isArray(catalogo)) return [];
+  const map = new Map();
+  for (const a of catalogo) {
+    const id = parseInt(a?.id, 10);
+    if (!id || id <= 0) continue;
+    const nombre = String(a?.nombre || "").trim();
+    if (!nombre) continue;
+    const porcion = num(a?.porcion_base, 1) || 1;
+    map.set(id, {
+      id,
+      nombre,
+      porcion_base: porcion,
+      unidad: String(a?.unidad || "g").trim() || "g",
+      calorias: num(a?.calorias ?? a?.kcal),
+      proteinas: num(a?.proteinas ?? a?.prot),
+      carbohidratos: num(a?.carbohidratos ?? a?.carb),
+      grasas: num(a?.grasas ?? a?.gras),
+      sodio: num(a?.sodio)
+    });
+  }
+  return Array.from(map.values());
+}
+
+function macrosDesdeCatalogo(item, cantidad) {
+  const base = num(item?.porcion_base, 1) || 1;
+  const factor = num(cantidad, 0) / base;
   return {
-    nombre: nombre || "Platillo del plan",
-    tiempo_minutos: Number.isNaN(tiempo) || tiempo <= 0 ? null : tiempo,
-    pasos,
-    consejo
+    calorias: redondear(num(item.calorias) * factor),
+    proteinas: redondear(num(item.proteinas) * factor),
+    carbohidratos: redondear(num(item.carbohidratos) * factor),
+    grasas: redondear(num(item.grasas) * factor),
+    sodio: redondear(num(item.sodio) * factor)
   };
 }
 
-function recetaDesdeTextoLibre(text, comida) {
-  const lineas = String(text || "")
-    .split(/\n/)
-    .map((l) => l.replace(/^\d+[\).\-\s]+/, "").trim())
-    .filter((l) => l.length > 6);
-  if (lineas.length === 0) return null;
-  if (lineas.length === 1) {
-    return {
-      nombre: `Platillo ${comida}`.slice(0, 60),
-      tiempo_minutos: null,
-      pasos: [lineas[0]]
-    };
+function sumarMacrosLista(items) {
+  return items.reduce(
+    (t, m) => ({
+      calorias: t.calorias + num(m.calorias),
+      proteinas: t.proteinas + num(m.proteinas),
+      carbohidratos: t.carbohidratos + num(m.carbohidratos),
+      grasas: t.grasas + num(m.grasas),
+      sodio: t.sodio + num(m.sodio)
+    }),
+    { calorias: 0, proteinas: 0, carbohidratos: 0, grasas: 0, sodio: 0 }
+  );
+}
+
+function normalizarCombo(obj, catalogoMap) {
+  if (!obj || typeof obj !== "object") return null;
+  const nombre = String(obj.nombre || obj.titulo || "").trim();
+  const consejo = String(obj.consejo || obj.nota || "").trim() || null;
+
+  const rawItems = Array.isArray(obj.alimentos_sugeridos)
+    ? obj.alimentos_sugeridos
+    : Array.isArray(obj.alimentos)
+      ? obj.alimentos
+      : [];
+
+  const alimentos_sugeridos = [];
+  for (const row of rawItems.slice(0, 12)) {
+    const id = parseInt(row?.id_alimento ?? row?.id ?? row?.idAlimento, 10);
+    const cantidad = num(row?.cantidad_sugerida ?? row?.cantidad, 0);
+    if (!id || cantidad <= 0) continue;
+    const cat = catalogoMap.get(id);
+    if (!cat) continue;
+    const cantidadOk = Math.round(cantidad * 10) / 10;
+    const macros = macrosDesdeCatalogo(cat, cantidadOk);
+    alimentos_sugeridos.push({
+      id_alimento: id,
+      nombre: cat.nombre,
+      cantidad_sugerida: cantidadOk,
+      unidad: cat.unidad,
+      porcion_base: cat.porcion_base,
+      ...macros
+    });
   }
+
+  if (!alimentos_sugeridos.length) return null;
+
+  const macros_combo = sumarMacrosLista(alimentos_sugeridos);
+  Object.keys(macros_combo).forEach((k) => {
+    macros_combo[k] = redondear(macros_combo[k]);
+  });
+
   return {
-    nombre: `Platillo ${comida}`.slice(0, 60),
-    tiempo_minutos: null,
-    pasos: lineas.slice(0, 8)
+    nombre: nombre || "Combo sugerido",
+    consejo,
+    alimentos_sugeridos,
+    macros_combo
   };
 }
 
@@ -107,13 +144,16 @@ function mensajeErrorAmigable(motivo, esAdmin = false, detalle = "") {
   if (motivo === "sin_api_key") {
     return esAdmin
       ? "Falta GEMINI_API_KEY en Render (Google AI Studio → API key)."
-      : "El chef de IA está descansando en este momento. Intenta más tarde.";
+      : "El planificador IA está descansando. Intenta más tarde.";
   }
   if (motivo === "cuota" || motivo === "429") {
-    return "El chef de IA está descansando en este momento. Intenta más tarde.";
+    return "El planificador IA está descansando. Intenta más tarde.";
   }
-  if (motivo === "sin_ingredientes") {
-    return "Agrega al menos un alimento a esta comida para generar una receta.";
+  if (motivo === "sin_catalogo") {
+    return "No hay alimentos en tu biblioteca. Recarga la app o contacta a tu coach.";
+  }
+  if (motivo === "sin_objetivo") {
+    return "Primero ejecuta la calculadora metabólica para definir tus macros del día.";
   }
   if (motivo === "formato_key") {
     return detalle || "La clave de Gemini parece incompleta. Revisa GEMINI_API_KEY en Render.";
@@ -121,7 +161,7 @@ function mensajeErrorAmigable(motivo, esAdmin = false, detalle = "") {
   if (esAdmin && detalle) {
     return `Gemini: ${detalle.slice(0, 180)}`;
   }
-  return "El chef de IA está descansando en este momento. Intenta más tarde.";
+  return "El planificador IA está descansando. Intenta más tarde.";
 }
 
 function extraerTextoGemini(data) {
@@ -144,8 +184,8 @@ async function llamarGemini(apiKey, model, system, user, usarJsonMode) {
     systemInstruction: { parts: [{ text: system }] },
     contents: [{ role: "user", parts: [{ text: user }] }],
     generationConfig: {
-      temperature: 0.65,
-      maxOutputTokens: 1024
+      temperature: 0.45,
+      maxOutputTokens: 2048
     }
   };
   if (usarJsonMode) {
@@ -170,50 +210,86 @@ async function generarRecetaComida(payload) {
   if (!apiKey) return { ok: false, motivo: "sin_api_key" };
 
   const comida = String(payload?.comida || "Comida").trim() || "Comida";
-  const ingredientes = normalizarIngredientes(payload?.alimentos);
-  if (!ingredientes.length) return { ok: false, motivo: "sin_ingredientes" };
+  const catalogo = normalizarCatalogo(payload?.catalogo);
+  if (!catalogo.length) return { ok: false, motivo: "sin_catalogo" };
 
-  const macros = payload?.macros_totales || {};
   const plan = payload?.plan || null;
+  const macrosObjetivo =
+    payload?.macros_objetivo_comida ||
+    plan?.referencia_comida_equilibrada ||
+    plan?.macros_faltantes_comida ||
+    null;
+
+  if (!macrosObjetivo || num(macrosObjetivo.calorias) <= 0) {
+    return { ok: false, motivo: "sin_objetivo" };
+  }
+
+  const catalogoMap = new Map(catalogo.map((c) => [c.id, c]));
   const envModel = (process.env.GEMINI_MODEL || "").trim();
   const modelos = envModel
     ? [envModel, ...MODELOS_FALLBACK.filter((m) => m !== envModel)]
     : MODELOS_FALLBACK;
 
-  const system = `Eres un Chef Nutricional Deportivo de MétodoG (México).
-Convierte la lista EXACTA de ingredientes del atleta en una receta creativa y práctica.
+  const system = `Eres un Planificador Nutricional Deportivo de MétodoG (México).
+Tu trabajo NO es dar recetas de cocina ni pasos de preparación.
 
-CONTEXTO DEL PLAN (si viene en el JSON):
-- objetivo "definir" = déficit / pérdida de grasa — recetas ligeras, sin sugerir extras calóricos.
-- objetivo "subir" = volumen / superávit — recetas saciantes y prácticas para ganar masa.
-- objetivo "mantener" = mantenimiento — equilibrio y variedad.
-- Usa objetivo_dia, macros_esta_comida, restante_dia y referencia_comida_equilibrada para alinear tono y consejo (NO cambies cantidades de ingredientes).
+OBJETIVO: Armar un COMBO de alimentos para una comida (desayuno, comida, cena, etc.) que se acerque a los macros objetivo indicados.
 
-REGLAS ABSOLUTAS:
-- Usa ÚNICAMENTE los ingredientes y cantidades enviados. PROHIBIDO agregar aceites, mantequilla, salsas, azúcar, harina u otros ingredientes no listados.
-- Sal, pimienta o especias secas en pizca permitidas si no alteran macros.
-- NO sustituyas ni omitas ingredientes del plan.
-- Tono: directo, motivador, para atleta en preparación. Español México.
+REGLA DE ORO — CATÁLOGO CERRADO:
+- SOLO puedes elegir alimentos del arreglo "catalogo" usando su "id" exacto como id_alimento.
+- PROHIBIDO inventar alimentos, marcas genéricas o ítems que no estén en el catálogo.
+- Las cantidades deben expresarse en la unidad del catálogo (g, ml, pieza, cucharada).
+- Los macros del catálogo son POR porcion_base: calcula cantidad_sugerida para acercarte al objetivo.
+- Usa entre 2 y 6 alimentos por combo. Variedad realista (proteína + carb + grasa/fruta según objetivo).
+
+CONTEXTO DEL PLAN (si viene):
+- objetivo "definir" = déficit — combos ligeros, proteína alta, grasas controladas.
+- objetivo "subir" = volumen — combos saciantes, más carbohidratos y calorías.
+- objetivo "mantener" = equilibrio.
+
+Si hay macros_actuales_comida, los alimentos que sugieras deben COMPLEMENTAR lo ya puesto (no duplicar el mismo id salvo que tenga sentido sumar porción).
 
 Responde SOLO JSON válido (sin markdown):
 {
-  "nombre": "nombre creativo del platillo (máx. 60 caracteres)",
-  "tiempo_minutos": número entero,
-  "consejo": "1 frase corta ligada al objetivo (definir/subir/mantener) y los macros del día",
-  "pasos": ["paso 1", "paso 2", "máximo 8 pasos"]
+  "nombre": "nombre creativo del combo (máx. 60 caracteres, ej. Yogur con manzana y avena)",
+  "consejo": "1 frase corta: qué cubre este combo y por qué encaja con el objetivo",
+  "alimentos_sugeridos": [
+    { "id_alimento": número_id_del_catalogo, "cantidad_sugerida": número }
+  ]
 }`;
+
+  const catalogoLite = catalogo.map((c) => ({
+    id: c.id,
+    nombre: c.nombre,
+    porcion_base: c.porcion_base,
+    unidad: c.unidad,
+    kcal: c.calorias,
+    prot: c.proteinas,
+    carb: c.carbohidratos,
+    gras: c.grasas,
+    sodio: c.sodio
+  }));
 
   const user = JSON.stringify({
     comida,
-    ingredientes,
-    macros_esta_comida: {
-      calorias: Math.round(num(macros.calorias) * 10) / 10,
-      proteinas: Math.round(num(macros.proteinas) * 10) / 10,
-      carbohidratos: Math.round(num(macros.carbohidratos) * 10) / 10,
-      grasas: Math.round(num(macros.grasas) * 10) / 10,
-      sodio: Math.round(num(macros.sodio) * 10) / 10
+    macros_objetivo_comida: {
+      calorias: redondear(num(macrosObjetivo.calorias)),
+      proteinas: redondear(num(macrosObjetivo.proteinas)),
+      carbohidratos: redondear(num(macrosObjetivo.carbohidratos)),
+      grasas: redondear(num(macrosObjetivo.grasas)),
+      sodio: redondear(num(macrosObjetivo.sodio))
     },
-    plan
+    macros_actuales_comida: payload?.macros_actuales_comida || plan?.macros_esta_comida || null,
+    macros_faltantes_comida: payload?.macros_faltantes_comida || null,
+    plan: plan
+      ? {
+          objetivo: plan.objetivo,
+          etiqueta: plan.etiqueta,
+          objetivo_dia: plan.objetivo_dia,
+          restante_dia: plan.restante_dia
+        }
+      : null,
+    catalogo: catalogoLite
   });
 
   let ultimoError = "api_error";
@@ -244,10 +320,9 @@ Responde SOLO JSON válido (sin markdown):
           continue;
         }
 
-        let receta = normalizarReceta(parseJsonSeguro(text));
-        if (!receta && text) receta = recetaDesdeTextoLibre(text, comida);
-        if (receta) {
-          return { ok: true, receta, ia: true, comida, modelo: model };
+        const combo = normalizarCombo(parseJsonSeguro(text), catalogoMap);
+        if (combo) {
+          return { ok: true, receta: combo, combo, ia: true, comida, modelo: model };
         }
 
         console.warn(`[recetaIaGemini] ${model} parse vacío:`, text.slice(0, 200));
@@ -268,13 +343,11 @@ function geminiConfigurado() {
   return !!resolverGeminiApiKey();
 }
 
-/** Solo longitud mínima — Google valida auth (AIzaSy… clásico o AQ… AI Studio nuevo). */
 function formatoKeyPareceValido() {
   const k = resolverGeminiApiKey();
   return k.length >= 15;
 }
 
-/** Prueba mínima de conexión (solo diagnóstico admin). */
 async function probarConexionGemini() {
   const apiKey = resolverGeminiApiKey();
   if (!apiKey) {
@@ -313,7 +386,7 @@ async function probarConexionGemini() {
 
 module.exports = {
   generarRecetaComida,
-  normalizarIngredientes,
+  normalizarCatalogo,
   mensajeErrorAmigable,
   geminiConfigurado,
   formatoKeyPareceValido,
