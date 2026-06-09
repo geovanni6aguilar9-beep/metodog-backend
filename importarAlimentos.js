@@ -313,6 +313,15 @@ function esFilaEncabezados(cells) {
   return /kcal|caloria/.test(joined) && (/protein|carbohidrato|grasa|hidratos/.test(joined));
 }
 
+/** Rechaza índices de fila Excel («1», «2,05») u otros nombres sin letras. */
+function esNombreAlimentoValido(nombre) {
+  const s = String(nombre || "").trim();
+  if (s.length < 2) return false;
+  if (/^\d+([.,]\d+)?$/.test(s)) return false;
+  if (!/[a-zA-ZáéíóúüñÁÉÍÓÚÜÑ]/.test(s)) return false;
+  return true;
+}
+
 /** Filas tipo «Tipos de comidas para Proteína» entre bloques del Excel. */
 function esTituloSeccion(cells, colMap) {
   const nombre = String(celda(cells, colMap, "nombre")).trim();
@@ -336,6 +345,10 @@ function normalizarFila(cells, colMap, lineaNum, contextoHoja) {
 
   const extraido = extraerPorcionDesdeNombre(nombre);
   nombre = extraido.nombre || nombre;
+
+  if (!esNombreAlimentoValido(nombre)) {
+    return { omitir: true };
+  }
 
   const calorias = num(get("calorias"), NaN);
   if (Number.isNaN(calorias) || calorias < 0) {
@@ -442,6 +455,10 @@ function parsearCsvTexto(csvText, mapeoManual = null) {
     }
 
     const res = normalizarFila(cells, colMap, i + 1, contextoActivo);
+    if (res.omitir) {
+      omitidas++;
+      continue;
+    }
     if (res.error) {
       if (tieneCalorias(cells, colMap)) errores.push(res.error);
       else omitidas++;
@@ -559,6 +576,22 @@ async function upsertAlimento(db, coachId, item) {
   return "nuevo";
 }
 
+async function limpiarNombresInvalidosCoach(db, coachId) {
+  if (coachId == null) return 0;
+  const rows = await db.execute({
+    sql: "SELECT id, nombre FROM alimentos WHERE coach_id = ?",
+    args: [coachId]
+  });
+  let borrados = 0;
+  for (const r of rows.rows) {
+    if (!esNombreAlimentoValido(r.nombre)) {
+      await db.execute({ sql: "DELETE FROM alimentos WHERE id = ?", args: [r.id] });
+      borrados++;
+    }
+  }
+  return borrados;
+}
+
 async function importarAlimentosCsv(db, coachId, csvText, mapeoManual = null) {
   const parsed = parsearCsvTexto(csvText, mapeoManual);
   if (parsed.error && !parsed.filas) {
@@ -575,6 +608,8 @@ async function importarAlimentosCsv(db, coachId, csvText, mapeoManual = null) {
     else actualizados++;
   }
 
+  const limpiados = await limpiarNombresInvalidosCoach(db, coachId);
+
   const alcanceMsg =
     coachId == null
       ? "Biblioteca global MétodoG actualizada."
@@ -584,15 +619,19 @@ async function importarAlimentosCsv(db, coachId, csvText, mapeoManual = null) {
   const omitMsg = omitidas > 0
     ? ` ${omitidas} fila(s) de título o vacías omitidas (normal si tu Excel tiene secciones).`
     : "";
+  const limpiaMsg = limpiados > 0
+    ? ` ${limpiados} entrada(s) con nombre numérico eliminada(s).`
+    : "";
 
   return {
     ok: true,
     nuevos,
     actualizados,
+    limpiados,
     total: parsed.filas.length,
     omitidas,
     errores: parsed.errores || [],
-    mensaje: `Importación lista: ${nuevos} nuevo(s), ${actualizados} actualizado(s).${omitMsg} ${alcanceMsg}`
+    mensaje: `Importación lista: ${nuevos} nuevo(s), ${actualizados} actualizado(s).${omitMsg}${limpiaMsg} ${alcanceMsg}`
   };
 }
 
