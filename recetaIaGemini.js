@@ -113,6 +113,9 @@ function mensajeErrorAmigable(motivo, esAdmin = false, detalle = "") {
   if (motivo === "sin_ingredientes") {
     return "Agrega al menos un alimento a esta comida para generar una receta.";
   }
+  if (motivo === "formato_key") {
+    return detalle || "La clave de Gemini no es válida. Crea una nueva en AI Studio (debe empezar con AIzaSy).";
+  }
   if (esAdmin && detalle) {
     return `Gemini: ${detalle.slice(0, 180)}`;
   }
@@ -253,10 +256,54 @@ function geminiConfigurado() {
   return !!resolverGeminiApiKey();
 }
 
+function formatoKeyPareceValido() {
+  const k = resolverGeminiApiKey();
+  return k.startsWith("AIza");
+}
+
+/** Prueba mínima de conexión (solo diagnóstico admin). */
+async function probarConexionGemini() {
+  const apiKey = resolverGeminiApiKey();
+  if (!apiKey) {
+    return { ok: false, motivo: "sin_api_key", detalle: "No hay GEMINI_API_KEY en Render." };
+  }
+  if (!formatoKeyPareceValido()) {
+    return {
+      ok: false,
+      motivo: "formato_key",
+      detalle: `La key empieza con "${apiKey.slice(0, 4)}…" — debe ser de AI Studio y comenzar con AIzaSy. Crea una nueva con «Crear clave de API».`
+    };
+  }
+
+  const model = (process.env.GEMINI_MODEL || "gemini-2.5-flash").trim();
+  const { res, data } = await llamarGemini(
+    apiKey,
+    model,
+    "Responde solo: OK",
+    '{"test":true}',
+    false
+  );
+
+  if (!res.ok) {
+    return {
+      ok: false,
+      motivo: "api_error",
+      detalle: data?.error?.message || `HTTP ${res.status}`,
+      modelo: model,
+      http: res.status
+    };
+  }
+
+  const { text } = extraerTextoGemini(data);
+  return { ok: true, modelo: model, respuesta: (text || "OK").slice(0, 80) };
+}
+
 module.exports = {
   generarRecetaComida,
   normalizarIngredientes,
   mensajeErrorAmigable,
   geminiConfigurado,
+  formatoKeyPareceValido,
+  probarConexionGemini,
   resolverGeminiApiKey
 };

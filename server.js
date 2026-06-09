@@ -58,7 +58,13 @@ const {
   limpiarNombresInvalidosCoach,
   PLANTILLA_CSV
 } = require("./importarAlimentos");
-const { generarRecetaComida, mensajeErrorAmigable, geminiConfigurado } = require("./recetaIaGemini");
+const {
+  generarRecetaComida,
+  mensajeErrorAmigable,
+  geminiConfigurado,
+  formatoKeyPareceValido,
+  probarConexionGemini
+} = require("./recetaIaGemini");
 
 const DEV_JWT_FALLBACK = "metodog-dev-cambiar-en-produccion";
 if (isProduction()) {
@@ -91,6 +97,7 @@ function responderPing(req, res) {
     message: "pong",
     service: "metodog-backend",
     recetas_ia_gemini: geminiConfigurado(),
+    recetas_ia_key_formato_ok: formatoKeyPareceValido(),
     ts: new Date().toISOString()
   });
 }
@@ -335,7 +342,13 @@ function validarStripeEnProduccion() {
     console.log("💳 Stripe LIVE configurado.");
   }
   if (geminiConfigurado()) {
-    console.log("✨ Gemini configurado — Recetas IA activas.");
+    if (formatoKeyPareceValido()) {
+      console.log("✨ Gemini configurado — Recetas IA activas (key AIzaSy…).");
+    } else {
+      console.warn(
+        "⚠️ GEMINI_API_KEY no parece de AI Studio (debe empezar con AIzaSy). Crea una clave nueva en aistudio.google.com."
+      );
+    }
   } else {
     console.warn("⚠️ GEMINI_API_KEY no configurada — Recetas IA mostrarán mensaje de descanso.");
   }
@@ -457,6 +470,20 @@ async function usuarioPuedeRecetasIa(userId, rol) {
   return !!r.rows[0]?.paquete_rutina_6_dias;
 }
 
+app.get("/api/alimentos/receta-ia/probe", async (req, res) => {
+  const user = req.user;
+  if (!user) return res.status(401).json({ ok: false, error: "Sesión requerida" });
+  if (user.rol !== "SUPERADMIN" && user.rol !== "COACH") {
+    return res.status(403).json({ ok: false, error: "Solo coach o superadmin." });
+  }
+  try {
+    const resultado = await probarConexionGemini();
+    res.status(resultado.ok ? 200 : 503).json(resultado);
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
 app.post("/api/alimentos/receta-ia", async (req, res) => {
   const user = req.user;
   if (!user) return res.status(401).json({ ok: false, error: "Sesión requerida" });
@@ -471,12 +498,28 @@ app.post("/api/alimentos/receta-ia", async (req, res) => {
 
   const { comida, alimentos, macros_totales } = req.body || {};
   try {
+    if (!formatoKeyPareceValido()) {
+      return res.status(503).json({
+        ok: false,
+        error: mensajeErrorAmigable(
+          "formato_key",
+          true,
+          `La key empieza con "${(process.env.GEMINI_API_KEY || "").trim().slice(0, 4)}…" — crea una clave nueva en AI Studio (AIzaSy…).`
+        )
+      });
+    }
+
     const resultado = await generarRecetaComida({ comida, alimentos, macros_totales });
     if (!resultado.ok) {
       const esAdmin = user.rol === "SUPERADMIN" || user.rol === "COACH";
+      const mostrarDetalle = esAdmin || resultado.motivo === "formato_key";
       return res.status(resultado.motivo === "sin_ingredientes" ? 400 : 503).json({
         ok: false,
-        error: mensajeErrorAmigable(resultado.motivo, esAdmin, resultado.detalle || "")
+        error: mensajeErrorAmigable(
+          resultado.motivo,
+          mostrarDetalle,
+          resultado.detalle || ""
+        )
       });
     }
     res.json(resultado);
