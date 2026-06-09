@@ -65,9 +65,23 @@ function isPublicApiRoute(req) {
   return false;
 }
 
+function intentarUsuarioDesdeToken(req) {
+  const header = req.headers.authorization || "";
+  const token = header.startsWith("Bearer ") ? header.slice(7).trim() : null;
+  if (!token) return;
+  try {
+    req.user = verifyToken(token);
+  } catch {
+    /* ruta pública: token inválido se ignora */
+  }
+}
+
 function requireAuthMiddleware(req, res, next) {
   if (!req.path.startsWith("/api")) return next();
-  if (isPublicApiRoute(req)) return next();
+  if (isPublicApiRoute(req)) {
+    intentarUsuarioDesdeToken(req);
+    return next();
+  }
 
   const header = req.headers.authorization || "";
   const token = header.startsWith("Bearer ") ? header.slice(7).trim() : null;

@@ -375,8 +375,9 @@ app.get("/api/alimentos", async (req, res) => {
     let sql = "SELECT * FROM alimentos WHERE coach_id IS NULL";
     const args = [];
     if (esCoachOAdmin) {
+      const coachId = parseInt(user.id, 10);
       sql = "SELECT * FROM alimentos WHERE coach_id IS NULL OR coach_id = ?";
-      args.push(user.id);
+      args.push(coachId);
     }
     sql += " ORDER BY grupo, nombre ASC";
     const result = await db.execute({ sql, args });
