@@ -52,7 +52,12 @@ const { buildResumenRutina } = require("./resumenRutinaInforme");
 const { contextoMesInforme } = require("./informeMesContext");
 const { seedAlimentosMetodog } = require("./seedAlimentos");
 const { calcularSustitutos, SIN_SUSTITUTO } = require("./equivalenciasNutricion");
-const { importarAlimentosCsv, previewImportacionCsv, PLANTILLA_CSV } = require("./importarAlimentos");
+const {
+  importarAlimentosCsv,
+  previewImportacionCsv,
+  limpiarNombresInvalidosCoach,
+  PLANTILLA_CSV
+} = require("./importarAlimentos");
 
 const DEV_JWT_FALLBACK = "metodog-dev-cambiar-en-produccion";
 if (isProduction()) {
@@ -376,6 +381,7 @@ app.get("/api/alimentos", async (req, res) => {
     const args = [];
     if (esCoachOAdmin) {
       const coachId = parseInt(user.id, 10);
+      await limpiarNombresInvalidosCoach(db, coachId);
       sql = "SELECT * FROM alimentos WHERE coach_id IS NULL OR coach_id = ?";
       args.push(coachId);
     }

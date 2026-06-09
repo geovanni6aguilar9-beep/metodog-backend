@@ -322,6 +322,56 @@ function esNombreAlimentoValido(nombre) {
   return true;
 }
 
+function puntajeColumnaComoNombre(muestras, colIdx, colCalorias) {
+  if (colIdx == null || colIdx === colCalorias) return -999;
+  let letras = 0;
+  let numericos = 0;
+  let total = 0;
+  for (const cells of muestras) {
+    const v = String(cells[colIdx] ?? "").trim();
+    if (!v) continue;
+    total++;
+    if (/^\d+([.,]\d+)?$/.test(v)) numericos++;
+    else if (/[a-zA-ZáéíóúüñÁÉÍÓÚÜÑ]/.test(v)) letras++;
+  }
+  if (total < 2) return -1;
+  return (letras / total) * 2 - (numericos / total) * 3;
+}
+
+/** Si la 1ª columna es numeración (1, 2, 3…), usa la columna con texto real. */
+function corregirMapeoNombreDesdeDatos(lineas, sep, headerIndex, colMap) {
+  const muestras = [];
+  for (let i = headerIndex + 1; i < lineas.length && muestras.length < 25; i++) {
+    const cells = parseCsvLinea(lineas[i], sep);
+    if (cells.length < 2) continue;
+    if (colMap.calorias == null) continue;
+    const kcal = num(cells[colMap.calorias], NaN);
+    if (Number.isNaN(kcal) || kcal < 0) continue;
+    muestras.push(cells);
+  }
+  if (muestras.length < 3) return colMap;
+
+  const puntajeActual = puntajeColumnaComoNombre(muestras, colMap.nombre, colMap.calorias);
+  if (puntajeActual > 0.5) return colMap;
+
+  const numCols = Math.max(...muestras.map((c) => c.length));
+  let mejorIdx = colMap.nombre;
+  let mejorPuntaje = puntajeActual;
+
+  for (let idx = 0; idx < numCols; idx++) {
+    const p = puntajeColumnaComoNombre(muestras, idx, colMap.calorias);
+    if (p > mejorPuntaje) {
+      mejorPuntaje = p;
+      mejorIdx = idx;
+    }
+  }
+
+  if (mejorIdx !== colMap.nombre && mejorPuntaje > puntajeActual + 0.3) {
+    return { ...colMap, nombre: mejorIdx };
+  }
+  return colMap;
+}
+
 /** Filas tipo «Tipos de comidas para Proteína» entre bloques del Excel. */
 function esTituloSeccion(cells, colMap) {
   const nombre = String(celda(cells, colMap, "nombre")).trim();
@@ -407,8 +457,11 @@ function parsearCsvTexto(csvText, mapeoManual = null) {
   const headers = enc.headers;
   const colMapAuto = enc.colMap;
   const colMapManual = aplicarMapeoManual(mapeoManual);
-  const colMap = colMapManual ? { ...colMapManual } : { ...colMapAuto };
+  let colMap = colMapManual ? { ...colMapManual } : { ...colMapAuto };
   const colMapFijo = colMapManual != null;
+  if (!colMapFijo && colMap.nombre != null && colMap.calorias != null) {
+    colMap = corregirMapeoNombreDesdeDatos(lineas, sep, enc.index, colMap);
+  }
   const contextoHoja = headers.join(" ");
   const columnas = columnasConEjemplos(headers, lineas, sep, enc.index, colMap);
 
@@ -495,13 +548,7 @@ function previewImportacionCsv(csvText, mapeoManual = null) {
       errores: parsed.errores || []
     };
   }
-  return {
-    ok: true,
-    columnas: parsed.columnas,
-    mapeo: parsed.mapeo,
-    mapeo_auto: parsed.mapeo_auto,
-    filas_validas: parsed.filas.length,
-    muestra: parsed.filas.slice(0, 5).map((f) => ({
+  const muestra = parsed.filas.slice(0, 5).map((f) => ({
       nombre: f.nombre,
       calorias: f.calorias,
       proteinas: f.proteinas,
@@ -509,7 +556,19 @@ function previewImportacionCsv(csvText, mapeoManual = null) {
       grasas: f.grasas,
       porcion_base: f.porcion_base,
       unidad: f.unidad
-    })),
+    }));
+  const nombresNumericos = muestra.filter((f) => !esNombreAlimentoValido(f.nombre)).length;
+
+  return {
+    ok: true,
+    columnas: parsed.columnas,
+    mapeo: parsed.mapeo,
+    mapeo_auto: parsed.mapeo_auto,
+    filas_validas: parsed.filas.length,
+    muestra,
+    aviso_mapeo_nombre: nombresNumericos > 0
+      ? "Los nombres de la vista previa son números: en el Paso 2 elige la columna donde están los alimentos (Arroz, Pollo…), no la de numeración."
+      : null,
     omitidas: parsed.omitidas,
     errores: parsed.errores || []
   };
@@ -644,6 +703,8 @@ module.exports = {
   parsearCsvTexto,
   previewImportacionCsv,
   importarAlimentosCsv,
+  limpiarNombresInvalidosCoach,
+  esNombreAlimentoValido,
   PLANTILLA_CSV,
   MAX_FILAS,
   CAMPOS_MAPEO_UI,
