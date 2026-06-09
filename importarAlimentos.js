@@ -223,11 +223,43 @@ async function buscarEnBibliotecaGlobal(db, nombre) {
   return like.rows.length > 0 ? like.rows[0] : null;
 }
 
+function celda(cells, colMap, campo) {
+  const idx = colMap[campo];
+  return idx == null ? "" : (cells[idx] ?? "");
+}
+
+function tieneCalorias(cells, colMap) {
+  const v = celda(cells, colMap, "calorias");
+  const n = num(v, NaN);
+  return !Number.isNaN(n) && n >= 0;
+}
+
+function filaVacia(cells, colMap) {
+  const nombre = String(celda(cells, colMap, "nombre")).trim();
+  if (nombre) return false;
+  return !tieneCalorias(cells, colMap);
+}
+
+function esFilaEncabezados(cells) {
+  const joined = normHeader(cells.join(" "));
+  return /kcal|caloria/.test(joined) && (/protein|carbohidrato|grasa|hidratos/.test(joined));
+}
+
+/** Filas tipo «Tipos de comidas para Proteína» entre bloques del Excel. */
+function esTituloSeccion(cells, colMap) {
+  const nombre = String(celda(cells, colMap, "nombre")).trim();
+  if (!nombre) return false;
+  const n = normHeader(nombre);
+  if (/tipos de comidas para|alimentos para|grupo de|lista de/.test(n)) return true;
+  if (/^seccion|^sección/.test(n)) return true;
+  if (/para (proteina|carbohidrato|grasas|frutas|verduras|lacteos)/.test(n) && !tieneCalorias(cells, colMap)) {
+    return true;
+  }
+  return false;
+}
+
 function normalizarFila(cells, colMap, lineaNum, contextoHoja) {
-  const get = (campo) => {
-    const idx = colMap[campo];
-    return idx == null ? "" : (cells[idx] ?? "");
-  };
+  const get = (campo) => celda(cells, colMap, campo);
 
   let nombre = String(get("nombre")).trim();
   if (!nombre) {
@@ -303,6 +335,8 @@ function parsearCsvTexto(csvText) {
 
   const filas = [];
   const errores = [];
+  let omitidas = 0;
+  let contextoActivo = contextoHoja;
 
   for (let i = 1; i < lineas.length; i++) {
     if (filas.length >= MAX_FILAS) {
@@ -310,16 +344,42 @@ function parsearCsvTexto(csvText) {
       break;
     }
     const cells = parseCsvLinea(lineas[i], sep);
-    const res = normalizarFila(cells, colMap, i + 1, contextoHoja);
-    if (res.error) errores.push(res.error);
-    else filas.push(res.item);
+
+    if (esFilaEncabezados(cells)) {
+      const nuevoMap = mapearColumnas(cells);
+      if (nuevoMap.calorias != null) {
+        Object.assign(colMap, nuevoMap);
+        contextoActivo = cells.join(" ");
+      }
+      omitidas++;
+      continue;
+    }
+
+    if (filaVacia(cells, colMap)) {
+      omitidas++;
+      continue;
+    }
+
+    if (esTituloSeccion(cells, colMap)) {
+      contextoActivo = String(celda(cells, colMap, "nombre")).trim();
+      omitidas++;
+      continue;
+    }
+
+    const res = normalizarFila(cells, colMap, i + 1, contextoActivo);
+    if (res.error) {
+      if (tieneCalorias(cells, colMap)) errores.push(res.error);
+      else omitidas++;
+      continue;
+    }
+    filas.push(res.item);
   }
 
   if (filas.length === 0) {
-    return { error: "No hay filas válidas para importar.", errores };
+    return { error: "No hay filas válidas para importar.", errores, omitidas };
   }
 
-  return { filas, errores, total_lineas: lineas.length - 1, contexto_hoja: contextoHoja };
+  return { filas, errores, omitidas, total_lineas: lineas.length - 1, contexto_hoja: contextoActivo };
 }
 
 async function enriquecerConBibliotecaGlobal(db, item) {
@@ -404,13 +464,19 @@ async function importarAlimentosCsv(db, coachId, csvText) {
       ? "Biblioteca global MétodoG actualizada."
       : "Guardado en tu biblioteca personal (solo tú la ves al armar dietas).";
 
+  const omitidas = parsed.omitidas || 0;
+  const omitMsg = omitidas > 0
+    ? ` ${omitidas} fila(s) de título o vacías omitidas (normal si tu Excel tiene secciones).`
+    : "";
+
   return {
     ok: true,
     nuevos,
     actualizados,
     total: parsed.filas.length,
+    omitidas,
     errores: parsed.errores || [],
-    mensaje: `Importación lista: ${nuevos} nuevo(s), ${actualizados} actualizado(s). ${alcanceMsg}`
+    mensaje: `Importación lista: ${nuevos} nuevo(s), ${actualizados} actualizado(s).${omitMsg} ${alcanceMsg}`
   };
 }
 
