@@ -562,6 +562,30 @@ Responde SOLO JSON válido:
             grasas: redondear(num(plan.restante_dia?.grasas ?? plan.objetivo_dia?.grasas)),
             sodio: redondear(num(plan.restante_dia?.sodio ?? plan.objetivo_dia?.sodio ?? 2300))
           };
+          const nComidas = Math.max(dietaRaw.comidas.length, 1);
+          const porComida = {
+            calorias: redondear(targetDia.calorias / nComidas),
+            proteinas: redondear(targetDia.proteinas / nComidas),
+            carbohidratos: redondear(targetDia.carbohidratos / nComidas),
+            grasas: redondear(targetDia.grasas / nComidas),
+            sodio: redondear(targetDia.sodio / nComidas)
+          };
+          dietaRaw.comidas = dietaRaw.comidas.map((bloque) => {
+            try {
+              const opt = optimizarCombo(
+                { alimentos_sugeridos: bloque.alimentos_sugeridos, nombre: bloque.nombre },
+                catalogoMap,
+                porComida
+              );
+              return {
+                ...bloque,
+                alimentos_sugeridos: opt.alimentos_sugeridos,
+                macros_combo: opt.macros_combo
+              };
+            } catch (_) {
+              return bloque;
+            }
+          });
           let dieta = dietaRaw;
           try {
             dieta = optimizarDietaDia(dietaRaw, catalogoMap, targetDia);

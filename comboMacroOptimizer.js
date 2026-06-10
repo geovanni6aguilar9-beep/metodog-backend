@@ -1,10 +1,8 @@
 /**
- * Ajuste ligero de porciones tras Gemini.
- * Tolerancia funcional (no perfección matemática): ±30 kcal, ±5 g P/C/G.
- * Máximo de pasadas fijo para evitar bucles.
+ * Ajuste de porciones tras Gemini.
+ * Tolerancia funcional: ±30 kcal, ±5 g P/C/G.
  */
 
-/** Margen de error aceptable — pedido explícito de producto. */
 const TOLERANCIA = {
   calorias: 30,
   proteinas: 5,
@@ -12,8 +10,9 @@ const TOLERANCIA = {
   grasas: 5
 };
 
-const MAX_PASADAS_COMBO = 8;
-const MAX_PASADAS_DIA = 12;
+const MAX_PASADAS_COMBO = 14;
+const MAX_PASADAS_DIA = 24;
+const FACTOR_ESCALA_MAX = 1.28;
 
 function num(v, fallback = 0) {
   const n = parseFloat(v);
@@ -105,6 +104,23 @@ function mejorRellenoCarb(catalogoMap, excludeIds) {
   return mejor;
 }
 
+function mejorRellenoGrasa(catalogoMap, excludeIds) {
+  let mejor = null;
+  let mejorScore = -Infinity;
+  for (const cat of catalogoMap.values()) {
+    if (excludeIds.has(cat.id)) continue;
+    const gras = densidad(cat, "grasas");
+    const carb = densidad(cat, "carbohidratos");
+    if (gras < 0.4) continue;
+    const score = gras * 2 - carb;
+    if (score > mejorScore) {
+      mejorScore = score;
+      mejor = cat;
+    }
+  }
+  return mejor;
+}
+
 function itemMasGraso(items, catalogoMap) {
   let peor = null;
   let peorScore = -1;
@@ -136,27 +152,94 @@ function itemMasCarb(items, catalogoMap) {
   return mejor;
 }
 
-/** Un paso de ajuste; devuelve false si no hubo cambio (anti-bucle). */
+function itemMasProteina(items, catalogoMap) {
+  let peor = null;
+  let peorScore = -1;
+  for (const item of items) {
+    const cat = catalogoMap.get(item.id_alimento);
+    if (!cat) continue;
+    const score = densidad(cat, "proteinas") * num(item.cantidad_sugerida);
+    if (score > peorScore) {
+      peorScore = score;
+      peor = item;
+    }
+  }
+  return peor;
+}
+
+function factorEscalaCalorias(total, target) {
+  if (num(total.calorias) <= 0 || num(target.calorias) <= 0) return 1;
+  return Math.max(0.82, Math.min(FACTOR_ESCALA_MAX, num(target.calorias) / total.calorias));
+}
+
+function escalarItems(items, factor, minQty, maxQty) {
+  if (Math.abs(factor - 1) < 0.01) return false;
+  for (const item of items) {
+    item.cantidad_sugerida = clampQty(item.cantidad_sugerida * factor, minQty, maxQty);
+  }
+  return true;
+}
+
+function pasoEscalarCaloriasItems(items, target, minQty, maxQty) {
+  const total = sumarMacrosLista(items);
+  const errCal = num(target.calorias) - total.calorias;
+  if (Math.abs(errCal) <= TOLERANCIA.calorias || total.calorias <= 0) return false;
+  if (Math.abs(errCal) < 60) return false;
+  return escalarItems(items, factorEscalaCalorias(total, target), minQty, maxQty);
+}
+
 function pasoAjusteCombo(items, catalogoMap, target, options) {
   const minQty = options.minQty ?? 0.5;
   const maxQty = options.maxQty ?? 400;
   const maxItems = options.maxItems ?? 7;
   const total = sumarMacrosLista(items);
 
+  const errProt = num(target.proteinas) - total.proteinas;
   const errCarb = num(target.carbohidratos) - total.carbohidratos;
   const errGras = num(target.grasas) - total.grasas;
   const errCal = num(target.calorias) - total.calorias;
 
+  if (errCal > 80 && total.calorias > 0) {
+    if (pasoEscalarCaloriasItems(items, target, minQty, maxQty)) return true;
+  }
+
+  if (errProt < -TOLERANCIA.proteinas) {
+    const protItem = itemMasProteina(items, catalogoMap);
+    if (protItem) {
+      protItem.cantidad_sugerida = clampQty(protItem.cantidad_sugerida * 0.88, minQty, maxQty);
+      return true;
+    }
+  }
+
   if (errCarb > TOLERANCIA.carbohidratos) {
     const carbItem = itemMasCarb(items, catalogoMap);
     if (carbItem) {
-      carbItem.cantidad_sugerida = clampQty(carbItem.cantidad_sugerida * 1.12, minQty, maxQty);
+      const boost = errCarb > 25 ? 1.18 : 1.12;
+      carbItem.cantidad_sugerida = clampQty(carbItem.cantidad_sugerida * boost, minQty, maxQty);
       return true;
     }
     const filler = mejorRellenoCarb(catalogoMap, idsEnCombo(items));
     if (filler && items.length < maxItems) {
       const qty = clampQty(
-        (Math.min(errCarb, 40) / Math.max(densidad(filler, "carbohidratos"), 0.01)) * filler.porcion_base * 0.5,
+        (Math.min(errCarb, 55) / Math.max(densidad(filler, "carbohidratos"), 0.01)) * num(filler.porcion_base, 1) * 0.75,
+        minQty,
+        maxQty
+      );
+      items.push(itemDesdeCatalogo(filler, qty));
+      return true;
+    }
+  }
+
+  if (errGras > TOLERANCIA.grasas) {
+    const grasItem = itemMasGraso(items, catalogoMap);
+    if (grasItem && densidad(catalogoMap.get(grasItem.id_alimento), "grasas") >= 0.4) {
+      grasItem.cantidad_sugerida = clampQty(grasItem.cantidad_sugerida * 1.12, minQty, maxQty);
+      return true;
+    }
+    const filler = mejorRellenoGrasa(catalogoMap, idsEnCombo(items));
+    if (filler && items.length < maxItems) {
+      const qty = clampQty(
+        (Math.min(errGras, 18) / Math.max(densidad(filler, "grasas"), 0.01)) * num(filler.porcion_base, 1) * 0.7,
         minQty,
         maxQty
       );
@@ -174,11 +257,7 @@ function pasoAjusteCombo(items, catalogoMap, target, options) {
   }
 
   if (Math.abs(errCal) > TOLERANCIA.calorias && total.calorias > 0) {
-    const factor = Math.max(0.88, Math.min(1.12, num(target.calorias) / total.calorias));
-    for (const item of items) {
-      item.cantidad_sugerida = clampQty(item.cantidad_sugerida * factor, minQty, maxQty);
-    }
-    return true;
+    return escalarItems(items, factorEscalaCalorias(total, target), minQty, maxQty);
   }
 
   return false;
@@ -198,7 +277,6 @@ function finalizarCombo(combo, items, catalogoMap, minQty, maxQty) {
   };
 }
 
-/** Ajusta un combo hacia macros_objetivo_comida (rápido, tolerancia ±5 g / ±30 kcal). */
 function optimizarCombo(combo, catalogoMap, target, options = {}) {
   if (!combo?.alimentos_sugeridos?.length || !target || num(target.calorias) <= 0) {
     return combo;
@@ -208,6 +286,9 @@ function optimizarCombo(combo, catalogoMap, target, options = {}) {
   const maxQty = options.maxQty ?? 400;
   let items = reconstruirItems(combo.alimentos_sugeridos, catalogoMap, minQty, maxQty);
   if (!items.length) return combo;
+
+  pasoEscalarCaloriasItems(items, target, minQty, maxQty);
+  items = reconstruirItems(items, catalogoMap, minQty, maxQty);
 
   for (let i = 0; i < MAX_PASADAS_COMBO; i++) {
     items = reconstruirItems(items, catalogoMap, minQty, maxQty);
@@ -234,8 +315,9 @@ function totalDieta(comidas) {
   );
 }
 
-function refrescarMacrosComidas(comidas) {
+function refrescarMacrosComidas(comidas, catalogoMap, minQty, maxQty) {
   for (const c of comidas) {
+    c.alimentos_sugeridos = reconstruirItems(c.alimentos_sugeridos || [], catalogoMap, minQty, maxQty);
     c.macros_combo = sumarMacrosLista(c.alimentos_sugeridos || []);
     Object.keys(c.macros_combo).forEach((k) => {
       c.macros_combo[k] = redondear(c.macros_combo[k]);
@@ -243,15 +325,40 @@ function refrescarMacrosComidas(comidas) {
   }
 }
 
-/** Un paso global del plan del día. */
 function pasoAjusteDieta(comidas, catalogoMap, targetDia, options) {
   const minQty = options.minQty ?? 0.5;
   const maxQty = options.maxQty ?? 400;
   const total = totalDieta(comidas);
+  const errProt = num(targetDia.proteinas) - total.proteinas;
   const errCarb = num(targetDia.carbohidratos) - total.carbohidratos;
   const errGras = num(targetDia.grasas) - total.grasas;
   const errCal = num(targetDia.calorias) - total.calorias;
   const n = Math.max(comidas.length, 1);
+
+  if (errCal > 80 && total.calorias > 0) {
+    const factor = factorEscalaCalorias(total, targetDia);
+    for (const bloque of comidas) {
+      escalarItems(bloque.alimentos_sugeridos || [], factor, minQty, maxQty);
+      bloque.alimentos_sugeridos = reconstruirItems(bloque.alimentos_sugeridos, catalogoMap, minQty, maxQty);
+    }
+    refrescarMacrosComidas(comidas, catalogoMap, minQty, maxQty);
+    return true;
+  }
+
+  if (errProt < -TOLERANCIA.proteinas) {
+    const bloque = [...comidas].sort(
+      (a, b) => num(b.macros_combo?.proteinas) - num(a.macros_combo?.proteinas)
+    )[0];
+    if (bloque) {
+      const protItem = itemMasProteina(bloque.alimentos_sugeridos || [], catalogoMap);
+      if (protItem) {
+        protItem.cantidad_sugerida = clampQty(protItem.cantidad_sugerida * 0.9, minQty, maxQty);
+        bloque.alimentos_sugeridos = reconstruirItems(bloque.alimentos_sugeridos, catalogoMap, minQty, maxQty);
+        refrescarMacrosComidas(comidas, catalogoMap, minQty, maxQty);
+        return true;
+      }
+    }
+  }
 
   if (errCarb > TOLERANCIA.carbohidratos) {
     const bloque = [...comidas].sort(
@@ -260,8 +367,9 @@ function pasoAjusteDieta(comidas, catalogoMap, targetDia, options) {
     if (bloque) {
       const items = bloque.alimentos_sugeridos || [];
       const carbItem = itemMasCarb(items, catalogoMap);
+      const boost = errCarb > 40 ? 1.15 : 1.1;
       if (carbItem) {
-        carbItem.cantidad_sugerida = clampQty(carbItem.cantidad_sugerida * 1.1, minQty, maxQty);
+        carbItem.cantidad_sugerida = clampQty(carbItem.cantidad_sugerida * boost, minQty, maxQty);
       } else {
         const filler = mejorRellenoCarb(catalogoMap, idsEnCombo(items));
         if (filler && items.length < 7) {
@@ -269,7 +377,7 @@ function pasoAjusteDieta(comidas, catalogoMap, targetDia, options) {
             itemDesdeCatalogo(
               filler,
               clampQty(
-                (errCarb / n / Math.max(densidad(filler, "carbohidratos"), 0.01)) * filler.porcion_base * 0.4,
+                (errCarb / n / Math.max(densidad(filler, "carbohidratos"), 0.01)) * num(filler.porcion_base, 1) * 0.65,
                 minQty,
                 maxQty
               )
@@ -278,7 +386,37 @@ function pasoAjusteDieta(comidas, catalogoMap, targetDia, options) {
         }
       }
       bloque.alimentos_sugeridos = reconstruirItems(items, catalogoMap, minQty, maxQty);
-      refrescarMacrosComidas(comidas);
+      refrescarMacrosComidas(comidas, catalogoMap, minQty, maxQty);
+      return true;
+    }
+  }
+
+  if (errGras > TOLERANCIA.grasas) {
+    const bloque = [...comidas].sort(
+      (a, b) => num(a.macros_combo?.grasas) - num(b.macros_combo?.grasas)
+    )[0];
+    if (bloque) {
+      const items = bloque.alimentos_sugeridos || [];
+      const grasItem = itemMasGraso(items, catalogoMap);
+      if (grasItem && densidad(catalogoMap.get(grasItem.id_alimento), "grasas") >= 0.4) {
+        grasItem.cantidad_sugerida = clampQty(grasItem.cantidad_sugerida * 1.12, minQty, maxQty);
+      } else {
+        const filler = mejorRellenoGrasa(catalogoMap, idsEnCombo(items));
+        if (filler && items.length < 7) {
+          items.push(
+            itemDesdeCatalogo(
+              filler,
+              clampQty(
+                (errGras / n / Math.max(densidad(filler, "grasas"), 0.01)) * num(filler.porcion_base, 1) * 0.65,
+                minQty,
+                maxQty
+              )
+            )
+          );
+        }
+      }
+      bloque.alimentos_sugeridos = reconstruirItems(items, catalogoMap, minQty, maxQty);
+      refrescarMacrosComidas(comidas, catalogoMap, minQty, maxQty);
       return true;
     }
   }
@@ -293,27 +431,24 @@ function pasoAjusteDieta(comidas, catalogoMap, targetDia, options) {
       }
     }
     if (cambio) {
-      refrescarMacrosComidas(comidas);
+      refrescarMacrosComidas(comidas, catalogoMap, minQty, maxQty);
       return true;
     }
   }
 
   if (Math.abs(errCal) > TOLERANCIA.calorias && total.calorias > 0) {
-    const factor = Math.max(0.9, Math.min(1.1, num(targetDia.calorias) / total.calorias));
+    const factor = factorEscalaCalorias(total, targetDia);
     for (const bloque of comidas) {
-      for (const item of bloque.alimentos_sugeridos || []) {
-        item.cantidad_sugerida = clampQty(item.cantidad_sugerida * factor, minQty, maxQty);
-      }
+      escalarItems(bloque.alimentos_sugeridos || [], factor, minQty, maxQty);
       bloque.alimentos_sugeridos = reconstruirItems(bloque.alimentos_sugeridos, catalogoMap, minQty, maxQty);
     }
-    refrescarMacrosComidas(comidas);
+    refrescarMacrosComidas(comidas, catalogoMap, minQty, maxQty);
     return true;
   }
 
   return false;
 }
 
-/** Ajuste global del plan del día (máx. 12 pasadas, tolerancia funcional). */
 function optimizarDietaDia(dieta, catalogoMap, targetDia, options = {}) {
   if (!dieta?.comidas?.length || !targetDia) return dieta;
 
@@ -324,11 +459,31 @@ function optimizarDietaDia(dieta, catalogoMap, targetDia, options = {}) {
     ...bloque,
     alimentos_sugeridos: reconstruirItems(bloque.alimentos_sugeridos || [], catalogoMap, minQty, maxQty)
   }));
-  refrescarMacrosComidas(dieta.comidas);
+  refrescarMacrosComidas(dieta.comidas, catalogoMap, minQty, maxQty);
+
+  const totalInicial = totalDieta(dieta.comidas);
+  if (num(targetDia.calorias) - totalInicial.calorias > 80 && totalInicial.calorias > 0) {
+    const factor = factorEscalaCalorias(totalInicial, targetDia);
+    for (const bloque of dieta.comidas) {
+      escalarItems(bloque.alimentos_sugeridos || [], factor, minQty, maxQty);
+      bloque.alimentos_sugeridos = reconstruirItems(bloque.alimentos_sugeridos, catalogoMap, minQty, maxQty);
+    }
+    refrescarMacrosComidas(dieta.comidas, catalogoMap, minQty, maxQty);
+  }
 
   for (let pass = 0; pass < MAX_PASADAS_DIA; pass++) {
     if (dentroTolerancia(totalDieta(dieta.comidas), targetDia)) break;
     if (!pasoAjusteDieta(dieta.comidas, catalogoMap, targetDia, options)) break;
+  }
+
+  const totalFinal = totalDieta(dieta.comidas);
+  if (Math.abs(num(targetDia.calorias) - totalFinal.calorias) > 50 && totalFinal.calorias > 0) {
+    const factor = factorEscalaCalorias(totalFinal, targetDia);
+    for (const bloque of dieta.comidas) {
+      escalarItems(bloque.alimentos_sugeridos || [], factor, minQty, maxQty);
+      bloque.alimentos_sugeridos = reconstruirItems(bloque.alimentos_sugeridos, catalogoMap, minQty, maxQty);
+    }
+    refrescarMacrosComidas(dieta.comidas, catalogoMap, minQty, maxQty);
   }
 
   dieta.macros_plan = totalDieta(dieta.comidas);
