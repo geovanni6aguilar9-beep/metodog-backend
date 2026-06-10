@@ -156,7 +156,7 @@ function mensajeErrorAmigable(motivo, esAdmin = false, detalle = "") {
       : "El planificador IA está descansando. Intenta más tarde.";
   }
   if (motivo === "cuota" || motivo === "429") {
-    return "El planificador llegó a su límite de uso. Intenta en 30–60 minutos.";
+    return "Cuota de Google Gemini agotada. Entra a aistudio.google.com → API key → revisa uso/facturación, o espera 1 hora y reintenta.";
   }
   if (motivo === "parse_error") {
     return "La IA respondió pero no pudimos leer el combo. Toca Reintentar.";
@@ -598,7 +598,7 @@ async function probarConexionGemini() {
   if (!res.ok) {
     return {
       ok: false,
-      motivo: "api_error",
+      motivo: res.status === 429 ? "cuota" : "api_error",
       detalle: data?.error?.message || `HTTP ${res.status}`,
       modelo: model,
       http: res.status
