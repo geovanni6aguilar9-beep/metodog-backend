@@ -5,10 +5,9 @@
  */
 
 const MODELOS_FALLBACK = [
-  "gemini-2.0-flash",
-  "gemini-1.5-flash",
   "gemini-2.5-flash",
-  "gemini-2.5-flash-lite"
+  "gemini-2.5-flash-lite",
+  "gemini-1.5-flash"
 ];
 
 let optimizarCombo = (combo) => combo;
@@ -568,6 +567,7 @@ function geminiConfigurado() {
   return !!resolverGeminiApiKey();
 }
 
+/** AIzaSy… (clásico) y AQ.… (AI Studio 2026+) son válidos; solo longitud mínima. */
 function formatoKeyPareceValido() {
   const k = resolverGeminiApiKey();
   return k.length >= 15;
@@ -586,7 +586,7 @@ async function probarConexionGemini() {
     };
   }
 
-  const model = (process.env.GEMINI_MODEL || "gemini-2.0-flash").trim();
+  const model = (process.env.GEMINI_MODEL || "gemini-2.5-flash").trim();
   const { res, data } = await llamarGemini(
     apiKey,
     model,
