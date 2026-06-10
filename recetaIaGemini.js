@@ -300,7 +300,7 @@ REGLA DE ORO — CATÁLOGO CERRADO:
 - SOLO alimentos del arreglo "catalogo" con su "id" exacto como id_alimento.
 - PROHIBIDO inventar alimentos o marcas.
 - Cantidades en la **unidad del catálogo** (`g`, `ml`, `scoop`, `pieza`). Macros son POR `porcion_base`.
-- 1 scoop de whey = `cantidad_sugerida: 1` (no confundir scoop con gramos).
+- 1 scoop de whey, caseína o proteína vegetal = `cantidad_sugerida: 1` (no confundir scoop con gramos).
 - Entre 2 y 6 alimentos por combo.
 
 CONTEXTO DEL PLAN:
