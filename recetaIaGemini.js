@@ -5,10 +5,19 @@
  */
 
 const MODELOS_FALLBACK = [
+  "gemini-2.0-flash",
+  "gemini-1.5-flash",
   "gemini-2.5-flash",
-  "gemini-2.5-flash-lite",
-  "gemini-2.0-flash"
+  "gemini-2.5-flash-lite"
 ];
+
+let optimizarCombo = (combo) => combo;
+let optimizarDietaDia = (dieta) => dieta;
+try {
+  ({ optimizarCombo, optimizarDietaDia } = require("./comboMacroOptimizer"));
+} catch (err) {
+  console.warn("[recetaIaGemini] comboMacroOptimizer no cargado:", err.message);
+}
 
 function resolverGeminiApiKey() {
   return (
@@ -147,7 +156,16 @@ function mensajeErrorAmigable(motivo, esAdmin = false, detalle = "") {
       : "El planificador IA está descansando. Intenta más tarde.";
   }
   if (motivo === "cuota" || motivo === "429") {
-    return "El planificador IA está descansando. Intenta más tarde.";
+    return "El planificador llegó a su límite de uso. Intenta en 30–60 minutos.";
+  }
+  if (motivo === "parse_error") {
+    return "La IA respondió pero no pudimos leer el combo. Toca Reintentar.";
+  }
+  if (motivo === "bloqueado") {
+    return "La IA no pudo sugerir esta comida. Prueba otra comida o ajusta tus «evitar».";
+  }
+  if (motivo === "api_error" || motivo === "modelo_no_disponible" || motivo === "red") {
+    return "El servicio de IA no respondió. Espera 1 minuto y vuelve a intentar.";
   }
   if (motivo === "sin_catalogo") {
     return "No hay alimentos en tu biblioteca. Recarga la app o contacta a tu coach.";
@@ -204,7 +222,8 @@ async function llamarGemini(apiKey, model, system, user, usarJsonMode) {
       "Content-Type": "application/json",
       "x-goog-api-key": apiKey
     },
-    body: JSON.stringify(body)
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(45000)
   });
 
   const data = await res.json().catch(() => ({}));
@@ -243,6 +262,13 @@ async function generarRecetaComida(payload) {
 Tu trabajo NO es dar recetas de cocina ni pasos de preparación.
 
 OBJETIVO: Armar un COMBO apetitoso y coherente para UNA comida del día que se acerque a los macros objetivo.
+
+BALANCE DE MACROS (crítico — igual de importante que kcal y proteína):
+- Debes acercarte a carbohidratos Y grasas del objetivo, no solo kcal/proteína.
+- Tolerancia orientativa: ±30 kcal, ±5 g en proteína, carbohidratos y grasas (no busques perfección matemática).
+- Si subes proteína con carnes/huevos/nueces/aguacate, COMPENSA con carbs limpios (arroz, avena, fruta, pan, papa) y MODERA grasas.
+- Para llenar kcal restantes prioriza carbohidratos complejos antes que más grasa.
+- Incluye al menos una fuente clara de carbohidratos en cada combo (no solo proteína + grasa).
 
 GUSTO GASTRONÓMICO (muy importante):
 - El combo debe sonar rico y lógico para un atleta mexicano: nombres creativos pero reales (ej. "Bowl de yogur con manzana y granola", "Tacos fitness de pollo con tortilla").
@@ -352,8 +378,21 @@ Responde SOLO JSON válido (sin markdown):
           continue;
         }
 
-        const combo = normalizarCombo(parseJsonSeguro(text), catalogoMap);
-        if (combo) {
+        const comboRaw = normalizarCombo(parseJsonSeguro(text), catalogoMap);
+        if (comboRaw) {
+          const targetCombo = {
+            calorias: redondear(num(macrosObjetivo.calorias)),
+            proteinas: redondear(num(macrosObjetivo.proteinas)),
+            carbohidratos: redondear(num(macrosObjetivo.carbohidratos)),
+            grasas: redondear(num(macrosObjetivo.grasas)),
+            sodio: redondear(num(macrosObjetivo.sodio))
+          };
+          let combo = comboRaw;
+          try {
+            combo = optimizarCombo(comboRaw, catalogoMap, targetCombo);
+          } catch (optErr) {
+            console.warn("[recetaIaGemini] optimizarCombo:", optErr.message);
+          }
           return { ok: true, receta: combo, combo, ia: true, comida, modelo: model };
         }
 
@@ -435,7 +474,9 @@ Arma un PLAN DE DÍA COMPLETO: un combo por cada comida indicada en "comidas_a_p
 
 REGLAS:
 - SOLO alimentos del catálogo (id_alimento exacto).
-- La SUMA de todos los combos debe acercarse a objetivo_dia (kcal, P, C, G, sodio).
+- La SUMA de todos los combos debe acercarse a restante_dia u objetivo_dia (kcal, P, C, G, sodio).
+- BALANCE CRÍTICO: acércate a carbohidratos y grasas del día (±5 g y ±30 kcal es suficiente). No solo kcal/proteína.
+- Reparte carbs limpios (arroz, avena, fruta, pan) entre comidas; evita exceso de grasa acumulada (nueces, aguacate, yema).
 - Respeta preferencias (gustos/disgustos/notas_medicas).
 - Gusto gastronómico: desayuno ligero, comida/cena completas, colaciones prácticas.
 - Variedad: no repitas el mismo plato en todas las comidas.
@@ -495,8 +536,23 @@ Responde SOLO JSON válido:
         }
         const { text, blockReason } = extraerTextoGemini(data);
         if (blockReason) continue;
-        const dieta = normalizarDietaDia(parseJsonSeguro(text), catalogoMap);
-        if (dieta) {
+        const dietaRaw = normalizarDietaDia(parseJsonSeguro(text), catalogoMap);
+        if (dietaRaw) {
+          const targetDia = {
+            calorias: redondear(num(plan.restante_dia?.calorias ?? plan.objetivo_dia?.calorias)),
+            proteinas: redondear(num(plan.restante_dia?.proteinas ?? plan.objetivo_dia?.proteinas)),
+            carbohidratos: redondear(
+              num(plan.restante_dia?.carbohidratos ?? plan.objetivo_dia?.carbohidratos)
+            ),
+            grasas: redondear(num(plan.restante_dia?.grasas ?? plan.objetivo_dia?.grasas)),
+            sodio: redondear(num(plan.restante_dia?.sodio ?? plan.objetivo_dia?.sodio ?? 2300))
+          };
+          let dieta = dietaRaw;
+          try {
+            dieta = optimizarDietaDia(dietaRaw, catalogoMap, targetDia);
+          } catch (optErr) {
+            console.warn("[recetaIaGemini] optimizarDietaDia:", optErr.message);
+          }
           return { ok: true, dieta, ia: true, modelo: model };
         }
       } catch (err) {
@@ -530,7 +586,7 @@ async function probarConexionGemini() {
     };
   }
 
-  const model = (process.env.GEMINI_MODEL || "gemini-2.5-flash").trim();
+  const model = (process.env.GEMINI_MODEL || "gemini-2.0-flash").trim();
   const { res, data } = await llamarGemini(
     apiKey,
     model,

@@ -105,6 +105,19 @@ app.get("/", (req, res) => {
 app.head("/", (req, res) => res.status(200).end());
 app.all("/api/ping", responderPing);
 
+/** Público — comprueba si Gemini responde (no genera combos). */
+app.get("/api/alimentos/receta-ia/status", async (req, res) => {
+  if (!geminiConfigurado()) {
+    return res.status(503).json({ ok: false, motivo: "sin_api_key" });
+  }
+  try {
+    const resultado = await probarConexionGemini();
+    return res.status(resultado.ok ? 200 : 503).json(resultado);
+  } catch (err) {
+    return res.status(503).json({ ok: false, motivo: "api_error", detalle: err.message });
+  }
+});
+
 app.use(requireAuthMiddleware);
 
 process.on('uncaughtException', (err) => console.error("🔥 ERROR FATAL:", err));
@@ -495,6 +508,7 @@ app.post("/api/alimentos/receta-ia", async (req, res) => {
       ];
       return res.status(err400.includes(resultado.motivo) ? 400 : 503).json({
         ok: false,
+        motivo: resultado.motivo,
         error: mensajeErrorAmigable(
           resultado.motivo,
           mostrarDetalle,
@@ -533,6 +547,7 @@ app.post("/api/alimentos/dieta-ia", async (req, res) => {
       const err400 = ["sin_catalogo", "sin_objetivo", "sin_comidas"];
       return res.status(err400.includes(resultado.motivo) ? 400 : 503).json({
         ok: false,
+        motivo: resultado.motivo,
         error: mensajeErrorAmigable(
           resultado.motivo,
           mostrarDetalle,
