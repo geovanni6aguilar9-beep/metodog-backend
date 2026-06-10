@@ -13,7 +13,7 @@ const ALIMENTOS_METODOG = [
   { nombre: "Camarón", grupo: "Carnes", grupo_equivalencia: "proteina_magra", porcion_base: 100, unidad: "g", calorias: 85, proteinas: 20, carbohidratos: 0, grasas: 0.5, sodio: 119 },
   { nombre: "Claras de Huevo", grupo: "Carnes", grupo_equivalencia: "proteina_magra", porcion_base: 100, unidad: "g", calorias: 48, proteinas: 11, carbohidratos: 0.7, grasas: 0.2, sodio: 166 },
   { nombre: "Queso Cottage Bajo Grasa", grupo: "Lácteos", grupo_equivalencia: "proteina_magra", porcion_base: 100, unidad: "g", calorias: 72, proteinas: 12, carbohidratos: 3, grasas: 1, sodio: 321 },
-  { nombre: "Scoop Proteína Whey", grupo: "Carnes", grupo_equivalencia: "proteina_magra", porcion_base: 30, unidad: "g", calorias: 111, proteinas: 25, carbohidratos: 1, grasas: 0.5, sodio: 45 },
+  { nombre: "Scoop Proteína Whey", grupo: "Carnes", grupo_equivalencia: "proteina_magra", porcion_base: 1, unidad: "scoop", calorias: 111, proteinas: 25, carbohidratos: 1, grasas: 0.5, sodio: 45 },
   { nombre: "Jamón de Pavo", grupo: "Carnes", grupo_equivalencia: "proteina_magra", porcion_base: 100, unidad: "g", calorias: 105, proteinas: 18, carbohidratos: 2, grasas: 3, sodio: 900 },
 
   // —— Proteína con más grasa ——
@@ -201,7 +201,7 @@ const ALIMENTOS_METODOG = [
   { nombre: "Barrita de Proteína", grupo: "Otros", grupo_equivalencia: "proteina_magra", porcion_base: 1, unidad: "pieza", calorias: 200, proteinas: 20, carbohidratos: 22, grasas: 6, sodio: 180 },
   { nombre: "Isopure Clear", grupo: "Otros", grupo_equivalencia: "proteina_magra", porcion_base: 1, unidad: "pieza", calorias: 90, proteinas: 20, carbohidratos: 0, grasas: 0, sodio: 45 },
   { nombre: "Electrolitos en Polvo", grupo: "Otros", grupo_equivalencia: "libre", porcion_base: 5, unidad: "g", calorias: 5, proteinas: 0, carbohidratos: 1, grasas: 0, sodio: 200 },
-  { nombre: "Proteína Caseína", grupo: "Carnes", grupo_equivalencia: "proteina_magra", porcion_base: 30, unidad: "g", calorias: 108, proteinas: 24, carbohidratos: 2, grasas: 1, sodio: 50 },
+  { nombre: "Proteína Caseína", grupo: "Carnes", grupo_equivalencia: "proteina_magra", porcion_base: 1, unidad: "scoop", calorias: 108, proteinas: 24, carbohidratos: 2, grasas: 1, sodio: 50 },
   { nombre: "Glutamina en Polvo", grupo: "Otros", grupo_equivalencia: "libre", porcion_base: 5, unidad: "g", calorias: 20, proteinas: 5, carbohidratos: 0, grasas: 0, sodio: 0 },
   { nombre: "EAA en Polvo", grupo: "Otros", grupo_equivalencia: "libre", porcion_base: 10, unidad: "g", calorias: 40, proteinas: 10, carbohidratos: 0, grasas: 0, sodio: 10 },
   { nombre: "Colágeno Hidrolizado", grupo: "Otros", grupo_equivalencia: "libre", porcion_base: 10, unidad: "g", calorias: 35, proteinas: 9, carbohidratos: 0, grasas: 0, sodio: 25 }

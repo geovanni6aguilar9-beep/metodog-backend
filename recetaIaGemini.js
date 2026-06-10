@@ -103,6 +103,18 @@ function sumarMacrosLista(items) {
   );
 }
 
+function normalizarCantidadSugerida(cantidad, cat) {
+  const qty = num(cantidad, 0);
+  if (qty <= 0) return 0;
+  const base = num(cat?.porcion_base, 1) || 1;
+  const unidad = String(cat?.unidad || "g").toLowerCase();
+  if ((unidad === "g" || unidad === "ml") && base >= 10 && qty < base * 0.6) {
+    const esEnteroChico = qty >= 1 && qty <= 5 && Math.abs(qty - Math.round(qty)) < 0.01;
+    if (esEnteroChico) return redondear(qty * base);
+  }
+  return redondear(qty);
+}
+
 function normalizarCombo(obj, catalogoMap) {
   if (!obj || typeof obj !== "object") return null;
   const nombre = String(obj.nombre || obj.titulo || "").trim();
@@ -117,11 +129,14 @@ function normalizarCombo(obj, catalogoMap) {
   const alimentos_sugeridos = [];
   for (const row of rawItems.slice(0, 12)) {
     const id = parseInt(row?.id_alimento ?? row?.id ?? row?.idAlimento, 10);
-    const cantidad = num(row?.cantidad_sugerida ?? row?.cantidad, 0);
-    if (!id || cantidad <= 0) continue;
+    if (!id) continue;
     const cat = catalogoMap.get(id);
     if (!cat) continue;
-    const cantidadOk = Math.round(cantidad * 10) / 10;
+    const cantidadOk = normalizarCantidadSugerida(
+      num(row?.cantidad_sugerida ?? row?.cantidad, 0),
+      cat
+    );
+    if (!cantidadOk) continue;
     const macros = macrosDesdeCatalogo(cat, cantidadOk);
     alimentos_sugeridos.push({
       id_alimento: id,
@@ -284,7 +299,8 @@ PREFERENCIAS DEL ATLETA (si vienen en preferencias):
 REGLA DE ORO — CATÁLOGO CERRADO:
 - SOLO alimentos del arreglo "catalogo" con su "id" exacto como id_alimento.
 - PROHIBIDO inventar alimentos o marcas.
-- Cantidades en la unidad del catálogo; macros son POR porcion_base.
+- Cantidades en la **unidad del catálogo** (`g`, `ml`, `scoop`, `pieza`). Macros son POR `porcion_base`.
+- 1 scoop de whey = `cantidad_sugerida: 1` (no confundir scoop con gramos).
 - Entre 2 y 6 alimentos por combo.
 
 CONTEXTO DEL PLAN:
