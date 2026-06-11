@@ -10,8 +10,8 @@ const TOLERANCIA = {
   grasas: 5
 };
 
-const MAX_PASADAS_COMBO = 14;
-const MAX_PASADAS_DIA = 24;
+const MAX_PASADAS_COMBO = 16;
+const MAX_PASADAS_DIA = 32;
 const FACTOR_ESCALA_MAX = 1.28;
 
 function num(v, fallback = 0) {
@@ -27,13 +27,20 @@ function clampQty(qty, minQty, maxQty) {
   return redondear(Math.min(maxQty, Math.max(minQty, qty)));
 }
 
+function redondearCantidad(cantidad, unidad) {
+  const u = String(unidad || "g").toLowerCase();
+  if (u === "g" || u === "ml") return Math.round(num(cantidad));
+  return redondear(cantidad);
+}
+
 function itemDesdeCatalogo(cat, cantidad) {
   const base = num(cat?.porcion_base, 1) || 1;
-  const factor = num(cantidad, 0) / base;
+  const qty = redondearCantidad(cantidad, cat?.unidad);
+  const factor = num(qty, 0) / base;
   return {
     id_alimento: cat.id,
     nombre: cat.nombre,
-    cantidad_sugerida: redondear(cantidad),
+    cantidad_sugerida: qty,
     unidad: cat.unidad,
     porcion_base: cat.porcion_base,
     calorias: redondear(num(cat.calorias) * factor),
@@ -472,6 +479,25 @@ function optimizarDietaDia(dieta, catalogoMap, targetDia, options = {}) {
   }
 
   for (let pass = 0; pass < MAX_PASADAS_DIA; pass++) {
+    if (dentroTolerancia(totalDieta(dieta.comidas), targetDia)) break;
+    if (!pasoAjusteDieta(dieta.comidas, catalogoMap, targetDia, options)) break;
+  }
+
+  for (let pass = 0; pass < 6; pass++) {
+    const total = totalDieta(dieta.comidas);
+    const errCal = num(targetDia.calorias) - total.calorias;
+    if (Math.abs(errCal) <= TOLERANCIA.calorias) break;
+    if (total.calorias <= 0) break;
+    const factor = factorEscalaCalorias(total, targetDia);
+    if (Math.abs(factor - 1) < 0.015) break;
+    for (const bloque of dieta.comidas) {
+      escalarItems(bloque.alimentos_sugeridos || [], factor, minQty, maxQty);
+      bloque.alimentos_sugeridos = reconstruirItems(bloque.alimentos_sugeridos, catalogoMap, minQty, maxQty);
+    }
+    refrescarMacrosComidas(dieta.comidas, catalogoMap, minQty, maxQty);
+  }
+
+  for (let pass = 0; pass < 8; pass++) {
     if (dentroTolerancia(totalDieta(dieta.comidas), targetDia)) break;
     if (!pasoAjusteDieta(dieta.comidas, catalogoMap, targetDia, options)) break;
   }

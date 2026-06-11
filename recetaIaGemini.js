@@ -12,8 +12,12 @@ const MODELOS_FALLBACK = [
 
 let optimizarCombo = (combo) => combo;
 let optimizarDietaDia = (dieta) => dieta;
+let OPTIMIZER_DISPONIBLE = false;
 try {
-  ({ optimizarCombo, optimizarDietaDia } = require("./comboMacroOptimizer"));
+  const mod = require("./comboMacroOptimizer");
+  optimizarCombo = mod.optimizarCombo;
+  optimizarDietaDia = mod.optimizarDietaDia;
+  OPTIMIZER_DISPONIBLE = typeof mod.optimizarDietaDia === "function";
 } catch (err) {
   console.warn("[recetaIaGemini] comboMacroOptimizer no cargado:", err.message);
 }
@@ -589,10 +593,15 @@ Responde SOLO JSON válido:
           let dieta = dietaRaw;
           try {
             dieta = optimizarDietaDia(dietaRaw, catalogoMap, targetDia);
+            const gapKcal = num(targetDia.calorias) - num(dieta.macros_plan?.calorias);
+            if (gapKcal > 80) {
+              dieta = optimizarDietaDia(dieta, catalogoMap, targetDia);
+            }
+            dieta.macros_ajustados = OPTIMIZER_DISPONIBLE;
           } catch (optErr) {
             console.warn("[recetaIaGemini] optimizarDietaDia:", optErr.message);
           }
-          return { ok: true, dieta, ia: true, modelo: model };
+          return { ok: true, dieta, ia: true, modelo: model, optimizer: OPTIMIZER_DISPONIBLE ? "v2" : "off" };
         }
       } catch (err) {
         ultimoDetalle = err?.message || String(err);
@@ -646,7 +655,12 @@ async function probarConexionGemini() {
   }
 
   const { text } = extraerTextoGemini(data);
-  return { ok: true, modelo: model, respuesta: (text || "OK").slice(0, 80) };
+  return {
+    ok: true,
+    modelo: model,
+    respuesta: (text || "OK").slice(0, 80),
+    optimizer: OPTIMIZER_DISPONIBLE ? "v2" : "off"
+  };
 }
 
 module.exports = {
