@@ -763,7 +763,7 @@ async function probarConexionGemini() {
     ok: true,
     modelo: model,
     respuesta: (text || "OK").slice(0, 80),
-    optimizer: OPTIMIZER_DISPONIBLE ? "v3" : "off"
+    optimizer: OPTIMIZER_DISPONIBLE ? "v4" : "off"
   };
 }
 
