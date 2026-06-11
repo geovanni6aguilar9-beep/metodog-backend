@@ -70,6 +70,8 @@ function normalizarCatalogo(catalogo) {
     map.set(id, {
       id,
       nombre,
+      grupo: String(a?.grupo || "").trim() || null,
+      grupo_equivalencia: String(a?.grupo_equivalencia || "").trim() || null,
       porcion_base: porcion,
       unidad: String(a?.unidad || "g").trim() || "g",
       calorias: num(a?.calorias ?? a?.kcal),
@@ -86,7 +88,7 @@ function normalizarCatalogo(catalogo) {
 async function cargarCatalogoDesdeDb(db) {
   if (!db) return [];
   const result = await db.execute({
-    sql: `SELECT id, nombre, porcion_base, unidad, calorias, proteinas, carbohidratos, grasas, sodio
+    sql: `SELECT id, nombre, grupo, grupo_equivalencia, porcion_base, unidad, calorias, proteinas, carbohidratos, grasas, sodio
           FROM alimentos WHERE coach_id IS NULL ORDER BY grupo, nombre ASC`
   });
   return normalizarCatalogo(result.rows || []);
@@ -699,7 +701,7 @@ Responde SOLO JSON válido:
             dieta,
             ia: true,
             modelo: model,
-            optimizer: OPTIMIZER_DISPONIBLE ? "v2" : "off"
+            optimizer: OPTIMIZER_DISPONIBLE ? "v3" : "off"
           };
         }
       } catch (err) {
@@ -758,7 +760,7 @@ async function probarConexionGemini() {
     ok: true,
     modelo: model,
     respuesta: (text || "OK").slice(0, 80),
-    optimizer: OPTIMIZER_DISPONIBLE ? "v2" : "off"
+    optimizer: OPTIMIZER_DISPONIBLE ? "v3" : "off"
   };
 }
 
