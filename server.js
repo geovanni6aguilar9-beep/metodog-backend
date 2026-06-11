@@ -59,7 +59,8 @@ const {
   mensajeErrorAmigable,
   geminiConfigurado,
   formatoKeyPareceValido,
-  probarConexionGemini
+  probarConexionGemini,
+  OPTIMIZER_DISPONIBLE
 } = require("./recetaIaGemini");
 
 const DEV_JWT_FALLBACK = "metodog-dev-cambiar-en-produccion";
@@ -112,7 +113,10 @@ app.get("/api/alimentos/receta-ia/status", async (req, res) => {
   }
   try {
     const resultado = await probarConexionGemini();
-    return res.status(resultado.ok ? 200 : 503).json(resultado);
+    return res.status(resultado.ok ? 200 : 503).json({
+      ...resultado,
+      optimizer: OPTIMIZER_DISPONIBLE ? "v2" : "off"
+    });
   } catch (err) {
     return res.status(503).json({ ok: false, motivo: "api_error", detalle: err.message });
   }
@@ -495,7 +499,7 @@ app.post("/api/alimentos/receta-ia", async (req, res) => {
 
   const payload = req.body || {};
   try {
-    const resultado = await generarRecetaComida(payload);
+    const resultado = await generarRecetaComida(payload, db);
     if (!resultado.ok) {
       const esAdmin = user.rol === "SUPERADMIN" || user.rol === "COACH";
       const mostrarDetalle = esAdmin || resultado.motivo === "formato_key";
@@ -540,7 +544,7 @@ app.post("/api/alimentos/dieta-ia", async (req, res) => {
 
   const payload = req.body || {};
   try {
-    const resultado = await generarDietaDiaCompleta(payload);
+    const resultado = await generarDietaDiaCompleta(payload, db);
     if (!resultado.ok) {
       const esAdmin = user.rol === "SUPERADMIN" || user.rol === "COACH";
       const mostrarDetalle = esAdmin || resultado.motivo === "formato_key";
