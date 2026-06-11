@@ -96,8 +96,63 @@ async function seedAlimentosMetodog(db) {
     }
   }
 
+  await corregirProteinasScoop(db);
+
   const count = await db.execute("SELECT COUNT(*) AS n FROM alimentos");
   console.log(`✅ Biblioteca alimentos: ${count.rows[0]?.n ?? "?"} ítems (grupo_equivalencia activo).`);
+}
+
+/** Fuerza unidad scoop en polvos de proteína (corrige filas legacy en Turso). */
+async function corregirProteinasScoop(db) {
+  const fixes = [
+    {
+      match: "%whey%",
+      porcion_base: 1,
+      unidad: "scoop",
+      calorias: 111,
+      proteinas: 25,
+      carbohidratos: 1,
+      grasas: 0.5,
+      sodio: 45
+    },
+    {
+      match: "%caseína%",
+      porcion_base: 1,
+      unidad: "scoop",
+      calorias: 108,
+      proteinas: 24,
+      carbohidratos: 2,
+      grasas: 1,
+      sodio: 50
+    },
+    {
+      match: "%vegetal en polvo%",
+      porcion_base: 1,
+      unidad: "scoop",
+      calorias: 120,
+      proteinas: 24,
+      carbohidratos: 2,
+      grasas: 2,
+      sodio: 340
+    }
+  ];
+  for (const f of fixes) {
+    await db.execute({
+      sql: `UPDATE alimentos SET porcion_base = ?, unidad = ?, calorias = ?, proteinas = ?,
+            carbohidratos = ?, grasas = ?, sodio = ?
+            WHERE coach_id IS NULL AND LOWER(nombre) LIKE ?`,
+      args: [
+        f.porcion_base,
+        f.unidad,
+        f.calorias,
+        f.proteinas,
+        f.carbohidratos,
+        f.grasas,
+        f.sodio,
+        f.match.toLowerCase()
+      ]
+    });
+  }
 }
 
 module.exports = { seedAlimentosMetodog, ensureAlimentosSchema };

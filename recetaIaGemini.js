@@ -112,6 +112,21 @@ function normalizarCantidadSugerida(cantidad, cat) {
   if (qty <= 0) return 0;
   const base = num(cat?.porcion_base, 1) || 1;
   const unidad = String(cat?.unidad || "g").toLowerCase();
+  const nombre = String(cat?.nombre || "").toLowerCase();
+  const esPolvo =
+    nombre.includes("whey") ||
+    nombre.includes("caseína") ||
+    nombre.includes("caseina") ||
+    (nombre.includes("proteína") && nombre.includes("polvo")) ||
+    (nombre.includes("proteina") && nombre.includes("polvo"));
+
+  if (["scoop", "pieza", "cucharada"].includes(unidad)) {
+    return Math.max(1, Math.round(qty));
+  }
+  if (esPolvo && qty >= 1 && qty <= 3) {
+    if (unidad === "g" && base >= 10) return redondear(qty * base);
+    return Math.max(1, Math.round(qty));
+  }
   if ((unidad === "g" || unidad === "ml") && base >= 10 && qty < base * 0.6) {
     const esEnteroChico = qty >= 1 && qty <= 5 && Math.abs(qty - Math.round(qty)) < 0.01;
     if (esEnteroChico) return redondear(qty * base);
