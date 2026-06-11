@@ -1,5 +1,5 @@
 /**
- * Ajuste de porciones tras Gemini.
+ * Ajuste de porciones tras Gemini (v4.1).
  * Tolerancia funcional: ±30 kcal, ±5 g P/C/G.
  */
 
@@ -37,7 +37,7 @@ function grupoEquiv(cat) {
 /** Fallback cuando Turso/payload no traen grupo_equivalencia. */
 function inferGrupoEquivalencia(cat) {
   const nombre = String(cat?.nombre || "").toLowerCase();
-  if (/almendr|nuez|cacahuate|avellana|macadamia|semilla de|semillas/.test(nombre)) return "grasa";
+  if (/almendr|nueces?|cacahuate|avellana|macadamia|semilla de|semillas|piñones?|pecanas?/.test(nombre)) return "grasa";
   if (/aceite|aguacate|crema de cacahuate|mantequilla de/.test(nombre)) return "grasa";
   if (/arroz|avena|tortilla|papa|camote|pasta|pan integral|pan blanco|quinoa|bagel|harina de/.test(nombre)) {
     return "carbohidrato_complejo";
@@ -73,7 +73,7 @@ function optsCarbFill(errProt, errCarb) {
   const proteinAlLimite = errProt <= TOLERANCIA.proteinas;
   return {
     modoLimpio: proteinAlLimite,
-    soloComplejo: proteinAlLimite && errCarb > 20
+    soloComplejo: proteinAlLimite && errCarb > 15
   };
 }
 
@@ -111,9 +111,18 @@ function limitesPorAlimento(cat) {
   return { min: 0.5, max: 350 };
 }
 
-function clampQtyAlimento(qty, cat) {
+function cantidadFinalAlimento(qty, cat) {
   const lim = limitesPorAlimento(cat);
-  return clampQty(num(qty, 0), lim.min, lim.max);
+  const u = String(cat?.unidad || "g").toLowerCase();
+  let q = num(qty, 0);
+  q = Math.min(lim.max, Math.max(lim.min, q));
+  if (u === "g" || u === "ml") q = Math.round(q);
+  else q = redondear(q);
+  return Math.min(lim.max, Math.max(lim.min, q));
+}
+
+function clampQtyAlimento(qty, cat) {
+  return cantidadFinalAlimento(qty, cat);
 }
 
 function esFuenteCarbPermitida(cat, opciones = {}) {
@@ -156,8 +165,7 @@ function redondearCantidad(cantidad, unidad) {
 
 function itemDesdeCatalogo(cat, cantidad) {
   const base = num(cat?.porcion_base, 1) || 1;
-  const qtyRaw = clampQtyAlimento(cantidad, cat);
-  const qty = redondearCantidad(qtyRaw, cat?.unidad);
+  const qty = cantidadFinalAlimento(cantidad, cat);
   const factor = num(qty, 0) / base;
   return {
     id_alimento: cat.id,
@@ -528,7 +536,7 @@ function pasoRellenarCarbDieta(comidas, catalogoMap, targetDia, options) {
           clampQtyAlimento(
             (errCarb / n / Math.max(densidad(filler, "carbohidratos"), 0.01)) *
               num(filler.porcion_base, 1) *
-              0.85,
+              0.92,
             filler
           )
         )
@@ -541,6 +549,49 @@ function pasoRellenarCarbDieta(comidas, catalogoMap, targetDia, options) {
   bloque.alimentos_sugeridos = reconstruirItems(items, catalogoMap);
   refrescarMacrosComidas(comidas, catalogoMap);
   return true;
+}
+
+/** Reparte relleno de carbos en las comidas más bajas (post-afinado). */
+function pasoDistribuirCarbFinal(comidas, catalogoMap, targetDia, options) {
+  const total = totalDieta(comidas);
+  const errCal = num(targetDia.calorias) - total.calorias;
+  const errCarb = num(targetDia.carbohidratos) - total.carbohidratos;
+  const errProt = num(targetDia.proteinas) - total.proteinas;
+  if (errCarb <= TOLERANCIA.carbohidratos || errCal < -40) return false;
+
+  const carbOpts = optsCarbFill(errProt, errCarb);
+  const ordenadas = [...comidas].sort(
+    (a, b) => num(a.macros_combo?.carbohidratos) - num(b.macros_combo?.carbohidratos)
+  );
+  const nBoost = errCarb > 35 ? 3 : errCarb > 18 ? 2 : 1;
+  const boost = errCarb > 40 ? 1.18 : errCarb > 25 ? 1.12 : 1.08;
+  let cambio = false;
+
+  for (let i = 0; i < Math.min(nBoost, ordenadas.length); i++) {
+    const bloque = ordenadas[i];
+    const items = bloque.alimentos_sugeridos || [];
+    const carbItem = itemMasCarb(items, catalogoMap, carbOpts);
+    if (carbItem) {
+      const cat = catalogoMap.get(carbItem.id_alimento);
+      carbItem.cantidad_sugerida = clampQtyAlimento(carbItem.cantidad_sugerida * boost, cat);
+      bloque.alimentos_sugeridos = reconstruirItems(items, catalogoMap);
+      cambio = true;
+    } else if (items.length < 7) {
+      const filler = mejorRellenoCarb(catalogoMap, idsEnCombo(items), carbOpts);
+      if (filler) {
+        const porcion =
+          (errCarb / nBoost / Math.max(densidad(filler, "carbohidratos"), 0.01)) *
+          num(filler.porcion_base, 1) *
+          0.9;
+        items.push(itemDesdeCatalogo(filler, porcion));
+        bloque.alimentos_sugeridos = reconstruirItems(items, catalogoMap);
+        cambio = true;
+      }
+    }
+  }
+
+  if (cambio) refrescarMacrosComidas(comidas, catalogoMap);
+  return cambio;
 }
 
 /** Ajuste fino cuando kcal ya cuadra pero P/C/G se pasan o faltan. */
@@ -899,6 +950,16 @@ function optimizarDietaDia(dieta, catalogoMap, targetDia, options = {}) {
     }
     enforceLimitesFinales(dieta.comidas, catalogoMap);
     if (!cambio) break;
+  }
+
+  for (let pass = 0; pass < 6; pass++) {
+    const total = totalDieta(dieta.comidas);
+    const errCarb = num(targetDia.carbohidratos) - total.carbohidratos;
+    const errCal = num(targetDia.calorias) - total.calorias;
+    if (errCarb <= TOLERANCIA.carbohidratos) break;
+    if (Math.abs(errCal) > 45) break;
+    if (!pasoDistribuirCarbFinal(dieta.comidas, catalogoMap, targetDia, options)) break;
+    enforceLimitesFinales(dieta.comidas, catalogoMap);
   }
 
   enforceLimitesFinales(dieta.comidas, catalogoMap);

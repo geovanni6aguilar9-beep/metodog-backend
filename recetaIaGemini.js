@@ -704,7 +704,7 @@ Responde SOLO JSON válido:
             dieta,
             ia: true,
             modelo: model,
-            optimizer: OPTIMIZER_DISPONIBLE ? "v4" : "off"
+            optimizer: OPTIMIZER_DISPONIBLE ? "v4.1" : "off"
           };
         }
       } catch (err) {
@@ -763,7 +763,7 @@ async function probarConexionGemini() {
     ok: true,
     modelo: model,
     respuesta: (text || "OK").slice(0, 80),
-    optimizer: OPTIMIZER_DISPONIBLE ? "v4" : "off"
+    optimizer: OPTIMIZER_DISPONIBLE ? "v4.1" : "off"
   };
 }
 

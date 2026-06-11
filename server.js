@@ -115,7 +115,7 @@ app.get("/api/alimentos/receta-ia/status", async (req, res) => {
     const resultado = await probarConexionGemini();
     return res.status(resultado.ok ? 200 : 503).json({
       ...resultado,
-      optimizer: OPTIMIZER_DISPONIBLE ? "v4" : "off"
+      optimizer: OPTIMIZER_DISPONIBLE ? "v4.1" : "off"
     });
   } catch (err) {
     return res.status(503).json({ ok: false, motivo: "api_error", detalle: err.message });
