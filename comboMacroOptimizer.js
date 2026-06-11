@@ -21,6 +21,8 @@ const FRUTAS_CARB_ALTO = /plátano|platano|mango|papaya|uva/i;
 function grupoEquiv(cat) {
   const ge = String(cat?.grupo_equivalencia || "").trim().toLowerCase();
   if (ge) return ge;
+  const inferido = inferGrupoEquivalencia(cat);
+  if (inferido) return inferido;
   const g = String(cat?.grupo || "").trim().toLowerCase();
   if (g === "verduras") return "verdura";
   if (g === "frutas") return "fruta";
@@ -30,6 +32,49 @@ function grupoEquiv(cat) {
   if (g === "leguminosas") return "legumbre";
   if (g === "lácteos" || g === "lacteos") return "lacteo";
   return "";
+}
+
+/** Fallback cuando Turso/payload no traen grupo_equivalencia. */
+function inferGrupoEquivalencia(cat) {
+  const nombre = String(cat?.nombre || "").toLowerCase();
+  if (/almendr|nuez|cacahuate|avellana|macadamia|semilla de|semillas/.test(nombre)) return "grasa";
+  if (/aceite|aguacate|crema de cacahuate|mantequilla de/.test(nombre)) return "grasa";
+  if (/arroz|avena|tortilla|papa|camote|pasta|pan integral|pan blanco|quinoa|bagel|harina de/.test(nombre)) {
+    return "carbohidrato_complejo";
+  }
+  if (/brócoli|brocoli|espinaca|jitomate|pepino|lechuga|calabac|espárrago|esparrago|nopal|coliflor|zanahoria/.test(nombre)) {
+    return "verdura";
+  }
+  if (/plátano|platano|fresa|sandía|sandia|mango|papaya|uva|manzana|arándano/.test(nombre)) return "fruta";
+  if (/whey|caseína|caseina|proteína.*polvo|proteina.*polvo|bcaa|creatina/.test(nombre)) return "proteina_magra";
+  if (/leche|yogur|kefir|queso cottage/.test(nombre)) return "lacteo";
+  if (/huevo/.test(nombre)) return "proteina_grasa";
+  if (/pollo|pavo|res|atún|atun|tilapia|salmón|salmon|camarón|camaron|bowl|jamón|jamon/.test(nombre)) {
+    return "proteina_magra";
+  }
+  if (/lenteja|frijol|garbanzo/.test(nombre)) return "legumbre";
+  return "";
+}
+
+function esPlatoCompuesto(cat) {
+  return /bowl|wrap|meal prep|burrito|tacos al plato|combo fitness/.test(String(cat?.nombre || "").toLowerCase());
+}
+
+function enriquecerCatalogoMap(catalogoMap) {
+  for (const [id, cat] of catalogoMap.entries()) {
+    if (grupoEquiv(cat)) continue;
+    const ge = inferGrupoEquivalencia(cat);
+    if (ge) catalogoMap.set(id, { ...cat, grupo_equivalencia: ge });
+  }
+  return catalogoMap;
+}
+
+function optsCarbFill(errProt, errCarb) {
+  const proteinAlLimite = errProt <= TOLERANCIA.proteinas;
+  return {
+    modoLimpio: proteinAlLimite,
+    soloComplejo: proteinAlLimite && errCarb > 20
+  };
 }
 
 /** Topes realistas por tipo de alimento (MétodoG). */
@@ -44,6 +89,7 @@ function limitesPorAlimento(cat) {
     if (u === "pieza") return { min: 1, max: 10 };
   }
   if (eq === "proteina_magra") {
+    if (esPlatoCompuesto(cat) && u === "g") return { min: 120, max: 280 };
     if (u === "g") return { min: 80, max: 250 };
     if (u === "scoop") return { min: 0.5, max: 2.5 };
   }
@@ -70,10 +116,13 @@ function clampQtyAlimento(qty, cat) {
   return clampQty(num(qty, 0), lim.min, lim.max);
 }
 
-function esFuenteCarbPermitida(cat, modoLimpio) {
+function esFuenteCarbPermitida(cat, opciones = {}) {
   if (!cat) return false;
+  const modoLimpio = !!opciones.modoLimpio;
+  const soloComplejo = !!opciones.soloComplejo;
   const eq = grupoEquiv(cat);
   if (GRUPOS_NO_RELLENO_CARB.has(eq)) return false;
+  if (soloComplejo) return GRUPOS_CARB_LIMPIO.has(eq);
   if (modoLimpio) {
     if (GRUPOS_CARB_LIMPIO.has(eq)) return true;
     if (eq === "fruta" && FRUTAS_CARB_ALTO.test(String(cat.nombre || ""))) return true;
@@ -107,7 +156,8 @@ function redondearCantidad(cantidad, unidad) {
 
 function itemDesdeCatalogo(cat, cantidad) {
   const base = num(cat?.porcion_base, 1) || 1;
-  const qty = redondearCantidad(cantidad, cat?.unidad);
+  const qtyRaw = clampQtyAlimento(cantidad, cat);
+  const qty = redondearCantidad(qtyRaw, cat?.unidad);
   const factor = num(qty, 0) / base;
   return {
     id_alimento: cat.id,
@@ -167,12 +217,11 @@ function dentroTolerancia(total, target) {
 }
 
 function mejorRellenoCarb(catalogoMap, excludeIds, opciones = {}) {
-  const modoLimpio = !!opciones.modoLimpio;
   let mejor = null;
   let mejorScore = -Infinity;
   for (const cat of catalogoMap.values()) {
     if (excludeIds.has(cat.id)) continue;
-    if (!esFuenteCarbPermitida(cat, modoLimpio)) continue;
+    if (!esFuenteCarbPermitida(cat, opciones)) continue;
     const carb = densidad(cat, "carbohidratos");
     const prot = densidad(cat, "proteinas");
     const gras = densidad(cat, "grasas");
@@ -218,12 +267,12 @@ function itemMasGraso(items, catalogoMap) {
 }
 
 function itemMasCarb(items, catalogoMap, opciones = {}) {
-  const modoLimpio = !!opciones.modoLimpio;
+  const carbOpts = typeof opciones === "object" ? opciones : { modoLimpio: !!opciones };
   let mejor = null;
   let mejorScore = -Infinity;
   for (const item of items) {
     const cat = catalogoMap.get(item.id_alimento);
-    if (!cat || !esFuenteCarbPermitida(cat, modoLimpio)) continue;
+    if (!cat || !esFuenteCarbPermitida(cat, carbOpts)) continue;
     const score = densidad(cat, "carbohidratos") - densidad(cat, "proteinas") * 0.5 - densidad(cat, "grasas");
     if (score > mejorScore) {
       mejorScore = score;
@@ -237,10 +286,12 @@ function prioridadRecorteProteina(cat) {
   const eq = grupoEquiv(cat);
   const u = String(cat?.unidad || "g").toLowerCase();
   if (eq === "proteina_magra" && u === "scoop") return 100;
-  if (eq === "proteina_grasa" && u === "pieza") return 85;
-  if (eq === "proteina_magra" && u === "g") return 50;
-  if (eq === "legumbre") return 40;
-  if (eq === "lacteo") return 35;
+  if (eq === "lacteo") return 95;
+  if (eq === "grasa") return 90;
+  if (eq === "proteina_grasa" && u === "pieza") return 75;
+  if (esPlatoCompuesto(cat)) return 25;
+  if (eq === "proteina_magra" && u === "g") return 35;
+  if (eq === "legumbre") return 45;
   return 10;
 }
 
@@ -310,7 +361,7 @@ function pasoAjusteCombo(items, catalogoMap, target, options) {
   const errCarb = num(target.carbohidratos) - total.carbohidratos;
   const errGras = num(target.grasas) - total.grasas;
   const errCal = num(target.calorias) - total.calorias;
-  const modoLimpio = errProt <= TOLERANCIA.proteinas;
+  const carbOpts = optsCarbFill(errProt, errCarb);
 
   if (errCal > 80 && total.calorias > 0) {
     if (pasoEscalarCaloriasItems(items, target, catalogoMap)) return true;
@@ -326,14 +377,14 @@ function pasoAjusteCombo(items, catalogoMap, target, options) {
   }
 
   if (errCarb > TOLERANCIA.carbohidratos) {
-    const carbItem = itemMasCarb(items, catalogoMap, { modoLimpio });
+    const carbItem = itemMasCarb(items, catalogoMap, carbOpts);
     if (carbItem) {
       const cat = catalogoMap.get(carbItem.id_alimento);
       const boost = errCarb > 25 ? 1.18 : 1.12;
       carbItem.cantidad_sugerida = clampQtyAlimento(carbItem.cantidad_sugerida * boost, cat);
       return true;
     }
-    const filler = mejorRellenoCarb(catalogoMap, idsEnCombo(items), { modoLimpio });
+    const filler = mejorRellenoCarb(catalogoMap, idsEnCombo(items), carbOpts);
     if (filler && items.length < maxItems) {
       const qty = clampQtyAlimento(
         (Math.min(errCarb, 55) / Math.max(densidad(filler, "carbohidratos"), 0.01)) * num(filler.porcion_base, 1) * 0.75,
@@ -454,7 +505,7 @@ function pasoRellenarCarbDieta(comidas, catalogoMap, targetDia, options) {
   const errProt = num(targetDia.proteinas) - total.proteinas;
   if (errCarb <= TOLERANCIA.carbohidratos) return false;
 
-  const modoLimpio = errProt <= TOLERANCIA.proteinas;
+  const carbOpts = optsCarbFill(errProt, errCarb);
   const n = Math.max(comidas.length, 1);
   const bloque = [...comidas].sort(
     (a, b) => num(a.macros_combo?.carbohidratos) - num(b.macros_combo?.carbohidratos)
@@ -462,14 +513,14 @@ function pasoRellenarCarbDieta(comidas, catalogoMap, targetDia, options) {
   if (!bloque) return false;
 
   const items = bloque.alimentos_sugeridos || [];
-  const carbItem = itemMasCarb(items, catalogoMap, { modoLimpio });
+  const carbItem = itemMasCarb(items, catalogoMap, carbOpts);
   const boost = errCarb > 50 ? 1.22 : errCarb > 25 ? 1.15 : 1.1;
 
   if (carbItem) {
     const cat = catalogoMap.get(carbItem.id_alimento);
     carbItem.cantidad_sugerida = clampQtyAlimento(carbItem.cantidad_sugerida * boost, cat);
   } else {
-    const filler = mejorRellenoCarb(catalogoMap, idsEnCombo(items), { modoLimpio });
+    const filler = mejorRellenoCarb(catalogoMap, idsEnCombo(items), carbOpts);
     if (filler && items.length < 7) {
       items.push(
         itemDesdeCatalogo(
@@ -500,7 +551,7 @@ function pasoAfinarMacrosDieta(comidas, catalogoMap, targetDia, options) {
   const errProt = num(targetDia.proteinas) - total.proteinas;
   const errCarb = num(targetDia.carbohidratos) - total.carbohidratos;
   const errGras = num(targetDia.grasas) - total.grasas;
-  const modoLimpio = errProt <= TOLERANCIA.proteinas;
+  const carbOpts = optsCarbFill(errProt, errCarb);
 
   if (errCarb < -TOLERANCIA.carbohidratos) {
     const bloque = [...comidas].sort(
@@ -566,13 +617,13 @@ function pasoAfinarMacrosDieta(comidas, catalogoMap, targetDia, options) {
     }
   }
 
-  if (errCarb > TOLERANCIA.carbohidratos && modoLimpio) {
+  if (errCarb > TOLERANCIA.carbohidratos && carbOpts.modoLimpio) {
     const bloque = [...comidas].sort(
       (a, b) => num(a.macros_combo?.carbohidratos) - num(b.macros_combo?.carbohidratos)
     )[0];
     if (bloque) {
       const items = bloque.alimentos_sugeridos || [];
-      const carbItem = itemMasCarb(items, catalogoMap, { modoLimpio: true });
+      const carbItem = itemMasCarb(items, catalogoMap, carbOpts);
       if (carbItem) {
         const cat = catalogoMap.get(carbItem.id_alimento);
         carbItem.cantidad_sugerida = clampQtyAlimento(carbItem.cantidad_sugerida * 1.08, cat);
@@ -580,7 +631,7 @@ function pasoAfinarMacrosDieta(comidas, catalogoMap, targetDia, options) {
         refrescarMacrosComidas(comidas, catalogoMap);
         return true;
       }
-      const filler = mejorRellenoCarb(catalogoMap, idsEnCombo(items), { modoLimpio: true });
+      const filler = mejorRellenoCarb(catalogoMap, idsEnCombo(items), carbOpts);
       if (filler && items.length < 7) {
         items.push(
           itemDesdeCatalogo(
@@ -608,7 +659,11 @@ function pasoAjusteDieta(comidas, catalogoMap, targetDia, options) {
   const errGras = num(targetDia.grasas) - total.grasas;
   const errCal = num(targetDia.calorias) - total.calorias;
   const n = Math.max(comidas.length, 1);
-  const modoLimpio = errProt <= TOLERANCIA.proteinas;
+  const carbOpts = optsCarbFill(errProt, errCarb);
+
+  if (errProt < -TOLERANCIA.proteinas) {
+    if (pasoRecortarProteinaExceso(comidas, catalogoMap, targetDia)) return true;
+  }
 
   if (errCarb > 15) {
     if (pasoRellenarCarbDieta(comidas, catalogoMap, targetDia, options)) return true;
@@ -624,35 +679,19 @@ function pasoAjusteDieta(comidas, catalogoMap, targetDia, options) {
     return true;
   }
 
-  if (errProt < -TOLERANCIA.proteinas) {
-    const bloque = [...comidas].sort(
-      (a, b) => num(b.macros_combo?.proteinas) - num(a.macros_combo?.proteinas)
-    )[0];
-    if (bloque) {
-      const protItem = itemMasProteinaParaRecorte(bloque.alimentos_sugeridos || [], catalogoMap);
-      if (protItem) {
-        const cat = catalogoMap.get(protItem.id_alimento);
-        protItem.cantidad_sugerida = clampQtyAlimento(protItem.cantidad_sugerida * 0.9, cat);
-        bloque.alimentos_sugeridos = reconstruirItems(bloque.alimentos_sugeridos, catalogoMap);
-        refrescarMacrosComidas(comidas, catalogoMap);
-        return true;
-      }
-    }
-  }
-
   if (errCarb > TOLERANCIA.carbohidratos) {
     const bloque = [...comidas].sort(
       (a, b) => num(a.macros_combo?.carbohidratos) - num(b.macros_combo?.carbohidratos)
     )[0];
     if (bloque) {
       const items = bloque.alimentos_sugeridos || [];
-      const carbItem = itemMasCarb(items, catalogoMap, { modoLimpio });
+      const carbItem = itemMasCarb(items, catalogoMap, carbOpts);
       const boost = errCarb > 40 ? 1.15 : 1.1;
       if (carbItem) {
         const cat = catalogoMap.get(carbItem.id_alimento);
         carbItem.cantidad_sugerida = clampQtyAlimento(carbItem.cantidad_sugerida * boost, cat);
       } else {
-        const filler = mejorRellenoCarb(catalogoMap, idsEnCombo(items), { modoLimpio });
+        const filler = mejorRellenoCarb(catalogoMap, idsEnCombo(items), carbOpts);
         if (filler && items.length < 7) {
           items.push(
             itemDesdeCatalogo(
@@ -746,9 +785,48 @@ function pasoAjusteDieta(comidas, catalogoMap, targetDia, options) {
   return false;
 }
 
+/** Fuerza topes por categoría en todos los ítems (post-escalado). */
+function enforceLimitesFinales(comidas, catalogoMap) {
+  for (const bloque of comidas) {
+    bloque.alimentos_sugeridos = reconstruirItems(bloque.alimentos_sugeridos || [], catalogoMap);
+  }
+  refrescarMacrosComidas(comidas, catalogoMap);
+}
+
+/** Recorta suplementos/lácteos/frutos secos antes que carnes principales. */
+function pasoRecortarProteinaExceso(comidas, catalogoMap, targetDia) {
+  const total = totalDieta(comidas);
+  const errProt = num(targetDia.proteinas) - total.proteinas;
+  if (errProt >= -TOLERANCIA.proteinas) return false;
+
+  let mejorItem = null;
+  let mejorBloque = null;
+  let mejorPri = -1;
+  for (const bloque of comidas) {
+    const item = itemMasProteinaParaRecorte(bloque.alimentos_sugeridos || [], catalogoMap);
+    if (!item) continue;
+    const cat = catalogoMap.get(item.id_alimento);
+    const pri = prioridadRecorteProteina(cat);
+    if (pri > mejorPri) {
+      mejorPri = pri;
+      mejorItem = item;
+      mejorBloque = bloque;
+    }
+  }
+  if (!mejorItem || !mejorBloque) return false;
+
+  const cat = catalogoMap.get(mejorItem.id_alimento);
+  const factor = errProt < -20 ? 0.8 : errProt < -12 ? 0.85 : 0.9;
+  mejorItem.cantidad_sugerida = clampQtyAlimento(mejorItem.cantidad_sugerida * factor, cat);
+  mejorBloque.alimentos_sugeridos = reconstruirItems(mejorBloque.alimentos_sugeridos, catalogoMap);
+  refrescarMacrosComidas(comidas, catalogoMap);
+  return true;
+}
+
 function optimizarDietaDia(dieta, catalogoMap, targetDia, options = {}) {
   if (!dieta?.comidas?.length || !targetDia) return dieta;
 
+  enriquecerCatalogoMap(catalogoMap);
   dieta.comidas = dieta.comidas.map((bloque) => ({
     ...bloque,
     alimentos_sugeridos: reconstruirItems(bloque.alimentos_sugeridos || [], catalogoMap)
@@ -803,6 +881,27 @@ function optimizarDietaDia(dieta, catalogoMap, targetDia, options = {}) {
     if (dentroTolerancia(totalDieta(dieta.comidas), targetDia)) break;
     if (!pasoAfinarMacrosDieta(dieta.comidas, catalogoMap, targetDia, options)) break;
   }
+
+  enforceLimitesFinales(dieta.comidas, catalogoMap);
+
+  for (let pass = 0; pass < 18; pass++) {
+    const total = totalDieta(dieta.comidas);
+    if (dentroTolerancia(total, targetDia)) break;
+    const errProt = num(targetDia.proteinas) - total.proteinas;
+    const errCarb = num(targetDia.carbohidratos) - total.carbohidratos;
+    let cambio = false;
+    if (errProt < -TOLERANCIA.proteinas && pasoRecortarProteinaExceso(dieta.comidas, catalogoMap, targetDia)) {
+      cambio = true;
+    } else if (errCarb > TOLERANCIA.carbohidratos && pasoRellenarCarbDieta(dieta.comidas, catalogoMap, targetDia, options)) {
+      cambio = true;
+    } else if (pasoAfinarMacrosDieta(dieta.comidas, catalogoMap, targetDia, options)) {
+      cambio = true;
+    }
+    enforceLimitesFinales(dieta.comidas, catalogoMap);
+    if (!cambio) break;
+  }
+
+  enforceLimitesFinales(dieta.comidas, catalogoMap);
 
   dieta.macros_plan = totalDieta(dieta.comidas);
   Object.keys(dieta.macros_plan).forEach((k) => {

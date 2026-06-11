@@ -549,12 +549,15 @@ Arma un PLAN DE DÍA COMPLETO: un combo por cada comida indicada en "comidas_a_p
 REGLAS:
 - SOLO alimentos del catálogo (id_alimento exacto).
 - La SUMA de todos los combos debe acercarse a restante_dia u objetivo_dia (kcal, P, C, G, sodio).
-- BALANCE CRÍTICO: acércate a carbohidratos y grasas del día (±5 g y ±30 kcal es suficiente). No solo kcal/proteína.
-- Reparte carbs limpios (arroz, avena, fruta, pan) entre comidas; evita exceso de grasa acumulada (nueces, aguacate, yema).
+- BALANCE CRÍTICO: acércate a carbohidratos y grasas del día (±5 g y ±30 kcal). No armes un día hiperproteico.
+- PROTEÍNA: máximo 2 fuentes proteicas fuertes en TODO el día (ej. pollo + whey, o pescado + huevo). NO combines whey + yogur griego + leche + almendras + pollo en el mismo día.
+- CARBOHIDRATOS: si objetivo_dia pide muchos carbos (~250g+), incluye arroz, avena, papa, tortilla o pan en varias comidas desde el inicio. No dependas solo de frutas/verduras para carbos.
+- Verduras: porción normal 80–150 g por comida (nunca 300–400 g). Frutos secos: máx. 30 g en snacks.
+- Reparte carbs complejos entre comidas; grasas con moderación (aceite, aguacate, nueces).
 - Respeta preferencias (gustos/disgustos/notas_medicas).
 - Gusto gastronómico: desayuno ligero, comida/cena completas, colaciones prácticas.
 - Variedad: no repitas el mismo plato en todas las comidas.
-- Puedes usar whey, creatina, BCAA del catálogo donde tenga sentido.
+- Whey/caseína: opcional, máx. 1 scoop por día si lo usas. No es obligatorio en cada comida.
 - OBLIGATORIO: el array "comidas" debe tener EXACTAMENTE ${comidasTarget.length} elementos — uno por cada fila de comidas_a_planear, con el mismo texto en "comida".
 - Proteína en polvo (whey/caseína/vegetal): cantidad_sugerida = número de scoops (1 scoop ≈ 1 porción), NUNCA gramos.
 
@@ -701,7 +704,7 @@ Responde SOLO JSON válido:
             dieta,
             ia: true,
             modelo: model,
-            optimizer: OPTIMIZER_DISPONIBLE ? "v3" : "off"
+            optimizer: OPTIMIZER_DISPONIBLE ? "v4" : "off"
           };
         }
       } catch (err) {
