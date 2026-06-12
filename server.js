@@ -54,6 +54,11 @@ const { seedAlimentosMetodog } = require("./seedAlimentos");
 const { calcularSustitutos, SIN_SUSTITUTO } = require("./equivalenciasNutricion");
 const { importarAlimentosCsv, previewImportacionCsv, PLANTILLA_CSV } = require("./importarAlimentos");
 const {
+  previewImportPlan,
+  PLANTILLA_RUTINA_CSV,
+  PLANTILLA_DIETA_CSV
+} = require("./importarPlan");
+const {
   generarRecetaComida,
   generarDietaDiaCompleta,
   mensajeErrorAmigable,
@@ -437,6 +442,39 @@ app.post("/api/alimentos/preview-import-csv", async (req, res) => {
   } catch (err) {
     console.error("preview-import-csv:", err.message);
     res.status(500).json({ error: err.message || "No se pudo analizar el archivo." });
+  }
+});
+
+app.get("/api/planes/plantilla-rutina-csv", async (req, res) => {
+  if (!(await assertCoachOAdmin(db, req, res))) return;
+  res.setHeader("Content-Type", "text/csv; charset=utf-8");
+  res.setHeader("Content-Disposition", 'attachment; filename="plantilla_rutina_metodog.csv"');
+  res.send(`\uFEFF${PLANTILLA_RUTINA_CSV}`);
+});
+
+app.get("/api/planes/plantilla-dieta-csv", async (req, res) => {
+  if (!(await assertCoachOAdmin(db, req, res))) return;
+  res.setHeader("Content-Type", "text/csv; charset=utf-8");
+  res.setHeader("Content-Disposition", 'attachment; filename="plantilla_dieta_metodog.csv"');
+  res.send(`\uFEFF${PLANTILLA_DIETA_CSV}`);
+});
+
+app.post("/api/planes/preview-import", async (req, res) => {
+  if (!(await assertCoachOAdmin(db, req, res))) return;
+  const { texto, csv, tipo } = req.body || {};
+  const raw = typeof texto === "string" ? texto : csv;
+  if (!raw || typeof raw !== "string") {
+    return res.status(400).json({ error: "Envía el contenido en el campo «texto» o «csv»." });
+  }
+  try {
+    const resultado = previewImportPlan(raw, { tipo: tipo === "rutina" || tipo === "dieta" ? tipo : null });
+    if (!resultado.ok) {
+      return res.status(400).json(resultado);
+    }
+    res.json(resultado);
+  } catch (err) {
+    console.error("planes/preview-import:", err.message);
+    res.status(500).json({ error: err.message || "No se pudo analizar el plan." });
   }
 });
 
