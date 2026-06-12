@@ -462,6 +462,73 @@ app.post("/api/alimentos/importar-csv", async (req, res) => {
   }
 });
 
+app.put("/api/alimentos/:id", async (req, res) => {
+  if (!(await assertCoachOAdmin(db, req, res))) return;
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isFinite(id)) {
+    return res.status(400).json({ error: "ID de alimento inválido." });
+  }
+  const existente = await db.execute({
+    sql: "SELECT id, coach_id, nombre FROM alimentos WHERE id = ?",
+    args: [id]
+  });
+  const row = existente.rows[0];
+  if (!row) return res.status(404).json({ error: "Alimento no encontrado." });
+
+  const userId = parseInt(req.user.id, 10);
+  if (row.coach_id != null) {
+    if (String(row.coach_id) !== String(userId) && req.user.rol !== "SUPERADMIN") {
+      return res.status(403).json({ error: "Solo puedes editar alimentos de tu biblioteca personal." });
+    }
+  } else if (req.user.rol !== "SUPERADMIN") {
+    return res.status(403).json({ error: "No puedes editar la biblioteca global MétodoG." });
+  }
+
+  const {
+    nombre,
+    porcion_base,
+    unidad,
+    calorias,
+    proteinas,
+    carbohidratos,
+    grasas,
+    sodio,
+    grupo,
+    grupo_equivalencia
+  } = req.body || {};
+  const nombreLimpio = String(nombre || "").trim();
+  if (nombreLimpio.length < 2) {
+    return res.status(400).json({ error: "El nombre debe tener al menos 2 caracteres." });
+  }
+
+  try {
+    await db.execute({
+      sql: `UPDATE alimentos SET
+        nombre = ?, porcion_base = ?, unidad = ?,
+        calorias = ?, proteinas = ?, carbohidratos = ?, grasas = ?, sodio = ?,
+        grupo = COALESCE(?, grupo), grupo_equivalencia = COALESCE(?, grupo_equivalencia)
+        WHERE id = ?`,
+      args: [
+        nombreLimpio,
+        parseFloat(porcion_base) || 1,
+        String(unidad || "g").trim() || "g",
+        parseFloat(calorias) || 0,
+        parseFloat(proteinas) || 0,
+        parseFloat(carbohidratos) || 0,
+        parseFloat(grasas) || 0,
+        parseFloat(sodio) || 0,
+        grupo != null ? String(grupo).trim() : null,
+        grupo_equivalencia != null ? String(grupo_equivalencia).trim() : null,
+        id
+      ]
+    });
+    res.json({ ok: true, id });
+  } catch (err) {
+    console.error("PUT /api/alimentos/:id:", err.message);
+    res.status(500).json({ error: err.message || "No se pudo actualizar el alimento." });
+  }
+});
+
 async function usuarioPuedeRecetasIa(userId, rol) {
   if (rol === "SUPERADMIN" || rol === "COACH") return true;
   const r = await db.execute({
