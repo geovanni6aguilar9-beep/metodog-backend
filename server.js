@@ -53,20 +53,6 @@ const { contextoMesInforme } = require("./informeMesContext");
 const { seedAlimentosMetodog } = require("./seedAlimentos");
 const { calcularSustitutos, SIN_SUSTITUTO } = require("./equivalenciasNutricion");
 const { importarAlimentosCsv, previewImportacionCsv, PLANTILLA_CSV } = require("./importarAlimentos");
-const {
-  previewImportPlan,
-  PLANTILLA_RUTINA_CSV,
-  PLANTILLA_DIETA_CSV
-} = require("./importarPlan");
-const {
-  generarRecetaComida,
-  generarDietaDiaCompleta,
-  mensajeErrorAmigable,
-  geminiConfigurado,
-  formatoKeyPareceValido,
-  probarConexionGemini,
-  OPTIMIZER_DISPONIBLE
-} = require("./recetaIaGemini");
 
 const DEV_JWT_FALLBACK = "metodog-dev-cambiar-en-produccion";
 if (isProduction()) {
@@ -98,8 +84,6 @@ function responderPing(req, res) {
     ok: true,
     message: "pong",
     service: "metodog-backend",
-    recetas_ia_gemini: geminiConfigurado(),
-    recetas_ia_key_formato_ok: formatoKeyPareceValido(),
     ts: new Date().toISOString()
   });
 }
@@ -110,22 +94,6 @@ app.get("/", (req, res) => {
 });
 app.head("/", (req, res) => res.status(200).end());
 app.all("/api/ping", responderPing);
-
-/** Público — comprueba si Gemini responde (no genera combos). */
-app.get("/api/alimentos/receta-ia/status", async (req, res) => {
-  if (!geminiConfigurado()) {
-    return res.status(503).json({ ok: false, motivo: "sin_api_key" });
-  }
-  try {
-    const resultado = await probarConexionGemini();
-    return res.status(resultado.ok ? 200 : 503).json({
-      ...resultado,
-      optimizer: OPTIMIZER_DISPONIBLE ? "v4.1" : "off"
-    });
-  } catch (err) {
-    return res.status(503).json({ ok: false, motivo: "api_error", detalle: err.message });
-  }
-});
 
 app.use(requireAuthMiddleware);
 
@@ -445,39 +413,6 @@ app.post("/api/alimentos/preview-import-csv", async (req, res) => {
   }
 });
 
-app.get("/api/planes/plantilla-rutina-csv", async (req, res) => {
-  if (!(await assertCoachOAdmin(db, req, res))) return;
-  res.setHeader("Content-Type", "text/csv; charset=utf-8");
-  res.setHeader("Content-Disposition", 'attachment; filename="plantilla_rutina_metodog.csv"');
-  res.send(`\uFEFF${PLANTILLA_RUTINA_CSV}`);
-});
-
-app.get("/api/planes/plantilla-dieta-csv", async (req, res) => {
-  if (!(await assertCoachOAdmin(db, req, res))) return;
-  res.setHeader("Content-Type", "text/csv; charset=utf-8");
-  res.setHeader("Content-Disposition", 'attachment; filename="plantilla_dieta_metodog.csv"');
-  res.send(`\uFEFF${PLANTILLA_DIETA_CSV}`);
-});
-
-app.post("/api/planes/preview-import", async (req, res) => {
-  if (!(await assertCoachOAdmin(db, req, res))) return;
-  const { texto, csv, tipo } = req.body || {};
-  const raw = typeof texto === "string" ? texto : csv;
-  if (!raw || typeof raw !== "string") {
-    return res.status(400).json({ error: "Envía el contenido en el campo «texto» o «csv»." });
-  }
-  try {
-    const resultado = previewImportPlan(raw, { tipo: tipo === "rutina" || tipo === "dieta" ? tipo : null });
-    if (!resultado.ok) {
-      return res.status(400).json(resultado);
-    }
-    res.json(resultado);
-  } catch (err) {
-    console.error("planes/preview-import:", err.message);
-    res.status(500).json({ error: err.message || "No se pudo analizar el plan." });
-  }
-});
-
 app.post("/api/alimentos/importar-csv", async (req, res) => {
   if (!(await assertCoachOAdmin(db, req, res))) return;
   const { csv, alcance, mapeo } = req.body || {};
@@ -497,180 +432,6 @@ app.post("/api/alimentos/importar-csv", async (req, res) => {
   } catch (err) {
     console.error("importar-csv:", err.message);
     res.status(500).json({ error: err.message || "No se pudo importar el archivo." });
-  }
-});
-
-app.put("/api/alimentos/:id", async (req, res) => {
-  if (!(await assertCoachOAdmin(db, req, res))) return;
-  const id = parseInt(req.params.id, 10);
-  if (!Number.isFinite(id)) {
-    return res.status(400).json({ error: "ID de alimento inválido." });
-  }
-  const existente = await db.execute({
-    sql: "SELECT id, coach_id, nombre FROM alimentos WHERE id = ?",
-    args: [id]
-  });
-  const row = existente.rows[0];
-  if (!row) return res.status(404).json({ error: "Alimento no encontrado." });
-
-  const userId = parseInt(req.user.id, 10);
-  if (row.coach_id != null) {
-    if (String(row.coach_id) !== String(userId) && req.user.rol !== "SUPERADMIN") {
-      return res.status(403).json({ error: "Solo puedes editar alimentos de tu biblioteca personal." });
-    }
-  } else if (req.user.rol !== "SUPERADMIN") {
-    return res.status(403).json({ error: "No puedes editar la biblioteca global MétodoG." });
-  }
-
-  const {
-    nombre,
-    porcion_base,
-    unidad,
-    calorias,
-    proteinas,
-    carbohidratos,
-    grasas,
-    sodio,
-    grupo,
-    grupo_equivalencia
-  } = req.body || {};
-  const nombreLimpio = String(nombre || "").trim();
-  if (nombreLimpio.length < 2) {
-    return res.status(400).json({ error: "El nombre debe tener al menos 2 caracteres." });
-  }
-
-  try {
-    await db.execute({
-      sql: `UPDATE alimentos SET
-        nombre = ?, porcion_base = ?, unidad = ?,
-        calorias = ?, proteinas = ?, carbohidratos = ?, grasas = ?, sodio = ?,
-        grupo = COALESCE(?, grupo), grupo_equivalencia = COALESCE(?, grupo_equivalencia)
-        WHERE id = ?`,
-      args: [
-        nombreLimpio,
-        parseFloat(porcion_base) || 1,
-        String(unidad || "g").trim() || "g",
-        parseFloat(calorias) || 0,
-        parseFloat(proteinas) || 0,
-        parseFloat(carbohidratos) || 0,
-        parseFloat(grasas) || 0,
-        parseFloat(sodio) || 0,
-        grupo != null ? String(grupo).trim() : null,
-        grupo_equivalencia != null ? String(grupo_equivalencia).trim() : null,
-        id
-      ]
-    });
-    res.json({ ok: true, id });
-  } catch (err) {
-    console.error("PUT /api/alimentos/:id:", err.message);
-    res.status(500).json({ error: err.message || "No se pudo actualizar el alimento." });
-  }
-});
-
-async function usuarioPuedeRecetasIa(userId, rol) {
-  if (rol === "SUPERADMIN" || rol === "COACH") return true;
-  const r = await db.execute({
-    sql: "SELECT paquete_rutina_6_dias FROM usuarios WHERE id = ?",
-    args: [parseInt(userId, 10)]
-  });
-  return !!r.rows[0]?.paquete_rutina_6_dias;
-}
-
-app.get("/api/alimentos/receta-ia/probe", async (req, res) => {
-  const user = req.user;
-  if (!user) return res.status(401).json({ ok: false, error: "Sesión requerida" });
-  if (user.rol !== "SUPERADMIN" && user.rol !== "COACH") {
-    return res.status(403).json({ ok: false, error: "Solo coach o superadmin." });
-  }
-  try {
-    const resultado = await probarConexionGemini();
-    res.status(resultado.ok ? 200 : 503).json(resultado);
-  } catch (err) {
-    res.status(500).json({ ok: false, error: err.message });
-  }
-});
-
-app.post("/api/alimentos/receta-ia", async (req, res) => {
-  const user = req.user;
-  if (!user) return res.status(401).json({ ok: false, error: "Sesión requerida" });
-
-  const puede = await usuarioPuedeRecetasIa(user.id, user.rol);
-  if (!puede) {
-    return res.status(403).json({
-      ok: false,
-      error: "Activa Full Week PRO para usar recetas con IA."
-    });
-  }
-
-  const payload = req.body || {};
-  try {
-    const resultado = await generarRecetaComida(payload, db);
-    if (!resultado.ok) {
-      const esAdmin = user.rol === "SUPERADMIN" || user.rol === "COACH";
-      const mostrarDetalle = esAdmin || resultado.motivo === "formato_key";
-      const err400 = [
-        "sin_catalogo",
-        "sin_objetivo",
-        "sin_ingredientes",
-        "macros_cubiertos",
-        "sin_comidas"
-      ];
-      return res.status(err400.includes(resultado.motivo) ? 400 : 503).json({
-        ok: false,
-        motivo: resultado.motivo,
-        error: mensajeErrorAmigable(
-          resultado.motivo,
-          mostrarDetalle,
-          resultado.detalle || ""
-        )
-      });
-    }
-    res.json(resultado);
-  } catch (err) {
-    console.error("receta-ia:", err.message);
-    res.status(500).json({
-      ok: false,
-      error: mensajeErrorAmigable("api_error")
-    });
-  }
-});
-
-app.post("/api/alimentos/dieta-ia", async (req, res) => {
-  const user = req.user;
-  if (!user) return res.status(401).json({ ok: false, error: "Sesión requerida" });
-
-  const puede = await usuarioPuedeRecetasIa(user.id, user.rol);
-  if (!puede) {
-    return res.status(403).json({
-      ok: false,
-      error: "Activa Full Week PRO para usar el planificador IA."
-    });
-  }
-
-  const payload = req.body || {};
-  try {
-    const resultado = await generarDietaDiaCompleta(payload, db);
-    if (!resultado.ok) {
-      const esAdmin = user.rol === "SUPERADMIN" || user.rol === "COACH";
-      const mostrarDetalle = esAdmin || resultado.motivo === "formato_key";
-      const err400 = ["sin_catalogo", "sin_objetivo", "sin_comidas"];
-      return res.status(err400.includes(resultado.motivo) ? 400 : 503).json({
-        ok: false,
-        motivo: resultado.motivo,
-        error: mensajeErrorAmigable(
-          resultado.motivo,
-          mostrarDetalle,
-          resultado.detalle || ""
-        )
-      });
-    }
-    res.json(resultado);
-  } catch (err) {
-    console.error("dieta-ia:", err.message);
-    res.status(500).json({
-      ok: false,
-      error: mensajeErrorAmigable("api_error")
-    });
   }
 });
 

@@ -7,20 +7,8 @@
 const MODELOS_FALLBACK = [
   "gemini-2.5-flash",
   "gemini-2.5-flash-lite",
-  "gemini-1.5-flash"
+  "gemini-2.0-flash"
 ];
-
-let optimizarCombo = (combo) => combo;
-let optimizarDietaDia = (dieta) => dieta;
-let OPTIMIZER_DISPONIBLE = false;
-try {
-  const mod = require("./comboMacroOptimizer");
-  optimizarCombo = mod.optimizarCombo;
-  optimizarDietaDia = mod.optimizarDietaDia;
-  OPTIMIZER_DISPONIBLE = typeof mod.optimizarDietaDia === "function";
-} catch (err) {
-  console.warn("[recetaIaGemini] comboMacroOptimizer no cargado:", err.message);
-}
 
 function resolverGeminiApiKey() {
   return (
@@ -70,8 +58,6 @@ function normalizarCatalogo(catalogo) {
     map.set(id, {
       id,
       nombre,
-      grupo: String(a?.grupo || "").trim() || null,
-      grupo_equivalencia: String(a?.grupo_equivalencia || "").trim() || null,
       porcion_base: porcion,
       unidad: String(a?.unidad || "g").trim() || "g",
       calorias: num(a?.calorias ?? a?.kcal),
@@ -82,41 +68,6 @@ function normalizarCatalogo(catalogo) {
     });
   }
   return Array.from(map.values());
-}
-
-/** Catálogo autoritativo desde Turso (evita biblioteca cacheada en el cliente). */
-async function cargarCatalogoDesdeDb(db) {
-  if (!db) return [];
-  const result = await db.execute({
-    sql: `SELECT id, nombre, grupo, grupo_equivalencia, porcion_base, unidad, calorias, proteinas, carbohidratos, grasas, sodio
-          FROM alimentos WHERE coach_id IS NULL ORDER BY grupo, nombre ASC`
-  });
-  return normalizarCatalogo(result.rows || []);
-}
-
-/** DB gana sobre payload del frontend (macros/unidades actualizados). */
-function fusionarCatalogo(catalogoDb, catalogoPayload) {
-  const map = new Map();
-  for (const a of catalogoPayload || []) {
-    if (a?.id) map.set(a.id, a);
-  }
-  for (const a of catalogoDb || []) {
-    map.set(a.id, a);
-  }
-  return Array.from(map.values());
-}
-
-async function resolverCatalogoIa(payload, db) {
-  const catalogoPayload = normalizarCatalogo(payload?.catalogo);
-  if (!db) return catalogoPayload;
-  try {
-    const catalogoDb = await cargarCatalogoDesdeDb(db);
-    if (!catalogoDb.length) return catalogoPayload;
-    return fusionarCatalogo(catalogoDb, catalogoPayload);
-  } catch (err) {
-    console.warn("[recetaIaGemini] resolverCatalogoIa:", err.message);
-    return catalogoPayload;
-  }
 }
 
 function macrosDesdeCatalogo(item, cantidad) {
@@ -144,33 +95,6 @@ function sumarMacrosLista(items) {
   );
 }
 
-function normalizarCantidadSugerida(cantidad, cat) {
-  const qty = num(cantidad, 0);
-  if (qty <= 0) return 0;
-  const base = num(cat?.porcion_base, 1) || 1;
-  const unidad = String(cat?.unidad || "g").toLowerCase();
-  const nombre = String(cat?.nombre || "").toLowerCase();
-  const esPolvo =
-    nombre.includes("whey") ||
-    nombre.includes("caseína") ||
-    nombre.includes("caseina") ||
-    (nombre.includes("proteína") && nombre.includes("polvo")) ||
-    (nombre.includes("proteina") && nombre.includes("polvo"));
-
-  if (["scoop", "pieza", "cucharada"].includes(unidad)) {
-    return Math.max(1, Math.round(qty));
-  }
-  if (esPolvo && qty >= 1 && qty <= 3) {
-    if (unidad === "g" && base >= 10) return redondear(qty * base);
-    return Math.max(1, Math.round(qty));
-  }
-  if ((unidad === "g" || unidad === "ml") && base >= 10 && qty < base * 0.6) {
-    const esEnteroChico = qty >= 1 && qty <= 5 && Math.abs(qty - Math.round(qty)) < 0.01;
-    if (esEnteroChico) return redondear(qty * base);
-  }
-  return redondear(qty);
-}
-
 function normalizarCombo(obj, catalogoMap) {
   if (!obj || typeof obj !== "object") return null;
   const nombre = String(obj.nombre || obj.titulo || "").trim();
@@ -185,14 +109,11 @@ function normalizarCombo(obj, catalogoMap) {
   const alimentos_sugeridos = [];
   for (const row of rawItems.slice(0, 12)) {
     const id = parseInt(row?.id_alimento ?? row?.id ?? row?.idAlimento, 10);
-    if (!id) continue;
+    const cantidad = num(row?.cantidad_sugerida ?? row?.cantidad, 0);
+    if (!id || cantidad <= 0) continue;
     const cat = catalogoMap.get(id);
     if (!cat) continue;
-    const cantidadOk = normalizarCantidadSugerida(
-      num(row?.cantidad_sugerida ?? row?.cantidad, 0),
-      cat
-    );
-    if (!cantidadOk) continue;
+    const cantidadOk = Math.round(cantidad * 10) / 10;
     const macros = macrosDesdeCatalogo(cat, cantidadOk);
     alimentos_sugeridos.push({
       id_alimento: id,
@@ -226,16 +147,7 @@ function mensajeErrorAmigable(motivo, esAdmin = false, detalle = "") {
       : "El planificador IA está descansando. Intenta más tarde.";
   }
   if (motivo === "cuota" || motivo === "429") {
-    return "Cuota de Google Gemini agotada. Entra a aistudio.google.com → API key → revisa uso/facturación, o espera 1 hora y reintenta.";
-  }
-  if (motivo === "parse_error") {
-    return "La IA respondió pero no pudimos leer el combo. Toca Reintentar.";
-  }
-  if (motivo === "bloqueado") {
-    return "La IA no pudo sugerir esta comida. Prueba otra comida o ajusta tus «evitar».";
-  }
-  if (motivo === "api_error" || motivo === "modelo_no_disponible" || motivo === "red") {
-    return "El servicio de IA no respondió. Espera 1 minuto y vuelve a intentar.";
+    return "El planificador IA está descansando. Intenta más tarde.";
   }
   if (motivo === "sin_catalogo") {
     return "No hay alimentos en tu biblioteca. Recarga la app o contacta a tu coach.";
@@ -248,9 +160,6 @@ function mensajeErrorAmigable(motivo, esAdmin = false, detalle = "") {
   }
   if (motivo === "sin_comidas") {
     return detalle || "Todas tus comidas ya tienen alimentos. Desmarca «solo vacías» o vacía una comida.";
-  }
-  if (motivo === "comidas_incompletas") {
-    return "La IA no armó todas las comidas del día. Toca Reintentar (a veces pasa en el primer intento).";
   }
   if (motivo === "formato_key") {
     return detalle || "La clave de Gemini parece incompleta. Revisa GEMINI_API_KEY en Render.";
@@ -274,15 +183,15 @@ function extraerTextoGemini(data) {
   return { text, blockReason: null };
 }
 
-async function llamarGemini(apiKey, model, system, user, usarJsonMode, opts = {}) {
+async function llamarGemini(apiKey, model, system, user, usarJsonMode) {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
 
   const body = {
     systemInstruction: { parts: [{ text: system }] },
     contents: [{ role: "user", parts: [{ text: user }] }],
     generationConfig: {
-      temperature: opts.temperature ?? 0.45,
-      maxOutputTokens: opts.maxOutputTokens ?? 2048
+      temperature: 0.45,
+      maxOutputTokens: 2048
     }
   };
   if (usarJsonMode) {
@@ -295,20 +204,19 @@ async function llamarGemini(apiKey, model, system, user, usarJsonMode, opts = {}
       "Content-Type": "application/json",
       "x-goog-api-key": apiKey
     },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(45000)
+    body: JSON.stringify(body)
   });
 
   const data = await res.json().catch(() => ({}));
   return { res, data };
 }
 
-async function generarRecetaComida(payload, db = null) {
+async function generarRecetaComida(payload) {
   const apiKey = resolverGeminiApiKey();
   if (!apiKey) return { ok: false, motivo: "sin_api_key" };
 
   const comida = String(payload?.comida || "Comida").trim() || "Comida";
-  const catalogo = await resolverCatalogoIa(payload, db);
+  const catalogo = normalizarCatalogo(payload?.catalogo);
   if (!catalogo.length) return { ok: false, motivo: "sin_catalogo" };
 
   const plan = payload?.plan || null;
@@ -336,13 +244,6 @@ Tu trabajo NO es dar recetas de cocina ni pasos de preparación.
 
 OBJETIVO: Armar un COMBO apetitoso y coherente para UNA comida del día que se acerque a los macros objetivo.
 
-BALANCE DE MACROS (crítico — igual de importante que kcal y proteína):
-- Debes acercarte a carbohidratos Y grasas del objetivo, no solo kcal/proteína.
-- Tolerancia orientativa: ±30 kcal, ±5 g en proteína, carbohidratos y grasas (no busques perfección matemática).
-- Si subes proteína con carnes/huevos/nueces/aguacate, COMPENSA con carbs limpios (arroz, avena, fruta, pan, papa) y MODERA grasas.
-- Para llenar kcal restantes prioriza carbohidratos complejos antes que más grasa.
-- Incluye al menos una fuente clara de carbohidratos en cada combo (no solo proteína + grasa).
-
 GUSTO GASTRONÓMICO (muy importante):
 - El combo debe sonar rico y lógico para un atleta mexicano: nombres creativos pero reales (ej. "Bowl de yogur con manzana y granola", "Tacos fitness de pollo con tortilla").
 - Desayuno: prioriza opciones ligeras, lácteos, fruta, avena, huevo, pan — evita platos de comida fuerte (arroz con pollo a las 7am).
@@ -358,8 +259,7 @@ PREFERENCIAS DEL ATLETA (si vienen en preferencias):
 REGLA DE ORO — CATÁLOGO CERRADO:
 - SOLO alimentos del arreglo "catalogo" con su "id" exacto como id_alimento.
 - PROHIBIDO inventar alimentos o marcas.
-- Cantidades en la unidad del catálogo (g, ml, scoop, pieza). Macros son POR porcion_base.
-- 1 scoop de whey, caseína o proteína vegetal = cantidad_sugerida: 1 (no confundir scoop con gramos).
+- Cantidades en la unidad del catálogo; macros son POR porcion_base.
 - Entre 2 y 6 alimentos por combo.
 
 CONTEXTO DEL PLAN:
@@ -452,21 +352,8 @@ Responde SOLO JSON válido (sin markdown):
           continue;
         }
 
-        const comboRaw = normalizarCombo(parseJsonSeguro(text), catalogoMap);
-        if (comboRaw) {
-          const targetCombo = {
-            calorias: redondear(num(macrosObjetivo.calorias)),
-            proteinas: redondear(num(macrosObjetivo.proteinas)),
-            carbohidratos: redondear(num(macrosObjetivo.carbohidratos)),
-            grasas: redondear(num(macrosObjetivo.grasas)),
-            sodio: redondear(num(macrosObjetivo.sodio))
-          };
-          let combo = comboRaw;
-          try {
-            combo = optimizarCombo(comboRaw, catalogoMap, targetCombo);
-          } catch (optErr) {
-            console.warn("[recetaIaGemini] optimizarCombo:", optErr.message);
-          }
+        const combo = normalizarCombo(parseJsonSeguro(text), catalogoMap);
+        if (combo) {
           return { ok: true, receta: combo, combo, ia: true, comida, modelo: model };
         }
 
@@ -517,11 +404,11 @@ function normalizarDietaDia(obj, catalogoMap, nombresEsperados) {
   return { nombre_plan: nombrePlan, consejo_general: consejoGeneral, comidas };
 }
 
-async function generarDietaDiaCompleta(payload, db = null) {
+async function generarDietaDiaCompleta(payload) {
   const apiKey = resolverGeminiApiKey();
   if (!apiKey) return { ok: false, motivo: "sin_api_key" };
 
-  const catalogo = await resolverCatalogoIa(payload, db);
+  const catalogo = normalizarCatalogo(payload?.catalogo);
   if (!catalogo.length) return { ok: false, motivo: "sin_catalogo" };
 
   const plan = payload?.plan || null;
@@ -548,18 +435,11 @@ Arma un PLAN DE DÍA COMPLETO: un combo por cada comida indicada en "comidas_a_p
 
 REGLAS:
 - SOLO alimentos del catálogo (id_alimento exacto).
-- La SUMA de todos los combos debe acercarse a restante_dia u objetivo_dia (kcal, P, C, G, sodio).
-- BALANCE CRÍTICO: acércate a carbohidratos y grasas del día (±5 g y ±30 kcal). No armes un día hiperproteico.
-- PROTEÍNA: máximo 2 fuentes proteicas fuertes en TODO el día (ej. pollo + whey, o pescado + huevo). NO combines whey + yogur griego + leche + almendras + pollo en el mismo día.
-- CARBOHIDRATOS: si objetivo_dia pide muchos carbos (~250g+), incluye arroz, avena, papa, tortilla o pan en varias comidas desde el inicio. No dependas solo de frutas/verduras para carbos.
-- Verduras: porción normal 80–150 g por comida (nunca 300–400 g). Frutos secos: máx. 30 g en snacks.
-- Reparte carbs complejos entre comidas; grasas con moderación (aceite, aguacate, nueces).
+- La SUMA de todos los combos debe acercarse a objetivo_dia (kcal, P, C, G, sodio).
 - Respeta preferencias (gustos/disgustos/notas_medicas).
 - Gusto gastronómico: desayuno ligero, comida/cena completas, colaciones prácticas.
 - Variedad: no repitas el mismo plato en todas las comidas.
-- Whey/caseína: opcional, máx. 1 scoop por día si lo usas. No es obligatorio en cada comida.
-- OBLIGATORIO: el array "comidas" debe tener EXACTAMENTE ${comidasTarget.length} elementos — uno por cada fila de comidas_a_planear, con el mismo texto en "comida".
-- Proteína en polvo (whey/caseína/vegetal): cantidad_sugerida = número de scoops (1 scoop ≈ 1 porción), NUNCA gramos.
+- Puedes usar whey, creatina, BCAA del catálogo donde tenga sentido.
 
 Responde SOLO JSON válido:
 {
@@ -596,8 +476,6 @@ Responde SOLO JSON válido:
     objetivo_dia: plan.objetivo_dia,
     restante_dia: plan.restante_dia,
     referencia_por_comida: plan.referencia_comida_equilibrada,
-    macros_objetivo_por_comida: payload?.macros_objetivo_por_comida || null,
-    num_comidas_obligatorias: comidasTarget.length,
     preferencias: payload?.preferencias || null,
     catalogo: catalogoLite
   });
@@ -608,9 +486,7 @@ Responde SOLO JSON válido:
   for (const model of modelos) {
     for (const usarJson of [true, false]) {
       try {
-        const { res, data } = await llamarGemini(apiKey, model, system, user, usarJson, {
-          maxOutputTokens: 8192
-        });
+        const { res, data } = await llamarGemini(apiKey, model, system, user, usarJson);
         if (res.status === 429) return { ok: false, motivo: "cuota" };
         if (!res.ok) {
           ultimoError = "api_error";
@@ -619,93 +495,9 @@ Responde SOLO JSON válido:
         }
         const { text, blockReason } = extraerTextoGemini(data);
         if (blockReason) continue;
-        const parsed = parseJsonSeguro(text);
-        const dietaRaw = normalizarDietaDia(parsed, catalogoMap);
-        if (dietaRaw) {
-          if (dietaRaw.comidas.length < comidasTarget.length) {
-            console.warn(
-              `[recetaIaGemini] comidas incompletas: ${dietaRaw.comidas.length}/${comidasTarget.length}`
-            );
-            ultimoError = "comidas_incompletas";
-            ultimoDetalle = `Gemini devolvió ${dietaRaw.comidas.length} de ${comidasTarget.length} comidas`;
-            continue;
-          }
-          const targetDia = {
-            calorias: redondear(num(plan.restante_dia?.calorias ?? plan.objetivo_dia?.calorias)),
-            proteinas: redondear(num(plan.restante_dia?.proteinas ?? plan.objetivo_dia?.proteinas)),
-            carbohidratos: redondear(
-              num(plan.restante_dia?.carbohidratos ?? plan.objetivo_dia?.carbohidratos)
-            ),
-            grasas: redondear(num(plan.restante_dia?.grasas ?? plan.objetivo_dia?.grasas)),
-            sodio: redondear(num(plan.restante_dia?.sodio ?? plan.objetivo_dia?.sodio ?? 2300))
-          };
-          const nComidas = Math.max(dietaRaw.comidas.length, 1);
-          const refPorComida = payload?.macros_objetivo_por_comida;
-          const porComida =
-            refPorComida && num(refPorComida.calorias) > 0
-              ? {
-                  calorias: redondear(num(refPorComida.calorias)),
-                  proteinas: redondear(num(refPorComida.proteinas)),
-                  carbohidratos: redondear(num(refPorComida.carbohidratos)),
-                  grasas: redondear(num(refPorComida.grasas)),
-                  sodio: redondear(num(refPorComida.sodio ?? targetDia.sodio / nComidas))
-                }
-              : {
-                  calorias: redondear(targetDia.calorias / nComidas),
-                  proteinas: redondear(targetDia.proteinas / nComidas),
-                  carbohidratos: redondear(targetDia.carbohidratos / nComidas),
-                  grasas: redondear(targetDia.grasas / nComidas),
-                  sodio: redondear(targetDia.sodio / nComidas)
-                };
-          const macrosPreOpt = dietaRaw.comidas.reduce(
-            (t, c) => {
-              const m = c.macros_combo || {};
-              return {
-                calorias: t.calorias + num(m.calorias),
-                proteinas: t.proteinas + num(m.proteinas),
-                carbohidratos: t.carbohidratos + num(m.carbohidratos),
-                grasas: t.grasas + num(m.grasas)
-              };
-            },
-            { calorias: 0, proteinas: 0, carbohidratos: 0, grasas: 0 }
-          );
-          dietaRaw.comidas = dietaRaw.comidas.map((bloque) => {
-            try {
-              const opt = optimizarCombo(
-                { alimentos_sugeridos: bloque.alimentos_sugeridos, nombre: bloque.nombre },
-                catalogoMap,
-                porComida
-              );
-              return {
-                ...bloque,
-                alimentos_sugeridos: opt.alimentos_sugeridos,
-                macros_combo: opt.macros_combo
-              };
-            } catch (_) {
-              return bloque;
-            }
-          });
-          let dieta = dietaRaw;
-          try {
-            dieta = optimizarDietaDia(dietaRaw, catalogoMap, targetDia);
-            const gapKcal = num(targetDia.calorias) - num(dieta.macros_plan?.calorias);
-            if (gapKcal > 80) {
-              dieta = optimizarDietaDia(dieta, catalogoMap, targetDia);
-            }
-            dieta.macros_ajustados = OPTIMIZER_DISPONIBLE;
-            dieta.catalogo_fuente = db ? "turso+payload" : "payload";
-            dieta.macros_pre_optimizador = macrosPreOpt;
-            dieta.comidas_esperadas = comidasTarget.length;
-          } catch (optErr) {
-            console.warn("[recetaIaGemini] optimizarDietaDia:", optErr.message);
-          }
-          return {
-            ok: true,
-            dieta,
-            ia: true,
-            modelo: model,
-            optimizer: OPTIMIZER_DISPONIBLE ? "v4.1" : "off"
-          };
+        const dieta = normalizarDietaDia(parseJsonSeguro(text), catalogoMap);
+        if (dieta) {
+          return { ok: true, dieta, ia: true, modelo: model };
         }
       } catch (err) {
         ultimoDetalle = err?.message || String(err);
@@ -720,7 +512,6 @@ function geminiConfigurado() {
   return !!resolverGeminiApiKey();
 }
 
-/** AIzaSy… (clásico) y AQ.… (AI Studio 2026+) son válidos; solo longitud mínima. */
 function formatoKeyPareceValido() {
   const k = resolverGeminiApiKey();
   return k.length >= 15;
@@ -751,7 +542,7 @@ async function probarConexionGemini() {
   if (!res.ok) {
     return {
       ok: false,
-      motivo: res.status === 429 ? "cuota" : "api_error",
+      motivo: "api_error",
       detalle: data?.error?.message || `HTTP ${res.status}`,
       modelo: model,
       http: res.status
@@ -759,23 +550,16 @@ async function probarConexionGemini() {
   }
 
   const { text } = extraerTextoGemini(data);
-  return {
-    ok: true,
-    modelo: model,
-    respuesta: (text || "OK").slice(0, 80),
-    optimizer: OPTIMIZER_DISPONIBLE ? "v4.1" : "off"
-  };
+  return { ok: true, modelo: model, respuesta: (text || "OK").slice(0, 80) };
 }
 
 module.exports = {
   generarRecetaComida,
   generarDietaDiaCompleta,
   normalizarCatalogo,
-  cargarCatalogoDesdeDb,
   mensajeErrorAmigable,
   geminiConfigurado,
   formatoKeyPareceValido,
   probarConexionGemini,
-  resolverGeminiApiKey,
-  OPTIMIZER_DISPONIBLE
+  resolverGeminiApiKey
 };
