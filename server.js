@@ -442,12 +442,14 @@ app.post("/api/planes/preview-import", async (req, res) => {
 
 app.post("/api/planes/preview-import-ia", async (req, res) => {
   if (!(await assertCoachOAdmin(db, req, res))) return;
-  const { texto } = req.body || {};
+  const { texto, origen } = req.body || {};
   if (!texto || typeof texto !== "string") {
     return res.status(400).json({ error: "Envía el texto en el campo «texto»." });
   }
   try {
-    const resultado = await previewImportDietaIa(texto);
+    const resultado = await previewImportDietaIa(texto, {
+      origen: origen === "pdf" ? "pdf" : "texto"
+    });
     if (!resultado.ok) return res.status(400).json(resultado);
     res.json(resultado);
   } catch (err) {
