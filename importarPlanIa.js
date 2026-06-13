@@ -3,6 +3,8 @@
  * PDF móvil: siempre vía IA (texto aplanado ilegible para regex).
  */
 
+const { previewImportPlan } = require('./importarPlan');
+
 const MODELOS = ['gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-2.0-flash'];
 const MAX_TEXTO = 18000;
 
@@ -66,6 +68,59 @@ async function llamarGemini(prompt) {
     }
   }
   throw lastErr || new Error('Gemini no disponible.');
+}
+
+async function llamarGeminiTexto(prompt) {
+  const key = apiKey();
+  if (!key) throw new Error('GEMINI_API_KEY no configurada en Render.');
+
+  let lastErr = null;
+  for (const model of MODELOS) {
+    try {
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }],
+          generationConfig: { temperature: 0.1 }
+        })
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        lastErr = new Error(data?.error?.message || `Gemini HTTP ${res.status}`);
+        continue;
+      }
+      const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+      if (text?.trim()) return limpiarCsvGemini(text);
+      lastErr = new Error('Gemini no devolvió texto.');
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  throw lastErr || new Error('Gemini no disponible.');
+}
+
+function limpiarCsvGemini(text) {
+  let t = String(text || '').trim();
+  const fence = t.match(/```(?:csv|text)?\s*([\s\S]*?)```/i);
+  if (fence) t = fence[1].trim();
+  return t.replace(/^\uFEFF/, '').trim();
+}
+
+function promptRutinaPdf(texto) {
+  return `Eres un entrenador élite. Lee este texto caótico extraído de un PDF de gimnasio.
+Conviértelo SOLO a CSV con cabecera exacta (primera línea):
+dia,grupo,nombre,series,reps,rir
+
+Reglas:
+- Si el PDF usa "Sesión 1", "Sesión 2", etc., escribe en la columna dia: Sesión 1, Sesión 2… (o Lunes, Martes si ya vienen días de la semana).
+- Extrae grupo muscular, nombre del ejercicio, series, repeticiones (ej. 10-15) y RIR/RPE.
+- Ignora calentamientos genéricos, notas legales y texto que no sea ejercicio.
+- Sin markdown, sin explicaciones: solo líneas CSV después de la cabecera.
+
+TEXTO PDF:
+${String(texto || '').slice(0, MAX_TEXTO)}`;
 }
 
 function promptPdf(texto) {
@@ -145,4 +200,28 @@ async function previewImportDietaIa(texto, opts = {}) {
   return normalizarSalidaGemini(json, esPdf);
 }
 
-module.exports = { previewImportDietaIa, esNombreAlimentoValido };
+/**
+ * PDF/texto caótico → Gemini CSV → previewImportPlan (rutina).
+ */
+async function previewImportRutinaIa(texto, opts = {}) {
+  const esPdf = opts.origen === 'pdf';
+  const csv = await llamarGeminiTexto(promptRutinaPdf(texto));
+  if (!csv || !/dia\s*,/i.test(csv.split('\n')[0] || '')) {
+    return { ok: false, error: 'La IA no generó CSV de rutina válido.' };
+  }
+  const preview = previewImportPlan(csv, { tipo: 'rutina' });
+  if (!preview.ok) {
+    return { ok: false, error: preview.error || 'No se pudo validar la rutina generada por IA.' };
+  }
+  return {
+    ...preview,
+    parser: esPdf ? 'pdf-ia' : 'ia',
+    texto_csv: csv,
+    avisos: [
+      ...(preview.avisos || []),
+      esPdf ? 'PDF de rutina interpretado con IA — revisa días y series.' : 'Rutina interpretada con IA.'
+    ]
+  };
+}
+
+module.exports = { previewImportDietaIa, previewImportRutinaIa, esNombreAlimentoValido };

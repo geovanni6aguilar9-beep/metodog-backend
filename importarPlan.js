@@ -162,7 +162,13 @@ function normalizarDia(raw) {
   if (!s) return null;
   if (DIAS_SEMANA.includes(s)) return s;
   const key = normHeader(s);
-  return MAP_DIA[key] || null;
+  if (MAP_DIA[key]) return MAP_DIA[key];
+  const sesion = s.match(/sesi[oó]n\s*(\d+)/i) || key.match(/^sesion\s*(\d+)$/);
+  if (sesion) {
+    const n = parseInt(sesion[1], 10);
+    if (n >= 1 && n <= DIAS_SEMANA.length) return DIAS_SEMANA[n - 1];
+  }
+  return null;
 }
 
 function normalizarComida(raw) {

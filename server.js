@@ -55,7 +55,7 @@ const { calcularSustitutos, SIN_SUSTITUTO } = require("./equivalenciasNutricion"
 const { importarAlimentosCsv, previewImportacionCsv, PLANTILLA_CSV } = require("./importarAlimentos");
 const { previewImportPlan } = require("./importarPlan");
 const { importarPdfPreview } = require("./importarPlanPdf");
-const { previewImportDietaIa } = require("./importarPlanIa");
+const { previewImportDietaIa, previewImportRutinaIa } = require("./importarPlanIa");
 const multer = require("multer");
 const uploadPdf = multer({
   storage: multer.memoryStorage(),
@@ -442,14 +442,16 @@ app.post("/api/planes/preview-import", async (req, res) => {
 
 app.post("/api/planes/preview-import-ia", async (req, res) => {
   if (!(await assertCoachOAdmin(db, req, res))) return;
-  const { texto, origen } = req.body || {};
+  const { texto, origen, tipo } = req.body || {};
   if (!texto || typeof texto !== "string") {
     return res.status(400).json({ error: "Envía el texto en el campo «texto»." });
   }
   try {
-    const resultado = await previewImportDietaIa(texto, {
-      origen: origen === "pdf" ? "pdf" : "texto"
-    });
+    const esPdf = origen === "pdf";
+    const resultado =
+      tipo === "rutina"
+        ? await previewImportRutinaIa(texto, { origen: esPdf ? "pdf" : "texto" })
+        : await previewImportDietaIa(texto, { origen: esPdf ? "pdf" : "texto" });
     if (!resultado.ok) return res.status(400).json(resultado);
     res.json(resultado);
   } catch (err) {
