@@ -53,6 +53,14 @@ const { contextoMesInforme } = require("./informeMesContext");
 const { seedAlimentosMetodog } = require("./seedAlimentos");
 const { calcularSustitutos, SIN_SUSTITUTO } = require("./equivalenciasNutricion");
 const { importarAlimentosCsv, previewImportacionCsv, PLANTILLA_CSV } = require("./importarAlimentos");
+const { previewImportPlan } = require("./importarPlan");
+const { importarPdfPreview } = require("./importarPlanPdf");
+const { previewImportDietaIa } = require("./importarPlanIa");
+const multer = require("multer");
+const uploadPdf = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 }
+});
 
 const DEV_JWT_FALLBACK = "metodog-dev-cambiar-en-produccion";
 if (isProduction()) {
@@ -410,6 +418,57 @@ app.post("/api/alimentos/preview-import-csv", async (req, res) => {
   } catch (err) {
     console.error("preview-import-csv:", err.message);
     res.status(500).json({ error: err.message || "No se pudo analizar el archivo." });
+  }
+});
+
+app.post("/api/planes/preview-import", async (req, res) => {
+  if (!(await assertCoachOAdmin(db, req, res))) return;
+  const { texto, csv, tipo } = req.body || {};
+  const raw = typeof texto === "string" ? texto : csv;
+  if (!raw || typeof raw !== "string") {
+    return res.status(400).json({ error: "Envía el contenido en el campo «texto» o «csv»." });
+  }
+  try {
+    const resultado = previewImportPlan(raw, {
+      tipo: tipo === "rutina" || tipo === "dieta" ? tipo : null
+    });
+    if (!resultado.ok) return res.status(400).json(resultado);
+    res.json(resultado);
+  } catch (err) {
+    console.error("planes/preview-import:", err.message);
+    res.status(500).json({ error: err.message || "No se pudo analizar el plan." });
+  }
+});
+
+app.post("/api/planes/preview-import-ia", async (req, res) => {
+  if (!(await assertCoachOAdmin(db, req, res))) return;
+  const { texto } = req.body || {};
+  if (!texto || typeof texto !== "string") {
+    return res.status(400).json({ error: "Envía el texto en el campo «texto»." });
+  }
+  try {
+    const resultado = await previewImportDietaIa(texto);
+    if (!resultado.ok) return res.status(400).json(resultado);
+    res.json(resultado);
+  } catch (err) {
+    console.error("planes/preview-import-ia:", err.message);
+    res.status(500).json({ error: err.message || "IA no disponible." });
+  }
+});
+
+app.post("/api/planes/importar-pdf", uploadPdf.single("pdf"), async (req, res) => {
+  if (!(await assertCoachOAdmin(db, req, res))) return;
+  if (!req.file?.buffer?.length) {
+    return res.status(400).json({ error: "Sube un archivo PDF en el campo «pdf»." });
+  }
+  const tipo = req.body?.tipo === "rutina" ? "rutina" : "dieta";
+  try {
+    const resultado = await importarPdfPreview(req.file.buffer, { tipo });
+    if (!resultado.ok) return res.status(400).json(resultado);
+    res.json(resultado);
+  } catch (err) {
+    console.error("planes/importar-pdf:", err.message);
+    res.status(500).json({ error: err.message || "No se pudo leer el PDF." });
   }
 });
 
