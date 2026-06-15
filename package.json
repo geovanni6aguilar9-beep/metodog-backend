@@ -7,6 +7,8 @@
     "dev": "node --watch server.js",
     "start": "node server.js",
     "seed:meso2": "node seed-superadmin-rutina.js",
+    "limpiar:fuerza-duplicados": "node scripts/limpiarDuplicadosFuerza.js",
+    "limpiar:fuerza-duplicados:execute": "node scripts/limpiarDuplicadosFuerza.js --execute",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],

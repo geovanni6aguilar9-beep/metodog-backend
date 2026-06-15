@@ -56,6 +56,7 @@ const { importarAlimentosCsv, previewImportacionCsv, PLANTILLA_CSV } = require("
 const { previewImportPlan } = require("./importarPlan");
 const { importarPdfPreview } = require("./importarPlanPdf");
 const { previewImportDietaIa, previewImportRutinaIa } = require("./importarPlanIa");
+const { deduplicarFilasHistorialFuerza } = require("./fuerzaHistorial");
 const multer = require("multer");
 const uploadPdf = multer({
   storage: multer.memoryStorage(),
@@ -651,19 +652,77 @@ app.post("/api/fuerza/guardar", async (req, res) => {
   }
   const pesoNum = parseFloat(peso);
   if (Number.isNaN(pesoNum)) return res.status(400).json({ error: "Peso inválido" });
+  const repsNum = parseInt(reps, 10) || 0;
+  const nSerie = numero_serie != null ? parseInt(numero_serie, 10) : null;
+  const ejercicioStr = String(ejercicio).trim();
   try {
+    const dup = await db.execute({
+      sql: `SELECT id, numero_serie FROM historial_fuerza
+            WHERE usuario_id = ? AND ejercicio = ? AND peso = ? AND reps = ?
+              AND date(fecha) = date('now')
+            ORDER BY id ASC LIMIT 20`,
+      args: [usuario_id, ejercicioStr, pesoNum, repsNum]
+    });
+    const existente = (dup.rows || []).find(
+      (r) => (r.numero_serie == null ? null : Number(r.numero_serie)) === nSerie
+    );
+    if (existente) {
+      return res.json({ mensaje: "Ok", id: Number(existente.id), duplicado: true });
+    }
+
     const result = await db.execute({
       sql: `INSERT INTO historial_fuerza (usuario_id, ejercicio, peso, reps, numero_serie, dia_rutina) VALUES (?, ?, ?, ?, ?, ?)`,
-      args: [
-        usuario_id,
-        String(ejercicio).trim(),
-        pesoNum,
-        parseInt(reps, 10) || 0,
-        numero_serie != null ? parseInt(numero_serie, 10) : null,
-        dia_rutina || null
-      ]
+      args: [usuario_id, ejercicioStr, pesoNum, repsNum, nSerie, dia_rutina || null]
     });
     res.json({ mensaje: "Ok", id: Number(result.lastInsertRowid) });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.delete("/api/fuerza/:id", async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (Number.isNaN(id) || id <= 0) return res.status(400).json({ error: "ID inválido" });
+  try {
+    const row = await db.execute({
+      sql: `SELECT usuario_id FROM historial_fuerza WHERE id = ? LIMIT 1`,
+      args: [id]
+    });
+    if (!row.rows?.length) return res.status(404).json({ error: "Registro no encontrado" });
+    const usuarioId = row.rows[0].usuario_id;
+    if (!(await assertAccesoUsuarioEdicion(db, req, res, usuarioId))) return;
+    const del = await db.execute({
+      sql: `DELETE FROM historial_fuerza WHERE id = ?`,
+      args: [id]
+    });
+    if (!del.rowsAffected) return res.status(404).json({ error: "Registro no encontrado" });
+    res.json({ mensaje: "Ok", id });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post("/api/fuerza/desmarcar", async (req, res) => {
+  const { usuario_id, ejercicio, numero_serie } = req.body || {};
+  if (!(await assertAccesoUsuarioEdicion(db, req, res, usuario_id))) return;
+  if (!usuario_id || !ejercicio) {
+    return res.status(400).json({ error: "usuario_id y ejercicio son obligatorios" });
+  }
+  const nSerie = numero_serie != null ? parseInt(numero_serie, 10) : null;
+  const ejercicioStr = String(ejercicio).trim();
+  try {
+    const candidatos = await db.execute({
+      sql: `SELECT id, numero_serie FROM historial_fuerza
+            WHERE usuario_id = ? AND ejercicio = ? AND date(fecha) = date('now')
+            ORDER BY id DESC LIMIT 30`,
+      args: [usuario_id, ejercicioStr]
+    });
+    const fila = (candidatos.rows || []).find(
+      (r) => (r.numero_serie == null ? null : Number(r.numero_serie)) === nSerie
+    );
+    if (!fila) return res.status(404).json({ error: "Serie no encontrada hoy" });
+    const del = await db.execute({
+      sql: `DELETE FROM historial_fuerza WHERE id = ?`,
+      args: [fila.id]
+    });
+    if (!del.rowsAffected) return res.status(404).json({ error: "Registro no encontrado" });
+    res.json({ mensaje: "Ok", id: Number(fila.id) });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -676,7 +735,10 @@ app.get("/api/fuerza/historial/:usuario_id/:ejercicio", async (req, res) => {
             FROM historial_fuerza WHERE usuario_id = ? AND ejercicio = ? ORDER BY fecha ASC, id ASC LIMIT 500`,
       args: [req.params.usuario_id, ejercicio]
     });
-    res.json({ historial: result.rows });
+    const historial = deduplicarFilasHistorialFuerza(
+      (result.rows || []).map((r) => ({ ...r, usuario_id: req.params.usuario_id }))
+    );
+    res.json({ historial });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -688,8 +750,11 @@ app.get("/api/fuerza/historial/:usuario_id", async (req, res) => {
             FROM historial_fuerza WHERE usuario_id = ? ORDER BY fecha ASC, id ASC LIMIT 1000`,
       args: [req.params.usuario_id]
     });
-    const ejercicios = [...new Set(result.rows.map(r => r.ejercicio))];
-    res.json({ historial: result.rows, ejercicios });
+    const historial = deduplicarFilasHistorialFuerza(
+      (result.rows || []).map((r) => ({ ...r, usuario_id: req.params.usuario_id }))
+    );
+    const ejercicios = [...new Set(historial.map((r) => r.ejercicio))];
+    res.json({ historial, ejercicios });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
