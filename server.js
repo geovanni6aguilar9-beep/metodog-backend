@@ -732,6 +732,21 @@ app.post("/api/fuerza/desmarcar", async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+app.delete("/api/fuerza/hoy/:usuario_id", async (req, res) => {
+  const usuarioId = req.params.usuario_id;
+  if (!(await assertAccesoUsuarioEdicion(db, req, res, usuarioId))) return;
+  try {
+    const del = await db.execute({
+      sql: `DELETE FROM historial_fuerza WHERE usuario_id = ? AND date(fecha) = date('now')`,
+      args: [usuarioId]
+    });
+    if (!del.rowsAffected && del.rowsAffected !== 0) {
+      return res.status(500).json({ error: "No se pudo limpiar el historial de hoy" });
+    }
+    res.json({ mensaje: "Ok", eliminados: Number(del.rowsAffected || 0) });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 app.get("/api/fuerza/historial/:usuario_id/:ejercicio", async (req, res) => {
   if (!(await assertAccesoUsuario(db, req, res, req.params.usuario_id))) return;
   try {
