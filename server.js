@@ -657,17 +657,23 @@ app.post("/api/fuerza/guardar", async (req, res) => {
   const ejercicioStr = String(ejercicio).trim();
   try {
     const dup = await db.execute({
-      sql: `SELECT id, numero_serie FROM historial_fuerza
-            WHERE usuario_id = ? AND ejercicio = ? AND peso = ? AND reps = ?
+      sql: `SELECT id FROM historial_fuerza
+            WHERE usuario_id = ? AND ejercicio = ?
+              AND COALESCE(numero_serie, -1) = COALESCE(?, -1)
               AND date(fecha) = date('now')
-            ORDER BY id ASC LIMIT 20`,
-      args: [usuario_id, ejercicioStr, pesoNum, repsNum]
+            ORDER BY id ASC LIMIT 1`,
+      args: [usuario_id, ejercicioStr, nSerie]
     });
-    const existente = (dup.rows || []).find(
-      (r) => (r.numero_serie == null ? null : Number(r.numero_serie)) === nSerie
-    );
-    if (existente) {
-      return res.json({ mensaje: "Ok", id: Number(existente.id), duplicado: true });
+    if (dup.rows?.length) {
+      const existenteId = Number(dup.rows[0].id);
+      const upd = await db.execute({
+        sql: `UPDATE historial_fuerza SET peso = ?, reps = ?, dia_rutina = ? WHERE id = ?`,
+        args: [pesoNum, repsNum, dia_rutina || null, existenteId]
+      });
+      if (!upd.rowsAffected) {
+        return res.status(500).json({ error: "No se pudo actualizar la serie existente" });
+      }
+      return res.json({ mensaje: "Ok", id: existenteId, duplicado: true });
     }
 
     const result = await db.execute({
