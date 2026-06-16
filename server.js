@@ -57,6 +57,11 @@ const { previewImportPlan } = require("./importarPlan");
 const { importarPdfPreview } = require("./importarPlanPdf");
 const { previewImportDietaIa, previewImportRutinaIa } = require("./importarPlanIa");
 const { deduplicarFilasHistorialFuerza } = require("./fuerzaHistorial");
+const {
+  obtenerOverridesParaUsuario,
+  upsertOverride,
+  GRUPOS_VALIDOS
+} = require("./catalogoEjercicios");
 const multer = require("multer");
 const uploadPdf = multer({
   storage: multer.memoryStorage(),
@@ -308,6 +313,21 @@ async function inicializarBD() {
       PRIMARY KEY (usuario_id, mes),
       FOREIGN KEY(usuario_id) REFERENCES usuarios(id)
     )`);
+
+    await db.execute(`CREATE TABLE IF NOT EXISTS catalogo_ejercicios_grupo (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      owner_id INTEGER NOT NULL,
+      scope TEXT NOT NULL CHECK(scope IN ('coach', 'cliente')),
+      nombre_norm TEXT NOT NULL,
+      nombre_display TEXT NOT NULL,
+      grupo TEXT NOT NULL,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(owner_id, scope, nombre_norm),
+      FOREIGN KEY(owner_id) REFERENCES usuarios(id)
+    )`);
+    await db.execute(
+      `CREATE INDEX IF NOT EXISTS idx_catalogo_ejercicios_owner ON catalogo_ejercicios_grupo(owner_id, scope)`
+    );
 
     await seedAlimentosMetodog(db);
     console.log("✅ Base de datos conectada (suscripciones atleta/coach + tiers).");
@@ -744,6 +764,56 @@ app.delete("/api/fuerza/hoy/:usuario_id", async (req, res) => {
       return res.status(500).json({ error: "No se pudo limpiar el historial de hoy" });
     }
     res.json({ mensaje: "Ok", eliminados: Number(del.rowsAffected || 0) });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get("/api/catalogo-ejercicios/overrides/:usuario_id", async (req, res) => {
+  const usuarioId = req.params.usuario_id;
+  if (!(await assertAccesoUsuario(db, req, res, usuarioId))) return;
+  try {
+    const data = await obtenerOverridesParaUsuario(db, usuarioId);
+    res.json({
+      merged: data.merged,
+      coach: data.coach,
+      cliente: data.cliente,
+      coach_id: data.coach_id
+    });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.put("/api/catalogo-ejercicios/overrides", async (req, res) => {
+  const { nombre, grupo, scope, usuario_id: usuarioIdBody } = req.body || {};
+  const scopeVal = scope === "cliente" ? "cliente" : "coach";
+  const grupoStr = String(grupo || "").trim();
+  if (!GRUPOS_VALIDOS.has(grupoStr)) {
+    return res.status(400).json({ error: "grupo muscular inválido" });
+  }
+  if (!String(nombre || "").trim()) {
+    return res.status(400).json({ error: "nombre es obligatorio" });
+  }
+
+  try {
+    let ownerId;
+    if (scopeVal === "coach") {
+      const coachId = Number(req.user?.id);
+      if (!coachId || (req.user?.rol !== "COACH" && req.user?.rol !== "SUPERADMIN")) {
+        return res.status(403).json({ error: "Solo coach puede guardar en biblioteca coach" });
+      }
+      ownerId = coachId;
+    } else {
+      const uid = Number(usuarioIdBody || req.user?.id);
+      if (!(await assertAccesoUsuarioEdicion(db, req, res, uid))) return;
+      ownerId = uid;
+    }
+
+    const result = await upsertOverride(db, {
+      ownerId,
+      scope: scopeVal,
+      nombre,
+      grupo: grupoStr
+    });
+    if (!result.ok) return res.status(400).json({ error: result.error });
+    res.json({ mensaje: "Ok", ...result, scope: scopeVal, owner_id: ownerId });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
