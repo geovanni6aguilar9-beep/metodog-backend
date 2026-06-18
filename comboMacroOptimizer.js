@@ -3,6 +3,7 @@
  * Tolerancia funcional: ±30 kcal, ±5 g P/C/G.
  */
 
+const VERSION_OPTIMIZADOR = "4.6-guillotina";
 const TOLERANCIA = {
   calorias: 30,
   proteinas: 5,
@@ -88,6 +89,42 @@ function optsCarbFill(errProt, errCarb) {
   };
 }
 
+function topeHardcodePorNombre(nombre, unidad) {
+  const n = String(nombre || "").toLowerCase();
+  const u = String(unidad || "g").toLowerCase();
+  if (/claras|omelette|huevo|avena|amaranto/.test(n)) {
+    if (u === "pieza" || u === "scoop") return 2;
+    return 150;
+  }
+  if (/cracker|galleta/.test(n)) return u === "pieza" || !u ? 4 : 40;
+  if (/jamón de pavo|jamon de pavo/.test(n)) return 120;
+  return null;
+}
+
+/** Capa final: imposible devolver porciones industriales aunque el flujo anterior falle. */
+function aplicarGuillotinaPorcionesDieta(dieta, catalogoMap) {
+  if (!dieta?.comidas?.length) return dieta;
+  let recorto = false;
+  for (const bloque of dieta.comidas) {
+    const items = bloque.alimentos_sugeridos || [];
+    for (const item of items) {
+      const cat = catalogoMap.get(item.id_alimento);
+      const nombre = item.nombre || cat?.nombre || "";
+      const u = unidadEfectivaAlimento(cat || { nombre, unidad: item.unidad });
+      const tope = topeHardcodePorNombre(nombre, u);
+      if (tope == null) continue;
+      const prev = num(item.cantidad_sugerida, 0);
+      if (prev <= tope) continue;
+      item.cantidad_sugerida = tope;
+      recorto = true;
+    }
+    bloque.alimentos_sugeridos = reconstruirItems(items, catalogoMap);
+  }
+  if (recorto) refrescarMacrosComidas(dieta.comidas, catalogoMap);
+  dieta.guillotina_aplicada = recorto;
+  return dieta;
+}
+
 function esOmeletteClaras(cat) {
   const n = String(cat?.nombre || "").toLowerCase();
   return /omelette|claras de huevo|clara de huevo|claras|huevo.*clara/.test(n);
@@ -122,7 +159,7 @@ function limitesPorAlimento(cat) {
   const u = unidadEfectivaAlimento(cat);
   const nombre = String(cat?.nombre || "").toLowerCase();
 
-  if (esOmeletteClaras(cat) && (u === "g" || u === "ml")) return { min: 80, max: 180 };
+  if (esOmeletteClaras(cat) && (u === "g" || u === "ml")) return { min: 60, max: 150 };
   if (/jamón de pavo|jamon de pavo/.test(nombre) && (u === "g" || u === "ml")) {
     return { min: 50, max: 120 };
   }
@@ -1564,11 +1601,13 @@ function optimizarDietaDia(dieta, catalogoMap, targetDia, options = {}) {
     console.warn("[comboMacroOptimizer] optimizarDietaDia:", optErr.message);
   } finally {
     if (dieta?.comidas?.length) {
+      aplicarGuillotinaPorcionesDieta(dieta, catalogoMap);
       enforceLimitesFinales(dieta.comidas, catalogoMap);
       dieta.macros_plan = totalDieta(dieta.comidas);
       Object.keys(dieta.macros_plan).forEach((k) => {
         dieta.macros_plan[k] = redondear(dieta.macros_plan[k]);
       });
+      dieta.optimizer_version = VERSION_OPTIMIZADOR;
     }
   }
 
@@ -1582,5 +1621,7 @@ module.exports = {
   dentroTolerancia,
   costoPlan,
   podaActivaDieta,
+  aplicarGuillotinaPorcionesDieta,
+  VERSION_OPTIMIZADOR,
   TOLERANCIA
 };

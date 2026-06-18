@@ -11,6 +11,8 @@ const MAX_CATALOGO_PROMPT = 96;
 
 let optimizarCombo = (combo) => combo;
 let optimizarDietaDia = (dieta) => dieta;
+let aplicarGuillotinaPorcionesDieta = (dieta) => dieta;
+const VERSION_PIPELINE_IA = "4.6-guillotina";
 let sumarMacrosLista = (items) =>
   (items || []).reduce(
     (t, m) => ({
@@ -27,6 +29,7 @@ try {
   const mod = require("./comboMacroOptimizer");
   optimizarCombo = mod.optimizarCombo;
   optimizarDietaDia = mod.optimizarDietaDia;
+  aplicarGuillotinaPorcionesDieta = mod.aplicarGuillotinaPorcionesDieta || aplicarGuillotinaPorcionesDieta;
   sumarMacrosLista = mod.sumarMacrosLista || sumarMacrosLista;
   OPTIMIZER_DISPONIBLE = typeof mod.optimizarDietaDia === "function";
 } catch (err) {
@@ -211,8 +214,8 @@ function normalizarCantidadSugerida(cantidad, cat) {
   }
   if (unidad === "g" || unidad === "ml") {
     let q = Math.round(qty);
-    if (/omelette|claras de huevo|clara de huevo|claras/.test(nombre)) {
-      q = Math.min(q, 180);
+    if (/omelette|claras de huevo|clara de huevo|claras|huevo|avena|amaranto/.test(nombre)) {
+      q = Math.min(q, 150);
     }
     if (/jamón de pavo|jamon de pavo/.test(nombre)) {
       q = Math.min(q, 120);
@@ -685,6 +688,10 @@ function asegurarMacrosPlanDieta(dieta) {
 }
 
 async function generarDietaDiaCompleta(payload, db = null) {
+  console.log("========================================");
+  console.log("[MetodoG] VERSION 4.6 ACTIVA — dieta-ia", new Date().toISOString());
+  console.log("[MetodoG] optimizer:", OPTIMIZER_DISPONIBLE ? VERSION_PIPELINE_IA : "OFF");
+  console.log("========================================");
   const apiKey = resolverGeminiApiKey();
   if (!apiKey) return { ok: false, motivo: "sin_api_key" };
 
@@ -864,7 +871,7 @@ Responde SOLO JSON válido:
             },
             { calorias: 0, proteinas: 0, carbohidratos: 0, grasas: 0 }
           );
-          let dieta = dietaRaw;
+          let dieta = aplicarGuillotinaPorcionesDieta(dietaRaw, catalogoMap);
           let planAprobado = false;
           try {
             if (!OPTIMIZER_DISPONIBLE) {
@@ -880,6 +887,7 @@ Responde SOLO JSON válido:
               const gapGras = num(targetDia.grasas) - num(dieta.macros_plan?.grasas);
               if (Math.abs(gapKcal) <= 80 && gapGras >= -8) break;
             }
+            dieta = aplicarGuillotinaPorcionesDieta(dieta, catalogoMap);
             dieta = asegurarMacrosPlanDieta(dieta);
             const calidad = evaluarCalidadPlanDieta(dieta, targetDia);
             if (!calidad.ok) {
@@ -901,12 +909,14 @@ Responde SOLO JSON válido:
           }
           if (!planAprobado) continue;
           dieta.macros_meta = targetDia;
+          dieta.version_pipeline = VERSION_PIPELINE_IA;
         return {
           ok: true,
           dieta,
           ia: true,
           modelo: model,
-          optimizer: OPTIMIZER_DISPONIBLE ? "v4.6" : "off"
+          optimizer: OPTIMIZER_DISPONIBLE ? VERSION_PIPELINE_IA : "off",
+          version_pipeline: VERSION_PIPELINE_IA
         };
     } catch (err) {
       const msg = err?.message || String(err);
