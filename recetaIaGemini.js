@@ -687,10 +687,10 @@ Responde SOLO JSON válido:
           });
           let dieta = dietaRaw;
           try {
-            dieta = optimizarDietaDia(dietaRaw, catalogoMap, targetDia);
-            const gapKcal = num(targetDia.calorias) - num(dieta.macros_plan?.calorias);
-            if (gapKcal > 80) {
+            for (let optPass = 0; optPass < 4; optPass++) {
               dieta = optimizarDietaDia(dieta, catalogoMap, targetDia);
+              const gapKcal = num(targetDia.calorias) - num(dieta.macros_plan?.calorias);
+              if (gapKcal <= 80) break;
             }
             dieta.macros_ajustados = OPTIMIZER_DISPONIBLE;
             dieta.catalogo_fuente = db ? "turso+payload" : "payload";
