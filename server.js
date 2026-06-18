@@ -618,6 +618,10 @@ app.post("/api/alimentos/dieta-ia", async (req, res) => {
   const user = req.user;
   if (!user) return res.status(401).json({ ok: false, error: "Sesión requerida" });
 
+  console.log("========================================");
+  console.log("[MetodoG] VERSION 4.6 ACTIVA — POST /api/alimentos/dieta-ia", new Date().toISOString());
+  console.log("========================================");
+
   const puede = await usuarioPuedeRecetasIa(user.id, user.rol);
   if (!puede) {
     return res.status(403).json({
