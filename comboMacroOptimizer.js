@@ -88,6 +88,26 @@ function optsCarbFill(errProt, errCarb) {
   };
 }
 
+function esOmeletteClaras(cat) {
+  const n = String(cat?.nombre || "").toLowerCase();
+  return /omelette|claras de huevo|clara de huevo|claras|huevo.*clara/.test(n);
+}
+
+function esAlimentoPorPieza(cat) {
+  const u = unidadEfectivaAlimento(cat);
+  if (u === "pieza") return true;
+  const n = String(cat?.nombre || "").toLowerCase();
+  return /cracker|galleta|bagel|tostada|rebanada|tortilla/.test(n);
+}
+
+function unidadEfectivaAlimento(cat) {
+  const u = String(cat?.unidad || "").toLowerCase().trim();
+  if (u) return u;
+  const n = String(cat?.nombre || "").toLowerCase();
+  if (/cracker|galleta|bagel|tostada|rebanada|pieza|tortilla/.test(n)) return "pieza";
+  return "g";
+}
+
 /** Topes realistas por tipo de alimento (MétodoG). */
 function esPolvoProteina(cat) {
   const n = String(cat?.nombre || "").toLowerCase();
@@ -99,7 +119,16 @@ function esPolvoProteina(cat) {
 
 function limitesPorAlimento(cat) {
   const eq = grupoEquiv(cat);
-  const u = String(cat?.unidad || "g").toLowerCase();
+  const u = unidadEfectivaAlimento(cat);
+  const nombre = String(cat?.nombre || "").toLowerCase();
+
+  if (esOmeletteClaras(cat) && (u === "g" || u === "ml")) return { min: 80, max: 180 };
+  if (/jamón de pavo|jamon de pavo/.test(nombre) && (u === "g" || u === "ml")) {
+    return { min: 50, max: 120 };
+  }
+  if (/cracker|galleta/.test(nombre) && (u === "pieza" || esAlimentoPorPieza(cat))) {
+    return { min: 1, max: 4 };
+  }
 
   if (esPolvoProteina(cat)) {
     if (u === "scoop") return { min: 0.5, max: 1.5 };
@@ -137,12 +166,12 @@ function limitesPorAlimento(cat) {
 
 function cantidadFinalAlimento(qty, cat) {
   const lim = limitesPorAlimento(cat);
-  const u = String(cat?.unidad || "g").toLowerCase();
+  const u = unidadEfectivaAlimento(cat);
   let q = num(qty, 0);
   q = Math.min(lim.max, Math.max(lim.min, q));
   if (u === "g" || u === "ml") q = Math.round(q);
   else if (u === "pieza" || u === "scoop" || u === "cucharada") q = Math.max(1, Math.round(q));
-  else q = redondear(q);
+  else q = Math.round(q * 10) / 10;
   return Math.min(lim.max, Math.max(lim.min, q));
 }
 

@@ -635,14 +635,18 @@ app.post("/api/alimentos/dieta-ia", async (req, res) => {
         esAdmin ||
         resultado.motivo === "formato_key" ||
         resultado.motivo === "ids_invalidos" ||
-        resultado.motivo === "parse_error";
+        resultado.motivo === "parse_error" ||
+        resultado.motivo === "plan_no_cuadrado";
       const err400 = [
         "sin_catalogo",
         "sin_objetivo",
         "sin_comidas",
         "ids_invalidos",
         "parse_error",
-        "comidas_incompletas"
+        "comidas_incompletas",
+        "plan_no_cuadrado",
+        "optimizador_fallo",
+        "optimizador_off"
       ];
       return res.status(err400.includes(resultado.motivo) ? 400 : 503).json({
         ok: false,

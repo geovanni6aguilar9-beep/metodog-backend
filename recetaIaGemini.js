@@ -193,7 +193,7 @@ function normalizarCantidadSugerida(cantidad, cat) {
   const qty = num(cantidad, 0);
   if (qty <= 0) return 0;
   const base = num(cat?.porcion_base, 1) || 1;
-  const unidad = String(cat?.unidad || "g").toLowerCase();
+  const unidad = unidadEfectivaAlimento(cat);
   const nombre = String(cat?.nombre || "").toLowerCase();
   const esPolvo =
     nombre.includes("whey") ||
@@ -202,18 +202,50 @@ function normalizarCantidadSugerida(cantidad, cat) {
     (nombre.includes("proteína") && nombre.includes("polvo")) ||
     (nombre.includes("proteina") && nombre.includes("polvo"));
 
-  if (["scoop", "pieza", "cucharada"].includes(unidad)) {
+  if (unidad === "scoop" || unidad === "cucharada" || unidad === "pieza") {
     return Math.max(1, Math.round(qty));
   }
-  if (esPolvo && qty >= 1 && qty <= 3) {
-    if (unidad === "g" && base >= 10) return redondear(qty * base);
-    return Math.max(1, Math.round(qty));
+  // Solo polvo en gramos: 1–3 suele ser scoops, no gramos literales.
+  if (esPolvo && unidad === "g" && qty >= 1 && qty <= 3 && base >= 10) {
+    return Math.round(qty * base);
   }
-  if ((unidad === "g" || unidad === "ml") && base >= 10 && qty < base * 0.6) {
-    const esEnteroChico = qty >= 1 && qty <= 5 && Math.abs(qty - Math.round(qty)) < 0.01;
-    if (esEnteroChico) return redondear(qty * base);
+  if (unidad === "g" || unidad === "ml") {
+    let q = Math.round(qty);
+    if (/omelette|claras de huevo|clara de huevo|claras/.test(nombre)) {
+      q = Math.min(q, 180);
+    }
+    if (/jamón de pavo|jamon de pavo/.test(nombre)) {
+      q = Math.min(q, 120);
+    }
+    return q;
   }
-  return redondear(qty);
+  return Math.max(1, Math.round(qty));
+}
+
+function unidadEfectivaAlimento(cat) {
+  const u = String(cat?.unidad || "").toLowerCase().trim();
+  if (u) return u;
+  const n = String(cat?.nombre || "").toLowerCase();
+  if (/cracker|galleta|bagel|tostada|rebanada|pieza|tortilla/.test(n)) return "pieza";
+  return "g";
+}
+
+function evaluarCalidadPlanDieta(dieta, targetDia) {
+  const total = dieta?.macros_plan || {};
+  const kcalFinal = num(total.calorias);
+  const kcalMeta = num(targetDia.calorias);
+  const grasFinal = num(total.grasas);
+  const grasMeta = num(targetDia.grasas);
+  const carbFinal = num(total.carbohidratos);
+  const carbMeta = num(targetDia.carbohidratos);
+  const grasOk = grasFinal <= grasMeta + 8;
+  const carbOk = carbFinal >= carbMeta - 25;
+  const kcalOk = Math.abs(kcalMeta - kcalFinal) <= 120;
+  if (grasOk && carbOk && kcalOk) return { ok: true };
+  return {
+    ok: false,
+    detalle: `${kcalFinal}/${kcalMeta} kcal · G${grasFinal}/${grasMeta}g · C${carbFinal}/${carbMeta}g`
+  };
 }
 
 function normalizarCombo(obj, catalogoMap, idsPermitidos = null) {
@@ -327,6 +359,19 @@ function mensajeErrorAmigable(motivo, esAdmin = false, detalle = "") {
   }
   if (motivo === "comidas_incompletas") {
     return "La IA no armó todas las comidas del día. Toca Reintentar (a veces pasa en el primer intento).";
+  }
+  if (motivo === "optimizador_off") {
+    return "El ajuste de porciones no está disponible en el servidor. Contacta soporte o reintenta más tarde.";
+  }
+  if (motivo === "optimizador_fallo") {
+    const base =
+      "No pudimos cuadrar porciones del plan. Toca Reintentar en 1 minuto.";
+    return esAdmin && detalle ? `${base} (${detalle.slice(0, 100)})` : base;
+  }
+  if (motivo === "plan_no_cuadrado") {
+    const base =
+      "La IA generó un plan fuera de tu meta (kcal o macros). Toca Reintentar — no lo apliques.";
+    return esAdmin && detalle ? `${base} (${detalle.slice(0, 120)})` : base;
   }
   if (motivo === "formato_key") {
     return detalle || "La clave de Gemini parece incompleta. Revisa GEMINI_API_KEY en Render.";
@@ -820,7 +865,11 @@ Responde SOLO JSON válido:
             { calorias: 0, proteinas: 0, carbohidratos: 0, grasas: 0 }
           );
           let dieta = dietaRaw;
+          let planAprobado = false;
           try {
+            if (!OPTIMIZER_DISPONIBLE) {
+              throw new Error("optimizer_off");
+            }
             const sobreCarga =
               num(macrosPreOpt.calorias) > num(targetDia.calorias) * 1.2 ||
               num(macrosPreOpt.grasas) > num(targetDia.grasas) + 25;
@@ -831,35 +880,33 @@ Responde SOLO JSON válido:
               const gapGras = num(targetDia.grasas) - num(dieta.macros_plan?.grasas);
               if (Math.abs(gapKcal) <= 80 && gapGras >= -8) break;
             }
-            const kcalFinal = num(dieta.macros_plan?.calorias);
-            const kcalMeta = num(targetDia.calorias);
-            const grasFinal = num(dieta.macros_plan?.grasas);
-            const grasMeta = num(targetDia.grasas);
-            const carbFinal = num(dieta.macros_plan?.carbohidratos);
-            const carbMeta = num(targetDia.carbohidratos);
-            const grasOk = grasFinal <= grasMeta + 8;
-            const carbOk = carbFinal >= carbMeta - 25;
-            const kcalOk = Math.abs(kcalMeta - kcalFinal) <= 120;
-            if (!grasOk || !carbOk || !kcalOk) {
-              dieta.macros_ajustados = false;
-              dieta.optimizador_parcial = true;
-            } else {
-              dieta.macros_ajustados = OPTIMIZER_DISPONIBLE;
+            dieta = asegurarMacrosPlanDieta(dieta);
+            const calidad = evaluarCalidadPlanDieta(dieta, targetDia);
+            if (!calidad.ok) {
+              ultimoError = "plan_no_cuadrado";
+              ultimoDetalle = calidad.detalle || "macros fuera de meta";
+              continue;
             }
+            planAprobado = true;
+            dieta.macros_ajustados = true;
             dieta.catalogo_fuente = db ? "turso+payload" : "payload";
             dieta.macros_pre_optimizador = macrosPreOpt;
             dieta.comidas_esperadas = comidasTarget.length;
           } catch (optErr) {
-            console.warn("[recetaIaGemini] optimizarDietaDia:", optErr.message);
+            const msg = optErr?.message || String(optErr);
+            console.warn("[recetaIaGemini] optimizarDietaDia:", msg);
+            ultimoError = msg === "optimizer_off" ? "optimizador_off" : "optimizador_fallo";
+            ultimoDetalle = msg;
+            continue;
           }
-          dieta = asegurarMacrosPlanDieta(dieta);
+          if (!planAprobado) continue;
           dieta.macros_meta = targetDia;
         return {
           ok: true,
           dieta,
           ia: true,
           modelo: model,
-          optimizer: OPTIMIZER_DISPONIBLE ? "v4.5" : "off"
+          optimizer: OPTIMIZER_DISPONIBLE ? "v4.6" : "off"
         };
     } catch (err) {
       const msg = err?.message || String(err);
@@ -869,6 +916,13 @@ Responde SOLO JSON válido:
   }
 
   if (ultimoError === "parse_error" || ultimoError === "ids_invalidos") {
+    return { ok: false, motivo: ultimoError, detalle: ultimoDetalle };
+  }
+  if (
+    ultimoError === "plan_no_cuadrado" ||
+    ultimoError === "optimizador_fallo" ||
+    ultimoError === "optimizador_off"
+  ) {
     return { ok: false, motivo: ultimoError, detalle: ultimoDetalle };
   }
   return { ok: false, motivo: ultimoError, detalle: ultimoDetalle };
