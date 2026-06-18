@@ -680,7 +680,7 @@ Responde SOLO JSON válido:
           );
           let dieta = dietaRaw;
           try {
-            for (let optPass = 0; optPass < 2; optPass++) {
+            for (let optPass = 0; optPass < 3; optPass++) {
               dieta = optimizarDietaDia(dieta, catalogoMap, targetDia);
               const gapKcal = num(targetDia.calorias) - num(dieta.macros_plan?.calorias);
               if (gapKcal <= 80) break;

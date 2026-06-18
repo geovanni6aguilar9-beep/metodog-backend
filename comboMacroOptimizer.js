@@ -80,28 +80,41 @@ function optsCarbFill(errProt, errCarb) {
 }
 
 /** Topes realistas por tipo de alimento (MétodoG). */
+function esPolvoProteina(cat) {
+  const n = String(cat?.nombre || "").toLowerCase();
+  return (
+    /whey|caseína|caseina|proteína.*polvo|proteina.*polvo|bcaa|creatina/.test(n) ||
+    (grupoEquiv(cat) === "proteina_magra" && String(cat?.unidad || "").toLowerCase() === "scoop")
+  );
+}
+
 function limitesPorAlimento(cat) {
   const eq = grupoEquiv(cat);
   const u = String(cat?.unidad || "g").toLowerCase();
 
+  if (esPolvoProteina(cat)) {
+    if (u === "scoop") return { min: 0.5, max: 1.5 };
+    if (u === "g" || u === "ml") return { min: 15, max: 45 };
+  }
+
   if (eq === "verdura" && (u === "g" || u === "ml")) return { min: 25, max: 200 };
-  if (eq === "fruta" && u === "g") return { min: 50, max: 200 };
+  if (eq === "fruta" && u === "g") return { min: 50, max: 180 };
   if (eq === "carbohidrato_complejo") {
-    if (u === "g" || u === "ml") return { min: 40, max: 350 };
-    if (u === "pieza") return { min: 1, max: 10 };
+    if (u === "g" || u === "ml") return { min: 40, max: 120 };
+    if (u === "pieza") return { min: 1, max: 6 };
   }
   if (eq === "proteina_magra") {
-    if (esPlatoCompuesto(cat) && u === "g") return { min: 120, max: 280 };
-    if (u === "g") return { min: 80, max: 250 };
-    if (u === "scoop") return { min: 0.5, max: 2.5 };
+    if (esPlatoCompuesto(cat) && u === "g") return { min: 120, max: 220 };
+    if (u === "g") return { min: 80, max: 200 };
+    if (u === "scoop") return { min: 0.5, max: 1.5 };
   }
   if (eq === "proteina_grasa") {
     if (u === "pieza") return { min: 1, max: 5 };
     if (u === "g") return { min: 60, max: 250 };
   }
   if (eq === "grasa") {
-    if (u === "cucharada") return { min: 0.5, max: 2 };
-    if (u === "g") return { min: 5, max: 30 };
+    if (u === "cucharada") return { min: 0.5, max: 1.5 };
+    if (u === "g") return { min: 5, max: 25 };
   }
   if (eq === "legumbre" && u === "g") return { min: 50, max: 200 };
   if (eq === "lacteo" && (u === "g" || u === "ml")) return { min: 100, max: 400 };
@@ -361,11 +374,18 @@ function idsEnTodaDieta(comidas) {
 function escalarItems(items, factor, catalogoMap, options = {}) {
   if (Math.abs(factor - 1) < 0.01) return false;
   const omitirProteina = !!options.omitirProteina && factor > 1;
+  const omitirGrasa = !!options.omitirGrasa && factor > 1;
   let cambio = false;
   for (const item of items) {
     const cat = catalogoMap.get(item.id_alimento);
     if (!cat) continue;
     if (omitirProteina && (esFuenteProteicaFuerte(cat) || densidad(cat, "proteinas") >= 0.18)) {
+      continue;
+    }
+    if (
+      omitirGrasa &&
+      (grupoEquiv(cat) === "grasa" || densidad(cat, "grasas") >= 0.35 || esPolvoProteina(cat))
+    ) {
       continue;
     }
     item.cantidad_sugerida = clampQtyAlimento(item.cantidad_sugerida * factor, cat);
@@ -572,6 +592,51 @@ function pasoRellenarCarbDieta(comidas, catalogoMap, targetDia, options) {
   return true;
 }
 
+function prioridadRecorteGrasa(cat) {
+  const eq = grupoEquiv(cat);
+  const n = String(cat?.nombre || "").toLowerCase();
+  if (eq === "grasa") return 100;
+  if (/almendr|nueces?|cacahuate|avellana|semilla|macadamia|pecana/.test(n)) return 95;
+  if (/aguacate|aceite|mantequilla de/.test(n)) return 90;
+  if (eq === "lacteo" && densidad(cat, "grasas") >= 0.06) return 55;
+  return 15;
+}
+
+function pasoRecortarGrasaExceso(comidas, catalogoMap, targetDia) {
+  const total = totalDieta(comidas);
+  const errGras = num(targetDia.grasas) - total.grasas;
+  if (errGras >= -TOLERANCIA.grasas) return false;
+
+  let mejorItem = null;
+  let mejorBloque = null;
+  let mejorPri = -1;
+  let mejorScore = -1;
+  for (const bloque of comidas) {
+    for (const item of bloque.alimentos_sugeridos || []) {
+      const cat = catalogoMap.get(item.id_alimento);
+      if (!cat) continue;
+      const lim = limitesPorAlimento(cat);
+      if (num(item.cantidad_sugerida) <= lim.min * 1.05) continue;
+      const pri = prioridadRecorteGrasa(cat);
+      const score = densidad(cat, "grasas") * num(item.cantidad_sugerida);
+      if (pri > mejorPri || (pri === mejorPri && score > mejorScore)) {
+        mejorPri = pri;
+        mejorScore = score;
+        mejorItem = item;
+        mejorBloque = bloque;
+      }
+    }
+  }
+  if (!mejorItem || !mejorBloque) return false;
+
+  const cat = catalogoMap.get(mejorItem.id_alimento);
+  const factor = errGras < -25 ? 0.78 : errGras < -15 ? 0.85 : 0.9;
+  mejorItem.cantidad_sugerida = clampQtyAlimento(mejorItem.cantidad_sugerida * factor, cat);
+  mejorBloque.alimentos_sugeridos = reconstruirItems(mejorBloque.alimentos_sugeridos, catalogoMap);
+  refrescarMacrosComidas(comidas, catalogoMap);
+  return true;
+}
+
 /** Cierra brechas grandes: P alta + kcal/C/G bajos (Gemini hiperproteico). */
 function pasoCerrarBrechaGrande(comidas, catalogoMap, targetDia) {
   const total = totalDieta(comidas);
@@ -588,7 +653,11 @@ function pasoCerrarBrechaGrande(comidas, catalogoMap, targetDia) {
     cambio = true;
   }
 
-  if (errGras > 8) {
+  if (errGras < -10 && pasoRecortarGrasaExceso(comidas, catalogoMap, targetDia)) {
+    cambio = true;
+  }
+
+  if (errGras > 12 && errCal > 0) {
     const nGras = errGras > 25 ? 3 : 2;
     const ordenadasGras = [...comidas].sort(
       (a, b) => num(a.macros_combo?.grasas) - num(b.macros_combo?.grasas)
@@ -891,6 +960,10 @@ function pasoAjusteDieta(comidas, catalogoMap, targetDia, options) {
     if (pasoRecortarProteinaExceso(comidas, catalogoMap, targetDia)) return true;
   }
 
+  if (errGras < -TOLERANCIA.grasas) {
+    if (pasoRecortarGrasaExceso(comidas, catalogoMap, targetDia)) return true;
+  }
+
   if (errCarb > 15) {
     if (pasoRellenarCarbDieta(comidas, catalogoMap, targetDia, options)) return true;
   }
@@ -898,8 +971,12 @@ function pasoAjusteDieta(comidas, catalogoMap, targetDia, options) {
   if (errCal > 80 && total.calorias > 0) {
     const factor = factorEscalaCalorias(total, targetDia, FACTOR_ESCALA_DIA_MAX);
     const omitirProt = errProt < -TOLERANCIA.proteinas;
+    const omitirGras = errGras < -TOLERANCIA.grasas;
     for (const bloque of comidas) {
-      escalarItems(bloque.alimentos_sugeridos || [], factor, catalogoMap, { omitirProteina: omitirProt });
+      escalarItems(bloque.alimentos_sugeridos || [], factor, catalogoMap, {
+        omitirProteina: omitirProt,
+        omitirGrasa: omitirGras
+      });
       bloque.alimentos_sugeridos = reconstruirItems(bloque.alimentos_sugeridos, catalogoMap);
     }
     refrescarMacrosComidas(comidas, catalogoMap);
@@ -1131,8 +1208,11 @@ function optimizarDietaDia(dieta, catalogoMap, targetDia, options = {}) {
     if (dentroTolerancia(total, targetDia)) break;
     const errProt = num(targetDia.proteinas) - total.proteinas;
     const errCarb = num(targetDia.carbohidratos) - total.carbohidratos;
+    const errGras = num(targetDia.grasas) - total.grasas;
     let cambio = false;
-    if (errProt < -TOLERANCIA.proteinas && pasoRecortarProteinaExceso(dieta.comidas, catalogoMap, targetDia)) {
+    if (errGras < -TOLERANCIA.grasas && pasoRecortarGrasaExceso(dieta.comidas, catalogoMap, targetDia)) {
+      cambio = true;
+    } else if (errProt < -TOLERANCIA.proteinas && pasoRecortarProteinaExceso(dieta.comidas, catalogoMap, targetDia)) {
       cambio = true;
     } else if (errCarb > TOLERANCIA.carbohidratos && pasoRellenarCarbDieta(dieta.comidas, catalogoMap, targetDia, options)) {
       cambio = true;
