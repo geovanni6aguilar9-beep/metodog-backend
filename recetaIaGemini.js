@@ -11,11 +11,23 @@ const MAX_CATALOGO_PROMPT = 96;
 
 let optimizarCombo = (combo) => combo;
 let optimizarDietaDia = (dieta) => dieta;
+let sumarMacrosLista = (items) =>
+  (items || []).reduce(
+    (t, m) => ({
+      calorias: t.calorias + num(m.calorias),
+      proteinas: t.proteinas + num(m.proteinas),
+      carbohidratos: t.carbohidratos + num(m.carbohidratos),
+      grasas: t.grasas + num(m.grasas),
+      sodio: t.sodio + num(m.sodio)
+    }),
+    { calorias: 0, proteinas: 0, carbohidratos: 0, grasas: 0, sodio: 0 }
+  );
 let OPTIMIZER_DISPONIBLE = false;
 try {
   const mod = require("./comboMacroOptimizer");
   optimizarCombo = mod.optimizarCombo;
   optimizarDietaDia = mod.optimizarDietaDia;
+  sumarMacrosLista = mod.sumarMacrosLista || sumarMacrosLista;
   OPTIMIZER_DISPONIBLE = typeof mod.optimizarDietaDia === "function";
 } catch (err) {
   console.warn("[recetaIaGemini] comboMacroOptimizer no cargado:", err.message);
@@ -598,6 +610,35 @@ function normalizarDietaDia(obj, catalogoMap, idsPermitidos = null) {
   return normalizarDietaDiaConMeta(obj, catalogoMap, idsPermitidos).dieta;
 }
 
+function asegurarMacrosPlanDieta(dieta) {
+  if (!dieta?.comidas?.length) return dieta;
+  if (dieta.macros_plan && num(dieta.macros_plan.calorias) > 0) return dieta;
+  for (const bloque of dieta.comidas) {
+    if (!bloque.macros_combo || num(bloque.macros_combo.calorias) <= 0) {
+      const items = bloque.alimentos_sugeridos || [];
+      if (items.length) bloque.macros_combo = sumarMacrosLista(items);
+    }
+  }
+  const total = dieta.comidas.reduce(
+    (t, c) => {
+      const m = c.macros_combo || {};
+      return {
+        calorias: t.calorias + num(m.calorias),
+        proteinas: t.proteinas + num(m.proteinas),
+        carbohidratos: t.carbohidratos + num(m.carbohidratos),
+        grasas: t.grasas + num(m.grasas),
+        sodio: t.sodio + num(m.sodio)
+      };
+    },
+    { calorias: 0, proteinas: 0, carbohidratos: 0, grasas: 0, sodio: 0 }
+  );
+  dieta.macros_plan = total;
+  Object.keys(dieta.macros_plan).forEach((k) => {
+    dieta.macros_plan[k] = redondear(dieta.macros_plan[k]);
+  });
+  return dieta;
+}
+
 async function generarDietaDiaCompleta(payload, db = null) {
   const apiKey = resolverGeminiApiKey();
   if (!apiKey) return { ok: false, motivo: "sin_api_key" };
@@ -762,7 +803,7 @@ Responde SOLO JSON válido:
             for (let optPass = 0; optPass < 4; optPass++) {
               dieta = optimizarDietaDia(dieta, catalogoMap, targetDia);
               const gapKcal = num(targetDia.calorias) - num(dieta.macros_plan?.calorias);
-              if (gapKcal <= 80) break;
+              if (Math.abs(gapKcal) <= 80) break;
             }
             dieta.macros_ajustados = OPTIMIZER_DISPONIBLE;
             dieta.catalogo_fuente = db ? "turso+payload" : "payload";
@@ -771,6 +812,8 @@ Responde SOLO JSON válido:
           } catch (optErr) {
             console.warn("[recetaIaGemini] optimizarDietaDia:", optErr.message);
           }
+          dieta = asegurarMacrosPlanDieta(dieta);
+          dieta.macros_meta = targetDia;
         return {
           ok: true,
           dieta,
