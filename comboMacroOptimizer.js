@@ -605,7 +605,10 @@ function prioridadRecorteGrasa(cat) {
 function pasoRecortarGrasaExceso(comidas, catalogoMap, targetDia) {
   const total = totalDieta(comidas);
   const errGras = num(targetDia.grasas) - total.grasas;
+  const errCal = num(targetDia.calorias) - total.calorias;
   if (errGras >= -TOLERANCIA.grasas) return false;
+  // Si faltan muchas kcal, no recortar grasa por un exceso moderado — bajaría kcal aún más.
+  if (errCal > 80 && errGras > -22) return false;
 
   let mejorItem = null;
   let mejorBloque = null;
@@ -651,50 +654,6 @@ function pasoCerrarBrechaGrande(comidas, catalogoMap, targetDia) {
 
   if (errProt < -8 && pasoRecortarProteinaExceso(comidas, catalogoMap, targetDia)) {
     cambio = true;
-  }
-
-  if (errGras < -10 && pasoRecortarGrasaExceso(comidas, catalogoMap, targetDia)) {
-    cambio = true;
-  }
-
-  if (errGras > 12 && errCal > 0) {
-    const nGras = errGras > 25 ? 3 : 2;
-    const ordenadasGras = [...comidas].sort(
-      (a, b) => num(a.macros_combo?.grasas) - num(b.macros_combo?.grasas)
-    );
-    for (const bloque of ordenadasGras.slice(0, nGras)) {
-      const items = bloque.alimentos_sugeridos || [];
-      if (items.length >= 7) continue;
-      const grasItem = itemMasGraso(items, catalogoMap);
-      if (grasItem && densidad(catalogoMap.get(grasItem.id_alimento), "grasas") >= 0.35) {
-        const cat = catalogoMap.get(grasItem.id_alimento);
-        grasItem.cantidad_sugerida = clampQtyAlimento(
-          grasItem.cantidad_sugerida * (errGras > 25 ? 1.22 : 1.12),
-          cat
-        );
-        bloque.alimentos_sugeridos = reconstruirItems(items, catalogoMap);
-        cambio = true;
-      } else {
-        const filler = mejorRellenoGrasa(catalogoMap, idsEnTodaDieta(comidas));
-        if (filler) {
-          items.push(
-            itemDesdeCatalogo(
-              filler,
-              clampQtyAlimento(
-                (Math.min(errGras, 45) / Math.max(comidas.length, 1) /
-                  Math.max(densidad(filler, "grasas"), 0.01)) *
-                  num(filler.porcion_base, 1) *
-                  1.05,
-                filler
-              )
-            )
-          );
-          bloque.alimentos_sugeridos = reconstruirItems(items, catalogoMap);
-          cambio = true;
-        }
-      }
-    }
-    if (cambio) refrescarMacrosComidas(comidas, catalogoMap);
   }
 
   if (errCarb > 12) {
@@ -960,12 +919,12 @@ function pasoAjusteDieta(comidas, catalogoMap, targetDia, options) {
     if (pasoRecortarProteinaExceso(comidas, catalogoMap, targetDia)) return true;
   }
 
-  if (errGras < -TOLERANCIA.grasas) {
-    if (pasoRecortarGrasaExceso(comidas, catalogoMap, targetDia)) return true;
+  if (errCarb > 15 || errCal > 80) {
+    if (pasoRellenarCarbDieta(comidas, catalogoMap, targetDia, options)) return true;
   }
 
-  if (errCarb > 15) {
-    if (pasoRellenarCarbDieta(comidas, catalogoMap, targetDia, options)) return true;
+  if (errGras < -TOLERANCIA.grasas && errCal <= 80) {
+    if (pasoRecortarGrasaExceso(comidas, catalogoMap, targetDia)) return true;
   }
 
   if (errCal > 80 && total.calorias > 0) {
@@ -1210,7 +1169,9 @@ function optimizarDietaDia(dieta, catalogoMap, targetDia, options = {}) {
     const errCarb = num(targetDia.carbohidratos) - total.carbohidratos;
     const errGras = num(targetDia.grasas) - total.grasas;
     let cambio = false;
-    if (errGras < -TOLERANCIA.grasas && pasoRecortarGrasaExceso(dieta.comidas, catalogoMap, targetDia)) {
+    if (errCal > 80 && errCarb > TOLERANCIA.carbohidratos && pasoRellenarCarbDieta(dieta.comidas, catalogoMap, targetDia, options)) {
+      cambio = true;
+    } else if (errGras < -TOLERANCIA.grasas && errCal <= 80 && pasoRecortarGrasaExceso(dieta.comidas, catalogoMap, targetDia)) {
       cambio = true;
     } else if (errProt < -TOLERANCIA.proteinas && pasoRecortarProteinaExceso(dieta.comidas, catalogoMap, targetDia)) {
       cambio = true;

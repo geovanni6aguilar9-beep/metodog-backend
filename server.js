@@ -631,8 +631,19 @@ app.post("/api/alimentos/dieta-ia", async (req, res) => {
     const resultado = await generarDietaDiaCompleta(payload, db);
     if (!resultado.ok) {
       const esAdmin = user.rol === "SUPERADMIN" || user.rol === "COACH";
-      const mostrarDetalle = esAdmin || resultado.motivo === "formato_key";
-      const err400 = ["sin_catalogo", "sin_objetivo", "sin_comidas"];
+      const mostrarDetalle =
+        esAdmin ||
+        resultado.motivo === "formato_key" ||
+        resultado.motivo === "ids_invalidos" ||
+        resultado.motivo === "parse_error";
+      const err400 = [
+        "sin_catalogo",
+        "sin_objetivo",
+        "sin_comidas",
+        "ids_invalidos",
+        "parse_error",
+        "comidas_incompletas"
+      ];
       return res.status(err400.includes(resultado.motivo) ? 400 : 503).json({
         ok: false,
         motivo: resultado.motivo,

@@ -204,8 +204,15 @@ function normalizarCantidadSugerida(cantidad, cat) {
   return redondear(qty);
 }
 
-function normalizarCombo(obj, catalogoMap) {
-  if (!obj || typeof obj !== "object") return null;
+function normalizarCombo(obj, catalogoMap, idsPermitidos = null) {
+  return normalizarComboConMeta(obj, catalogoMap, idsPermitidos).combo;
+}
+
+/** Devuelve combo + diagnóstico cuando Gemini manda IDs inventados o cantidades inválidas. */
+function normalizarComboConMeta(obj, catalogoMap, idsPermitidos = null) {
+  if (!obj || typeof obj !== "object") {
+    return { combo: null, motivo: "objeto_invalido", idsInvalidos: [], itemsRecibidos: 0 };
+  }
   const nombre = String(obj.nombre || obj.titulo || "").trim();
   const consejo = String(obj.consejo || obj.nota || "").trim() || null;
 
@@ -216,11 +223,16 @@ function normalizarCombo(obj, catalogoMap) {
       : [];
 
   const alimentos_sugeridos = [];
+  const idsInvalidos = [];
   for (const row of rawItems.slice(0, 12)) {
     const id = parseInt(row?.id_alimento ?? row?.id ?? row?.idAlimento, 10);
     if (!id) continue;
     const cat = catalogoMap.get(id);
-    if (!cat) continue;
+    const fueraDePrompt = idsPermitidos && !idsPermitidos.has(id);
+    if (!cat || fueraDePrompt) {
+      idsInvalidos.push(id);
+      continue;
+    }
     const cantidadOk = normalizarCantidadSugerida(
       num(row?.cantidad_sugerida ?? row?.cantidad, 0),
       cat
@@ -237,7 +249,11 @@ function normalizarCombo(obj, catalogoMap) {
     });
   }
 
-  if (!alimentos_sugeridos.length) return null;
+  if (!alimentos_sugeridos.length) {
+    const motivo =
+      idsInvalidos.length > 0 || rawItems.length > 0 ? "ids_invalidos" : "sin_items";
+    return { combo: null, motivo, idsInvalidos, itemsRecibidos: rawItems.length };
+  }
 
   const macros_combo = sumarMacrosLista(alimentos_sugeridos);
   Object.keys(macros_combo).forEach((k) => {
@@ -245,10 +261,15 @@ function normalizarCombo(obj, catalogoMap) {
   });
 
   return {
-    nombre: nombre || "Combo sugerido",
-    consejo,
-    alimentos_sugeridos,
-    macros_combo
+    combo: {
+      nombre: nombre || "Combo sugerido",
+      consejo,
+      alimentos_sugeridos,
+      macros_combo
+    },
+    motivo: null,
+    idsInvalidos,
+    itemsRecibidos: rawItems.length
   };
 }
 
@@ -262,7 +283,12 @@ function mensajeErrorAmigable(motivo, esAdmin = false, detalle = "") {
     return "Cuota de Google Gemini agotada. Entra a aistudio.google.com → API key → revisa uso/facturación, o espera 1 hora y reintenta.";
   }
   if (motivo === "parse_error") {
-    return "La IA respondió pero no pudimos leer el combo. Toca Reintentar.";
+    return "La IA respondió pero no pudimos leer el plan. Toca Reintentar.";
+  }
+  if (motivo === "ids_invalidos") {
+    const base =
+      "La IA usó alimentos que no están en tu catálogo. Toca Reintentar — solo usamos IDs reales de la biblioteca.";
+    return esAdmin && detalle ? `${base} (${detalle.slice(0, 100)})` : base;
   }
   if (motivo === "bloqueado") {
     return "La IA no pudo sugerir esta comida. Prueba otra comida o ajusta tus «evitar».";
@@ -512,37 +538,64 @@ Responde SOLO JSON válido (sin markdown):
   return { ok: false, motivo: ultimoError, detalle: ultimoDetalle };
 }
 
-function normalizarDietaDia(obj, catalogoMap, nombresEsperados) {
-  if (!obj || typeof obj !== "object") return null;
+function normalizarDietaDiaConMeta(obj, catalogoMap, idsPermitidos = null) {
+  if (!obj || typeof obj !== "object") {
+    return { dieta: null, motivo: "parse_error", idsInvalidos: [], detalle: "JSON vacío o inválido" };
+  }
   const nombrePlan = String(obj.nombre_plan || obj.nombre || "Plan del día").trim();
   const consejoGeneral = String(obj.consejo_general || obj.consejo || "").trim() || null;
   const rawComidas = Array.isArray(obj.comidas) ? obj.comidas : [];
 
   const comidas = [];
+  const idsInvalidos = [];
   for (const row of rawComidas.slice(0, 8)) {
     const nombreComida = String(row?.comida || row?.nombre_comida || "").trim();
     if (!nombreComida) continue;
-    const combo = normalizarCombo(
+    const meta = normalizarComboConMeta(
       {
         nombre: row.nombre || row.nombre_combo,
         consejo: row.consejo,
         alimentos_sugeridos: row.alimentos_sugeridos || row.alimentos
       },
-      catalogoMap
+      catalogoMap,
+      idsPermitidos
     );
-    if (!combo) continue;
+    if (meta.idsInvalidos?.length) idsInvalidos.push(...meta.idsInvalidos);
+    if (!meta.combo) continue;
     comidas.push({
       comida: nombreComida,
       nombre_comida: nombreComida,
-      nombre: combo.nombre,
-      consejo: combo.consejo,
-      alimentos_sugeridos: combo.alimentos_sugeridos,
-      macros_combo: combo.macros_combo
+      nombre: meta.combo.nombre,
+      consejo: meta.combo.consejo,
+      alimentos_sugeridos: meta.combo.alimentos_sugeridos,
+      macros_combo: meta.combo.macros_combo
     });
   }
 
-  if (!comidas.length) return null;
-  return { nombre_plan: nombrePlan, consejo_general: consejoGeneral, comidas };
+  if (!comidas.length) {
+    const motivo = idsInvalidos.length ? "ids_invalidos" : "parse_error";
+    const uniq = [...new Set(idsInvalidos)].slice(0, 12);
+    return {
+      dieta: null,
+      motivo,
+      idsInvalidos: uniq,
+      detalle:
+        uniq.length > 0
+          ? `IDs rechazados: ${uniq.join(", ")}`
+          : "Ninguna comida con alimentos válidos"
+    };
+  }
+
+  return {
+    dieta: { nombre_plan: nombrePlan, consejo_general: consejoGeneral, comidas },
+    motivo: null,
+    idsInvalidos: [...new Set(idsInvalidos)],
+    detalle: null
+  };
+}
+
+function normalizarDietaDia(obj, catalogoMap, idsPermitidos = null) {
+  return normalizarDietaDiaConMeta(obj, catalogoMap, idsPermitidos).dieta;
 }
 
 async function generarDietaDiaCompleta(payload, db = null) {
@@ -575,7 +628,8 @@ async function generarDietaDiaCompleta(payload, db = null) {
 Arma un PLAN DE DÍA COMPLETO: un combo por cada comida indicada en "comidas_a_planear".
 
 REGLAS:
-- SOLO alimentos del catálogo (id_alimento exacto).
+- REGLA CRÍTICA DE IDs: Debes usar ÚNICA y EXCLUSIVAMENTE los id_alimento numéricos del array "ids_validos" y del catálogo enviado. ESTÁ ESTRICTAMENTE PROHIBIDO inventar IDs o usar alimentos fuera de esa lista. Si no encuentras el ideal, elige el más parecido de ids_validos.
+- SOLO alimentos del catálogo (id_alimento exacto de ids_validos).
 - La SUMA de todos los combos debe acercarse a restante_dia u objetivo_dia (kcal, P, C, G, sodio).
 - BALANCE CRÍTICO: acércate a carbohidratos y grasas del día (±5 g y ±30 kcal). No armes un día hiperproteico.
 - PROTEÍNA: máximo 2 fuentes proteicas fuertes en TODO el día (ej. pollo + whey, o pescado + huevo). NO combines whey + yogur griego + leche + almendras + pollo en el mismo día.
@@ -604,31 +658,43 @@ Responde SOLO JSON válido:
 }`;
 
   const catalogoLite = catalogoLiteParaPrompt(catalogo);
+  const idsPermitidos = new Set(catalogoLite.map((c) => c.id));
 
-  const user = JSON.stringify({
-    comidas_a_planear: comidasTarget.map((c) => ({
-      nombre: c.nombre,
-      vacia: c.vacia,
-      macros_actuales: c.macros
-    })),
-    objetivo_dia: plan.objetivo_dia,
-    restante_dia: plan.restante_dia,
-    referencia_por_comida: plan.referencia_comida_equilibrada,
-    macros_objetivo_por_comida: payload?.macros_objetivo_por_comida || null,
-    num_comidas_obligatorias: comidasTarget.length,
-    preferencias: payload?.preferencias || null,
-    catalogo: catalogoLite
-  });
+  function buildUserDieta(correccionIds = false) {
+    return JSON.stringify({
+      comidas_a_planear: comidasTarget.map((c) => ({
+        nombre: c.nombre,
+        vacia: c.vacia,
+        macros_actuales: c.macros
+      })),
+      objetivo_dia: plan.objetivo_dia,
+      restante_dia: plan.restante_dia,
+      referencia_por_comida: plan.referencia_comida_equilibrada,
+      macros_objetivo_por_comida: payload?.macros_objetivo_por_comida || null,
+      num_comidas_obligatorias: comidasTarget.length,
+      preferencias: payload?.preferencias || null,
+      ids_validos: catalogoLite.map((c) => c.id),
+      catalogo: catalogoLite,
+      ...(correccionIds
+        ? {
+            correccion:
+              "Tu respuesta anterior incluyó id_alimento NO válidos. Regenera el plan completo usando SOLO los IDs de ids_validos. No inventes IDs."
+          }
+        : {})
+    });
+  }
 
   let ultimoError = "api_error";
   let ultimoDetalle = "";
   const intentos = [
-    { model: modelos[0], usarJson: true },
-    { model: modelos[1] || modelos[0], usarJson: true },
-    { model: modelos[0], usarJson: false }
+    { model: modelos[0], usarJson: true, correccionIds: false },
+    { model: modelos[1] || modelos[0], usarJson: true, correccionIds: false },
+    { model: modelos[0], usarJson: false, correccionIds: false }
   ];
 
-  for (const { model, usarJson } of intentos) {
+  for (let i = 0; i < intentos.length; i++) {
+    const { model, usarJson, correccionIds } = intentos[i];
+    const user = buildUserDieta(correccionIds);
     try {
       const { res, data } = await llamarGemini(apiKey, model, system, user, usarJson, {
         maxOutputTokens: 6144,
@@ -647,8 +713,21 @@ Responde SOLO JSON válido:
         continue;
       }
       const parsed = parseJsonSeguro(text);
-      const dietaRaw = normalizarDietaDia(parsed, catalogoMap);
-      if (dietaRaw) {
+      if (!parsed) {
+        ultimoError = "parse_error";
+        ultimoDetalle = (text || "").slice(0, 160) || "respuesta vacía";
+        continue;
+      }
+      const meta = normalizarDietaDiaConMeta(parsed, catalogoMap, idsPermitidos);
+      if (!meta.dieta) {
+        ultimoError = meta.motivo || "parse_error";
+        ultimoDetalle = meta.detalle || (text || "").slice(0, 160) || "sin comidas válidas";
+        if (meta.motivo === "ids_invalidos" && !correccionIds) {
+          intentos.splice(i + 1, 0, { model, usarJson: true, correccionIds: true });
+        }
+        continue;
+      }
+      const dietaRaw = meta.dieta;
           if (dietaRaw.comidas.length < comidasTarget.length) {
             console.warn(
               `[recetaIaGemini] comidas incompletas: ${dietaRaw.comidas.length}/${comidasTarget.length}`
@@ -680,7 +759,7 @@ Responde SOLO JSON válido:
           );
           let dieta = dietaRaw;
           try {
-            for (let optPass = 0; optPass < 3; optPass++) {
+            for (let optPass = 0; optPass < 4; optPass++) {
               dieta = optimizarDietaDia(dieta, catalogoMap, targetDia);
               const gapKcal = num(targetDia.calorias) - num(dieta.macros_plan?.calorias);
               if (gapKcal <= 80) break;
@@ -697,11 +776,8 @@ Responde SOLO JSON válido:
           dieta,
           ia: true,
           modelo: model,
-          optimizer: OPTIMIZER_DISPONIBLE ? "v4.2" : "off"
+          optimizer: OPTIMIZER_DISPONIBLE ? "v4.3" : "off"
         };
-      }
-      ultimoError = "parse_error";
-      ultimoDetalle = (text || "").slice(0, 160) || "respuesta vacía";
     } catch (err) {
       const msg = err?.message || String(err);
       ultimoDetalle = msg;
@@ -709,8 +785,8 @@ Responde SOLO JSON válido:
     }
   }
 
-  if (ultimoError === "parse_error") {
-    return { ok: false, motivo: "parse_error", detalle: ultimoDetalle };
+  if (ultimoError === "parse_error" || ultimoError === "ids_invalidos") {
+    return { ok: false, motivo: ultimoError, detalle: ultimoDetalle };
   }
   return { ok: false, motivo: ultimoError, detalle: ultimoDetalle };
 }
