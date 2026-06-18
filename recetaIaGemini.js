@@ -800,12 +800,19 @@ Responde SOLO JSON válido:
           );
           let dieta = dietaRaw;
           try {
-            for (let optPass = 0; optPass < 4; optPass++) {
+            for (let optPass = 0; optPass < 6; optPass++) {
               dieta = optimizarDietaDia(dieta, catalogoMap, targetDia);
               const gapKcal = num(targetDia.calorias) - num(dieta.macros_plan?.calorias);
               if (Math.abs(gapKcal) <= 80) break;
             }
-            dieta.macros_ajustados = OPTIMIZER_DISPONIBLE;
+            const kcalFinal = num(dieta.macros_plan?.calorias);
+            const kcalMeta = num(targetDia.calorias);
+            if (Math.abs(kcalMeta - kcalFinal) > 120) {
+              dieta.macros_ajustados = false;
+              dieta.optimizador_parcial = true;
+            } else {
+              dieta.macros_ajustados = OPTIMIZER_DISPONIBLE;
+            }
             dieta.catalogo_fuente = db ? "turso+payload" : "payload";
             dieta.macros_pre_optimizador = macrosPreOpt;
             dieta.comidas_esperadas = comidasTarget.length;

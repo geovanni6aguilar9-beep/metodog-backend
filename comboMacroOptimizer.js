@@ -356,7 +356,28 @@ function itemMasProteina(items, catalogoMap) {
 
 function factorEscalaCalorias(total, target, maxFactor = FACTOR_ESCALA_MAX) {
   if (num(total.calorias) <= 0 || num(target.calorias) <= 0) return 1;
-  return Math.max(0.82, Math.min(maxFactor, num(target.calorias) / total.calorias));
+  return Math.max(0.55, Math.min(maxFactor, num(target.calorias) / total.calorias));
+}
+
+/** Escala todas las comidas hacia la meta de kcal (sube o baja). */
+function escalaGlobalDieta(comidas, targetDia, catalogoMap, maxFactor = FACTOR_ESCALA_DIA_MAX) {
+  const total = totalDieta(comidas);
+  const errCal = num(targetDia.calorias) - total.calorias;
+  if (total.calorias <= 0 || num(targetDia.calorias) <= 0) return false;
+  if (Math.abs(errCal) <= TOLERANCIA.calorias) return false;
+  const factor = factorEscalaCalorias(total, targetDia, maxFactor);
+  if (Math.abs(factor - 1) < 0.015) return false;
+  const errProt = num(targetDia.proteinas) - total.proteinas;
+  const errGras = num(targetDia.grasas) - total.grasas;
+  for (const bloque of comidas) {
+    escalarItems(bloque.alimentos_sugeridos || [], factor, catalogoMap, {
+      omitirProteina: factor > 1 && errProt < -TOLERANCIA.proteinas,
+      omitirGrasa: factor > 1 && errGras < -TOLERANCIA.grasas
+    });
+    bloque.alimentos_sugeridos = reconstruirItems(bloque.alimentos_sugeridos, catalogoMap);
+  }
+  refrescarMacrosComidas(comidas, catalogoMap);
+  return true;
 }
 
 function esFuenteProteicaFuerte(cat) {
@@ -551,8 +572,10 @@ function refrescarMacrosComidas(comidas, catalogoMap) {
 
 function pasoRellenarCarbDieta(comidas, catalogoMap, targetDia, options) {
   const total = totalDieta(comidas);
+  const errCal = num(targetDia.calorias) - total.calorias;
   const errCarb = num(targetDia.carbohidratos) - total.carbohidratos;
   const errProt = num(targetDia.proteinas) - total.proteinas;
+  if (errCal < -35) return false;
   if (errCarb <= TOLERANCIA.carbohidratos) return false;
 
   const carbOpts = optsCarbFill(errProt, errCarb);
@@ -649,6 +672,18 @@ function pasoCerrarBrechaGrande(comidas, catalogoMap, targetDia) {
   const errCarb = num(targetDia.carbohidratos) - total.carbohidratos;
   const errGras = num(targetDia.grasas) - total.grasas;
   if (errCal <= 80 && dentroTolerancia(total, targetDia)) return false;
+
+  if (errCal < -50) {
+    let redujo = false;
+    for (let i = 0; i < 4 && num(targetDia.calorias) - totalDieta(comidas).calorias < -50; i++) {
+      if (!escalaGlobalDieta(comidas, targetDia, catalogoMap)) break;
+      redujo = true;
+    }
+    if (redujo) return true;
+    if (pasoRecortarGrasaExceso(comidas, catalogoMap, targetDia)) return true;
+    if (pasoRecortarProteinaExceso(comidas, catalogoMap, targetDia)) return true;
+    return false;
+  }
 
   let cambio = false;
   const carbOpts = optsCarbFill(errProt, errCarb);
@@ -1102,6 +1137,7 @@ function pasoRecortarProteinaExceso(comidas, catalogoMap, targetDia) {
 function optimizarDietaDia(dieta, catalogoMap, targetDia, options = {}) {
   if (!dieta?.comidas?.length || !targetDia) return dieta;
 
+  try {
   enriquecerCatalogoMap(catalogoMap);
   dieta.comidas = dieta.comidas.map((bloque) => ({
     ...bloque,
@@ -1109,17 +1145,11 @@ function optimizarDietaDia(dieta, catalogoMap, targetDia, options = {}) {
   }));
   refrescarMacrosComidas(dieta.comidas, catalogoMap);
 
-  const totalInicial = totalDieta(dieta.comidas);
-  if (num(targetDia.calorias) - totalInicial.calorias > 80 && totalInicial.calorias > 0) {
-    const errProtIni = num(targetDia.proteinas) - totalInicial.proteinas;
-    const factor = factorEscalaCalorias(totalInicial, targetDia, FACTOR_ESCALA_DIA_MAX);
-    for (const bloque of dieta.comidas) {
-      escalarItems(bloque.alimentos_sugeridos || [], factor, catalogoMap, {
-        omitirProteina: errProtIni < -TOLERANCIA.proteinas
-      });
-      bloque.alimentos_sugeridos = reconstruirItems(bloque.alimentos_sugeridos, catalogoMap);
-    }
-    refrescarMacrosComidas(dieta.comidas, catalogoMap);
+  for (let i = 0; i < 10; i++) {
+    const total = totalDieta(dieta.comidas);
+    const errCal = num(targetDia.calorias) - total.calorias;
+    if (Math.abs(errCal) <= 80 && errCal >= -TOLERANCIA.calorias) break;
+    if (!escalaGlobalDieta(dieta.comidas, targetDia, catalogoMap)) break;
   }
 
   for (let pass = 0; pass < MAX_PASADAS_DIA; pass++) {
@@ -1220,10 +1250,23 @@ function optimizarDietaDia(dieta, catalogoMap, targetDia, options = {}) {
 
   enforceLimitesFinales(dieta.comidas, catalogoMap);
 
-  dieta.macros_plan = totalDieta(dieta.comidas);
-  Object.keys(dieta.macros_plan).forEach((k) => {
-    dieta.macros_plan[k] = redondear(dieta.macros_plan[k]);
-  });
+  for (let i = 0; i < 6; i++) {
+    const total = totalDieta(dieta.comidas);
+    if (num(total.calorias) <= num(targetDia.calorias) + 80) break;
+    if (!escalaGlobalDieta(dieta.comidas, targetDia, catalogoMap)) break;
+  }
+
+  } catch (optErr) {
+    console.warn("[comboMacroOptimizer] optimizarDietaDia:", optErr.message);
+  } finally {
+    if (dieta?.comidas?.length) {
+      enforceLimitesFinales(dieta.comidas, catalogoMap);
+      dieta.macros_plan = totalDieta(dieta.comidas);
+      Object.keys(dieta.macros_plan).forEach((k) => {
+        dieta.macros_plan[k] = redondear(dieta.macros_plan[k]);
+      });
+    }
+  }
 
   return dieta;
 }
