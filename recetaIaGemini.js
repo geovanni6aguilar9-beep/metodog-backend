@@ -4,11 +4,10 @@
  * Env: GEMINI_API_KEY · opcional GEMINI_MODEL
  */
 
-const MODELOS_FALLBACK = [
-  "gemini-2.5-flash",
-  "gemini-2.5-flash-lite",
-  "gemini-1.5-flash"
-];
+const MODELOS_FALLBACK = ["gemini-2.5-flash", "gemini-2.5-flash-lite"];
+const TIMEOUT_GEMINI_MS = 26000;
+const TIMEOUT_GEMINI_PROBE_MS = 15000;
+const MAX_CATALOGO_PROMPT = 96;
 
 let optimizarCombo = (combo) => combo;
 let optimizarDietaDia = (dieta) => dieta;
@@ -104,6 +103,40 @@ function fusionarCatalogo(catalogoDb, catalogoPayload) {
     map.set(a.id, a);
   }
   return Array.from(map.values());
+}
+
+/** Catálogo más chico en el prompt = respuesta Gemini más rápida (optimizador usa el catálogo completo). */
+function recortarCatalogoPrompt(catalogo, maxItems = MAX_CATALOGO_PROMPT) {
+  if (!catalogo?.length || catalogo.length <= maxItems) return catalogo;
+  const porGrupo = new Map();
+  for (const c of catalogo) {
+    const g = String(c.grupo_equivalencia || c.grupo || "otro").toLowerCase();
+    if (!porGrupo.has(g)) porGrupo.set(g, []);
+    porGrupo.get(g).push(c);
+  }
+  const grupos = [...porGrupo.keys()];
+  const out = [];
+  let gi = 0;
+  while (out.length < maxItems && grupos.some((g) => (porGrupo.get(g) || []).length)) {
+    const g = grupos[gi % grupos.length];
+    const arr = porGrupo.get(g);
+    if (arr?.length) out.push(arr.shift());
+    gi++;
+  }
+  return out;
+}
+
+function catalogoLiteParaPrompt(catalogo) {
+  return recortarCatalogoPrompt(catalogo).map((c) => ({
+    id: c.id,
+    nombre: c.nombre,
+    porcion_base: c.porcion_base,
+    unidad: c.unidad,
+    kcal: c.calorias,
+    prot: c.proteinas,
+    carb: c.carbohidratos,
+    gras: c.grasas
+  }));
 }
 
 async function resolverCatalogoIa(payload, db) {
@@ -234,8 +267,13 @@ function mensajeErrorAmigable(motivo, esAdmin = false, detalle = "") {
   if (motivo === "bloqueado") {
     return "La IA no pudo sugerir esta comida. Prueba otra comida o ajusta tus «evitar».";
   }
+  if (motivo === "timeout") {
+    const base = "La IA tardó demasiado. Intenta de nuevo (menos comidas vacías o en 1 min).";
+    return esAdmin && detalle ? `${base} (${detalle.slice(0, 100)})` : base;
+  }
   if (motivo === "api_error" || motivo === "modelo_no_disponible" || motivo === "red") {
-    return "El servicio de IA no respondió. Espera 1 minuto y vuelve a intentar.";
+    const base = "El servicio de IA no respondió. Espera 1 minuto y vuelve a intentar.";
+    return esAdmin && detalle ? `${base} (${detalle.slice(0, 120)})` : base;
   }
   if (motivo === "sin_catalogo") {
     return "No hay alimentos en tu biblioteca. Recarga la app o contacta a tu coach.";
@@ -296,7 +334,7 @@ async function llamarGemini(apiKey, model, system, user, usarJsonMode, opts = {}
       "x-goog-api-key": apiKey
     },
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(45000)
+    signal: AbortSignal.timeout(opts.timeoutMs ?? TIMEOUT_GEMINI_MS)
   });
 
   const data = await res.json().catch(() => ({}));
@@ -386,17 +424,7 @@ Responde SOLO JSON válido (sin markdown):
   ]
 }`;
 
-  const catalogoLite = catalogo.map((c) => ({
-    id: c.id,
-    nombre: c.nombre,
-    porcion_base: c.porcion_base,
-    unidad: c.unidad,
-    kcal: c.calorias,
-    prot: c.proteinas,
-    carb: c.carbohidratos,
-    gras: c.grasas,
-    sodio: c.sodio
-  }));
+  const catalogoLite = catalogoLiteParaPrompt(catalogo);
 
   const user = JSON.stringify({
     comida,
@@ -575,17 +603,7 @@ Responde SOLO JSON válido:
   ]
 }`;
 
-  const catalogoLite = catalogo.map((c) => ({
-    id: c.id,
-    nombre: c.nombre,
-    porcion_base: c.porcion_base,
-    unidad: c.unidad,
-    kcal: c.calorias,
-    prot: c.proteinas,
-    carb: c.carbohidratos,
-    gras: c.grasas,
-    sodio: c.sodio
-  }));
+  const catalogoLite = catalogoLiteParaPrompt(catalogo);
 
   const user = JSON.stringify({
     comidas_a_planear: comidasTarget.map((c) => ({
@@ -604,24 +622,33 @@ Responde SOLO JSON válido:
 
   let ultimoError = "api_error";
   let ultimoDetalle = "";
+  const intentos = [
+    { model: modelos[0], usarJson: true },
+    { model: modelos[1] || modelos[0], usarJson: true },
+    { model: modelos[0], usarJson: false }
+  ];
 
-  for (const model of modelos) {
-    for (const usarJson of [true, false]) {
-      try {
-        const { res, data } = await llamarGemini(apiKey, model, system, user, usarJson, {
-          maxOutputTokens: 8192
-        });
-        if (res.status === 429) return { ok: false, motivo: "cuota" };
-        if (!res.ok) {
-          ultimoError = "api_error";
-          ultimoDetalle = data?.error?.message || `HTTP ${res.status}`;
-          continue;
-        }
-        const { text, blockReason } = extraerTextoGemini(data);
-        if (blockReason) continue;
-        const parsed = parseJsonSeguro(text);
-        const dietaRaw = normalizarDietaDia(parsed, catalogoMap);
-        if (dietaRaw) {
+  for (const { model, usarJson } of intentos) {
+    try {
+      const { res, data } = await llamarGemini(apiKey, model, system, user, usarJson, {
+        maxOutputTokens: 6144,
+        timeoutMs: TIMEOUT_GEMINI_MS
+      });
+      if (res.status === 429) return { ok: false, motivo: "cuota" };
+      if (!res.ok) {
+        ultimoError = res.status === 404 ? "modelo_no_disponible" : "api_error";
+        ultimoDetalle = data?.error?.message || `HTTP ${res.status}`;
+        continue;
+      }
+      const { text, blockReason } = extraerTextoGemini(data);
+      if (blockReason) {
+        ultimoError = "bloqueado";
+        ultimoDetalle = String(blockReason);
+        continue;
+      }
+      const parsed = parseJsonSeguro(text);
+      const dietaRaw = normalizarDietaDia(parsed, catalogoMap);
+      if (dietaRaw) {
           if (dietaRaw.comidas.length < comidasTarget.length) {
             console.warn(
               `[recetaIaGemini] comidas incompletas: ${dietaRaw.comidas.length}/${comidasTarget.length}`
@@ -639,24 +666,6 @@ Responde SOLO JSON válido:
             grasas: redondear(num(plan.restante_dia?.grasas ?? plan.objetivo_dia?.grasas)),
             sodio: redondear(num(plan.restante_dia?.sodio ?? plan.objetivo_dia?.sodio ?? 2300))
           };
-          const nComidas = Math.max(dietaRaw.comidas.length, 1);
-          const refPorComida = payload?.macros_objetivo_por_comida;
-          const porComida =
-            refPorComida && num(refPorComida.calorias) > 0
-              ? {
-                  calorias: redondear(num(refPorComida.calorias)),
-                  proteinas: redondear(num(refPorComida.proteinas)),
-                  carbohidratos: redondear(num(refPorComida.carbohidratos)),
-                  grasas: redondear(num(refPorComida.grasas)),
-                  sodio: redondear(num(refPorComida.sodio ?? targetDia.sodio / nComidas))
-                }
-              : {
-                  calorias: redondear(targetDia.calorias / nComidas),
-                  proteinas: redondear(targetDia.proteinas / nComidas),
-                  carbohidratos: redondear(targetDia.carbohidratos / nComidas),
-                  grasas: redondear(targetDia.grasas / nComidas),
-                  sodio: redondear(targetDia.sodio / nComidas)
-                };
           const macrosPreOpt = dietaRaw.comidas.reduce(
             (t, c) => {
               const m = c.macros_combo || {};
@@ -669,25 +678,9 @@ Responde SOLO JSON válido:
             },
             { calorias: 0, proteinas: 0, carbohidratos: 0, grasas: 0 }
           );
-          dietaRaw.comidas = dietaRaw.comidas.map((bloque) => {
-            try {
-              const opt = optimizarCombo(
-                { alimentos_sugeridos: bloque.alimentos_sugeridos, nombre: bloque.nombre },
-                catalogoMap,
-                porComida
-              );
-              return {
-                ...bloque,
-                alimentos_sugeridos: opt.alimentos_sugeridos,
-                macros_combo: opt.macros_combo
-              };
-            } catch (_) {
-              return bloque;
-            }
-          });
           let dieta = dietaRaw;
           try {
-            for (let optPass = 0; optPass < 4; optPass++) {
+            for (let optPass = 0; optPass < 2; optPass++) {
               dieta = optimizarDietaDia(dieta, catalogoMap, targetDia);
               const gapKcal = num(targetDia.calorias) - num(dieta.macros_plan?.calorias);
               if (gapKcal <= 80) break;
@@ -699,20 +692,26 @@ Responde SOLO JSON válido:
           } catch (optErr) {
             console.warn("[recetaIaGemini] optimizarDietaDia:", optErr.message);
           }
-          return {
-            ok: true,
-            dieta,
-            ia: true,
-            modelo: model,
-            optimizer: OPTIMIZER_DISPONIBLE ? "v4.1" : "off"
-          };
-        }
-      } catch (err) {
-        ultimoDetalle = err?.message || String(err);
+        return {
+          ok: true,
+          dieta,
+          ia: true,
+          modelo: model,
+          optimizer: OPTIMIZER_DISPONIBLE ? "v4.2" : "off"
+        };
       }
+      ultimoError = "parse_error";
+      ultimoDetalle = (text || "").slice(0, 160) || "respuesta vacía";
+    } catch (err) {
+      const msg = err?.message || String(err);
+      ultimoDetalle = msg;
+      ultimoError = /timeout|aborted/i.test(msg) ? "timeout" : "red";
     }
   }
 
+  if (ultimoError === "parse_error") {
+    return { ok: false, motivo: "parse_error", detalle: ultimoDetalle };
+  }
   return { ok: false, motivo: ultimoError, detalle: ultimoDetalle };
 }
 
@@ -745,7 +744,8 @@ async function probarConexionGemini() {
     model,
     "Responde solo: OK",
     '{"test":true}',
-    false
+    false,
+    { timeoutMs: TIMEOUT_GEMINI_PROBE_MS }
   );
 
   if (!res.ok) {
