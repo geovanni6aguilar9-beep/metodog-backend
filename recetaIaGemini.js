@@ -807,7 +807,14 @@ Responde SOLO JSON válido:
             }
             const kcalFinal = num(dieta.macros_plan?.calorias);
             const kcalMeta = num(targetDia.calorias);
-            if (Math.abs(kcalMeta - kcalFinal) > 120) {
+            const grasFinal = num(dieta.macros_plan?.grasas);
+            const grasMeta = num(targetDia.grasas);
+            const carbFinal = num(dieta.macros_plan?.carbohidratos);
+            const carbMeta = num(targetDia.carbohidratos);
+            const grasOk = grasFinal <= grasMeta + 8;
+            const carbOk = carbFinal >= carbMeta - 25;
+            const kcalOk = Math.abs(kcalMeta - kcalFinal) <= 120;
+            if (!grasOk || !carbOk || !kcalOk) {
               dieta.macros_ajustados = false;
               dieta.optimizador_parcial = true;
             } else {
