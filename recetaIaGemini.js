@@ -665,20 +665,47 @@ async function generarDietaDiaCompleta(payload, db = null) {
     ? [envModel, ...MODELOS_FALLBACK.filter((m) => m !== envModel)]
     : MODELOS_FALLBACK;
 
+  const targetDiaPrompt = {
+    calorias: redondear(num(plan.restante_dia?.calorias ?? plan.objetivo_dia?.calorias)),
+    proteinas: redondear(num(plan.restante_dia?.proteinas ?? plan.objetivo_dia?.proteinas)),
+    carbohidratos: redondear(
+      num(plan.restante_dia?.carbohidratos ?? plan.objetivo_dia?.carbohidratos)
+    ),
+    grasas: redondear(num(plan.restante_dia?.grasas ?? plan.objetivo_dia?.grasas)),
+    sodio: redondear(num(plan.restante_dia?.sodio ?? plan.objetivo_dia?.sodio ?? 2300))
+  };
+  const nComidasPlan = Math.max(comidasTarget.length, 1);
+  const refPorComida = {
+    calorias: Math.round(targetDiaPrompt.calorias / nComidasPlan),
+    proteinas: Math.round(targetDiaPrompt.proteinas / nComidasPlan),
+    carbohidratos: Math.round(targetDiaPrompt.carbohidratos / nComidasPlan),
+    grasas: Math.max(4, Math.round(targetDiaPrompt.grasas / nComidasPlan))
+  };
+
   const system = `Eres un Planificador Nutricional Deportivo de MétodoG (México).
 Arma un PLAN DE DÍA COMPLETO: un combo por cada comida indicada en "comidas_a_planear".
+
+REGLA MATEMÁTICA ESTRICTA (PRIORIDAD MÁXIMA — incumplir = plan inválido):
+- La SUMA de las ${nComidasPlan} comidas del día DEBE acercarse a:
+  · ${targetDiaPrompt.calorias} kcal totales (±80)
+  · ${targetDiaPrompt.proteinas}g proteína (±8g)
+  · ${targetDiaPrompt.carbohidratos}g carbohidratos (±15g)
+  · MÁXIMO ${targetDiaPrompt.grasas}g grasa total (NUNCA superar; preferir quedarte corto en kcal antes que pasarte de grasa)
+- Cada comida debe rondar ~${refPorComida.calorias} kcal, ~${refPorComida.proteinas}g P, ~${refPorComida.carbohidratos}g C, máx ~${refPorComida.grasas}g G.
+- Porciones REALISTAS desde el inicio (no inflar): avena 40–70g, arroz/papa 80–120g, whey 1 scoop EN TODO EL DÍA, jamón/pavo 60–90g, claras 100–150g.
+- Máximo 4 alimentos por comida. NO acumules avena + amaranto + arroz en la MISMA comida.
+- AGUACATE, nueces, almendras, aceite: UNA sola fuente grasa al día (ej. 30g aguacate O 10g aceite O 20g nueces), NUNCA en varias comidas.
+- Proteínas magras preferidas: claras, pechuga, jamón de pavo, pescado blanco. Evita combinar whey + yogur + nueces + aguacate el mismo día.
 
 REGLAS:
 - REGLA CRÍTICA DE IDs: Debes usar ÚNICA y EXCLUSIVAMENTE los id_alimento numéricos del array "ids_validos" y del catálogo enviado. ESTÁ ESTRICTAMENTE PROHIBIDO inventar IDs o usar alimentos fuera de esa lista. Si no encuentras el ideal, elige el más parecido de ids_validos.
 - SOLO alimentos del catálogo (id_alimento exacto de ids_validos).
-- La SUMA de todos los combos debe acercarse a restante_dia u objetivo_dia (kcal, P, C, G, sodio).
-- BALANCE CRÍTICO: acércate a carbohidratos y grasas del día (±5 g y ±30 kcal). No armes un día hiperproteico.
-- PROTEÍNA: máximo 2 fuentes proteicas fuertes en TODO el día (ej. pollo + whey, o pescado + huevo). NO combines whey + yogur griego + leche + almendras + pollo en el mismo día.
-- CARBOHIDRATOS: si objetivo_dia pide muchos carbos (~250g+), incluye arroz, avena, papa, tortilla o pan en varias comidas desde el inicio. No dependas solo de frutas/verduras para carbos.
-- Verduras: porción normal 80–150 g por comida (nunca 300–400 g). Frutos secos: máx. 30 g en snacks.
-- Reparte carbs complejos entre comidas; grasas con moderación (aceite, aguacate, nueces).
+- BALANCE CRÍTICO: carbohidratos son prioridad en mantenimiento/volumen — incluye arroz, avena, papa, tortilla o pan desde el inicio si la meta de C es alta (~${targetDiaPrompt.carbohidratos}g).
+- PROTEÍNA: máximo 2 fuentes proteicas fuertes en TODO el día (ej. pollo + whey, o pescado + huevo).
+- Verduras: porción normal 80–150 g por comida (nunca 300–400 g). Frutos secos: máx. 25 g en un solo snack.
+- Reparte carbs complejos entre comidas; grasas con extrema moderación.
 - Respeta preferencias (gustos/disgustos/notas_medicas).
-- Gusto gastronómico: desayuno ligero, comida/cena completas, colaciones prácticas.
+- Gusto gastronómico: desayuno ligero (~${refPorComida.calorias} kcal), comida/cena completas, colaciones prácticas.
 - Variedad: no repitas el mismo plato en todas las comidas.
 - Whey/caseína: opcional, máx. 1 scoop por día si lo usas. No es obligatorio en cada comida.
 - OBLIGATORIO: el array "comidas" debe tener EXACTAMENTE ${comidasTarget.length} elementos — uno por cada fila de comidas_a_planear, con el mismo texto en "comida".
@@ -712,6 +739,8 @@ Responde SOLO JSON válido:
       restante_dia: plan.restante_dia,
       referencia_por_comida: plan.referencia_comida_equilibrada,
       macros_objetivo_por_comida: payload?.macros_objetivo_por_comida || null,
+      meta_estricta_dia: targetDiaPrompt,
+      meta_por_comida: refPorComida,
       num_comidas_obligatorias: comidasTarget.length,
       preferencias: payload?.preferencias || null,
       ids_validos: catalogoLite.map((c) => c.id),
@@ -777,15 +806,7 @@ Responde SOLO JSON válido:
             ultimoDetalle = `Gemini devolvió ${dietaRaw.comidas.length} de ${comidasTarget.length} comidas`;
             continue;
           }
-          const targetDia = {
-            calorias: redondear(num(plan.restante_dia?.calorias ?? plan.objetivo_dia?.calorias)),
-            proteinas: redondear(num(plan.restante_dia?.proteinas ?? plan.objetivo_dia?.proteinas)),
-            carbohidratos: redondear(
-              num(plan.restante_dia?.carbohidratos ?? plan.objetivo_dia?.carbohidratos)
-            ),
-            grasas: redondear(num(plan.restante_dia?.grasas ?? plan.objetivo_dia?.grasas)),
-            sodio: redondear(num(plan.restante_dia?.sodio ?? plan.objetivo_dia?.sodio ?? 2300))
-          };
+          const targetDia = targetDiaPrompt;
           const macrosPreOpt = dietaRaw.comidas.reduce(
             (t, c) => {
               const m = c.macros_combo || {};
@@ -800,10 +821,15 @@ Responde SOLO JSON válido:
           );
           let dieta = dietaRaw;
           try {
-            for (let optPass = 0; optPass < 6; optPass++) {
+            const sobreCarga =
+              num(macrosPreOpt.calorias) > num(targetDia.calorias) * 1.2 ||
+              num(macrosPreOpt.grasas) > num(targetDia.grasas) + 25;
+            const maxOptPasses = sobreCarga ? 10 : 6;
+            for (let optPass = 0; optPass < maxOptPasses; optPass++) {
               dieta = optimizarDietaDia(dieta, catalogoMap, targetDia);
               const gapKcal = num(targetDia.calorias) - num(dieta.macros_plan?.calorias);
-              if (Math.abs(gapKcal) <= 80) break;
+              const gapGras = num(targetDia.grasas) - num(dieta.macros_plan?.grasas);
+              if (Math.abs(gapKcal) <= 80 && gapGras >= -8) break;
             }
             const kcalFinal = num(dieta.macros_plan?.calorias);
             const kcalMeta = num(targetDia.calorias);
@@ -833,7 +859,7 @@ Responde SOLO JSON válido:
           dieta,
           ia: true,
           modelo: model,
-          optimizer: OPTIMIZER_DISPONIBLE ? "v4.3" : "off"
+          optimizer: OPTIMIZER_DISPONIBLE ? "v4.5" : "off"
         };
     } catch (err) {
       const msg = err?.message || String(err);

@@ -465,6 +465,9 @@ function escalaGlobalDieta(comidas, targetDia, catalogoMap, maxFactor = FACTOR_E
         }
       }
     }
+    if (!cambio && necesitaPodaActiva(totalDieta(comidas), targetDia)) {
+      return podaActivaDieta(comidas, catalogoMap, targetDia);
+    }
   } else {
     for (const bloque of comidas) {
       if (
@@ -731,6 +734,86 @@ function prioridadRecorteGrasa(cat) {
   if (/aguacate|aceite|mantequilla de/.test(n)) return 90;
   if (eq === "lacteo" && densidad(cat, "grasas") >= 0.06) return 55;
   return 15;
+}
+
+/** Prioridad para PODA (eliminar ítem completo, no escalar). */
+function prioridadPodaItem(item, cat, bloque, catalogoMap, total, targetDia) {
+  const excesoKcal = num(total.calorias) - num(targetDia.calorias);
+  const nombre = String(cat?.nombre || "").toLowerCase();
+  let pri = prioridadRecorteGrasa(cat);
+
+  if (/aguacate|almendr|nueces?|cacahuate|aceite|mantequilla|semilla de/.test(nombre)) {
+    pri = Math.max(pri, 98);
+  }
+  if (grupoEquiv(cat) === "grasa") pri = Math.max(pri, 96);
+
+  if (excesoKcal > 180) {
+    const items = bloque.alimentos_sugeridos || [];
+    const carbs = items.filter((i) => {
+      const c = catalogoMap.get(i.id_alimento);
+      return c && densidad(c, "carbohidratos") >= 0.18;
+    });
+    if (carbs.length > 1 && /amaranto|avena|arroz|pasta|bagel|tortilla|pan integral/.test(nombre)) {
+      pri = Math.max(pri, 92);
+      const mayorCarb = [...carbs].sort(
+        (a, b) => num(b.calorias) - num(a.calorias) || num(b.cantidad_sugerida) - num(a.cantidad_sugerida)
+      )[0];
+      if (item !== mayorCarb) pri += 8;
+    }
+  }
+
+  if (esPolvoProteina(cat) && excesoKcal > 120) pri = Math.max(pri, 78);
+  if (/amaranto/.test(nombre) && excesoKcal > 100) pri = Math.max(pri, 85);
+
+  return pri;
+}
+
+function necesitaPodaActiva(total, targetDia) {
+  const excesoKcal = num(total.calorias) - num(targetDia.calorias);
+  const excesoG = excesoGrasa(total, targetDia);
+  return excesoKcal > 120 || excesoG > 20;
+}
+
+/**
+ * Poda activa: elimina el alimento más problemático cuando escalar choca con mínimos.
+ * Preferir borrar grasas / carbs duplicados antes que dejar el plan reventado.
+ */
+function podaActivaDieta(comidas, catalogoMap, targetDia) {
+  const total = totalDieta(comidas);
+  if (!necesitaPodaActiva(total, targetDia)) return false;
+
+  const excesoKcal = num(total.calorias) - num(targetDia.calorias);
+  const excesoG = excesoGrasa(total, targetDia);
+  const critico = excesoKcal > 350 || excesoG > 45;
+
+  let mejor = null;
+  for (const bloque of comidas) {
+    const items = bloque.alimentos_sugeridos || [];
+    for (const item of items) {
+      if (items.length <= 1 && !critico) continue;
+
+      const cat = catalogoMap.get(item.id_alimento);
+      if (!cat) continue;
+
+      const pri = prioridadPodaItem(item, cat, bloque, catalogoMap, total, targetDia);
+      const scoreCal = num(item.calorias) || densidad(cat, "calorias") * num(item.cantidad_sugerida);
+      const scoreG = num(item.grasas) || densidad(cat, "grasas") * num(item.cantidad_sugerida);
+      const score = scoreCal + scoreG * 5;
+
+      if (!mejor || pri > mejor.pri || (pri === mejor.pri && score > mejor.score)) {
+        mejor = { bloque, item, pri, score };
+      }
+    }
+  }
+
+  if (!mejor) return false;
+
+  const restantes = (mejor.bloque.alimentos_sugeridos || []).filter((i) => i !== mejor.item);
+  if (!restantes.length) return false;
+
+  mejor.bloque.alimentos_sugeridos = restantes;
+  refrescarMacrosComidas(comidas, catalogoMap);
+  return true;
 }
 
 function pasoRecortarGrasaExceso(comidas, catalogoMap, targetDia) {
@@ -1291,6 +1374,19 @@ function optimizarDietaDia(dieta, catalogoMap, targetDia, options = {}) {
   }));
   refrescarMacrosComidas(dieta.comidas, catalogoMap);
 
+  for (let i = 0; i < 50; i++) {
+    const total = totalDieta(dieta.comidas);
+    if (num(total.calorias) <= num(targetDia.calorias) * 1.1 && excesoGrasa(total, targetDia) <= 15) {
+      break;
+    }
+    if (podaActivaDieta(dieta.comidas, catalogoMap, targetDia)) continue;
+    if (excesoGrasa(total, targetDia) > TOLERANCIA.grasas) {
+      if (pasoRecorteGrasaEmergencia(dieta.comidas, catalogoMap, targetDia)) continue;
+      if (pasoRecortarGrasaExceso(dieta.comidas, catalogoMap, targetDia)) continue;
+    }
+    break;
+  }
+
   for (let i = 0; i < 30; i++) {
     const total = totalDieta(dieta.comidas);
     if (excesoGrasa(total, targetDia) <= TOLERANCIA.grasas) break;
@@ -1312,7 +1408,10 @@ function optimizarDietaDia(dieta, catalogoMap, targetDia, options = {}) {
     const total = totalDieta(dieta.comidas);
     const errCal = num(targetDia.calorias) - total.calorias;
     if (Math.abs(errCal) <= 80 && errCal >= -TOLERANCIA.calorias) break;
-    if (!escalaGlobalDieta(dieta.comidas, targetDia, catalogoMap)) break;
+    if (errCal < -80 && podaActivaDieta(dieta.comidas, catalogoMap, targetDia)) continue;
+    if (!escalaGlobalDieta(dieta.comidas, targetDia, catalogoMap)) {
+      if (!podaActivaDieta(dieta.comidas, catalogoMap, targetDia)) break;
+    }
   }
 
   for (let pass = 0; pass < MAX_PASADAS_DIA; pass++) {
@@ -1349,14 +1448,23 @@ function optimizarDietaDia(dieta, catalogoMap, targetDia, options = {}) {
   const totalFinal = totalDieta(dieta.comidas);
   if (Math.abs(num(targetDia.calorias) - totalFinal.calorias) > 50 && totalFinal.calorias > 0) {
     const errProtFin = num(targetDia.proteinas) - totalFinal.proteinas;
-    const factor = factorEscalaCalorias(totalFinal, targetDia, FACTOR_ESCALA_DIA_MAX);
-    for (const bloque of dieta.comidas) {
-      escalarItems(bloque.alimentos_sugeridos || [], factor, catalogoMap, {
-        omitirProteina: errProtFin < -TOLERANCIA.proteinas
-      });
-      bloque.alimentos_sugeridos = reconstruirItems(bloque.alimentos_sugeridos, catalogoMap);
+    const errCalFin = num(targetDia.calorias) - totalFinal.calorias;
+    if (errCalFin < -80) {
+      for (let p = 0; p < 15 && necesitaPodaActiva(totalDieta(dieta.comidas), targetDia); p++) {
+        if (!podaActivaDieta(dieta.comidas, catalogoMap, targetDia)) break;
+      }
+    } else {
+      const factor = factorEscalaCalorias(totalFinal, targetDia, FACTOR_ESCALA_DIA_MAX);
+      for (const bloque of dieta.comidas) {
+        escalarItems(bloque.alimentos_sugeridos || [], factor, catalogoMap, {
+          omitirProteina: errProtFin < -TOLERANCIA.proteinas,
+          soloCarbosLimpios: factor > 1,
+          congelarGrasa: true
+        });
+        bloque.alimentos_sugeridos = reconstruirItems(bloque.alimentos_sugeridos, catalogoMap);
+      }
+      refrescarMacrosComidas(dieta.comidas, catalogoMap);
     }
-    refrescarMacrosComidas(dieta.comidas, catalogoMap);
   }
 
   for (let pass = 0; pass < MAX_PASADAS_BRECHA; pass++) {
@@ -1444,5 +1552,6 @@ module.exports = {
   sumarMacrosLista,
   dentroTolerancia,
   costoPlan,
+  podaActivaDieta,
   TOLERANCIA
 };
