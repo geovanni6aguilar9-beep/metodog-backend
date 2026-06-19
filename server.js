@@ -60,7 +60,8 @@ const {
   geminiConfigurado,
   formatoKeyPareceValido,
   probarConexionGemini,
-  OPTIMIZER_DISPONIBLE
+  OPTIMIZER_DISPONIBLE,
+  VERSION_PIPELINE_IA
 } = require("./recetaIaGemini");
 const { previewImportPlan } = require("./importarPlan");
 const { importarPdfPreview } = require("./importarPlanPdf");
@@ -109,13 +110,20 @@ function responderPing(req, res) {
     service: "metodog-backend",
     recetas_ia_gemini: geminiConfigurado(),
     recetas_ia_key_formato_ok: formatoKeyPareceValido(),
+    version_pipeline: VERSION_PIPELINE_IA,
+    optimizer: OPTIMIZER_DISPONIBLE ? VERSION_PIPELINE_IA : "off",
     ts: new Date().toISOString()
   });
 }
 
 app.get("/", (req, res) => {
   if (req.method === "HEAD") return res.status(200).end();
-  res.status(200).json({ ok: true, service: "metodog-backend" });
+  res.status(200).json({
+    ok: true,
+    service: "metodog-backend",
+    version_pipeline: VERSION_PIPELINE_IA,
+    optimizer: OPTIMIZER_DISPONIBLE ? VERSION_PIPELINE_IA : "off"
+  });
 });
 app.head("/", (req, res) => res.status(200).end());
 app.all("/api/ping", responderPing);
@@ -129,7 +137,8 @@ app.get("/api/alimentos/receta-ia/status", async (req, res) => {
     const resultado = await probarConexionGemini();
     return res.status(resultado.ok ? 200 : 503).json({
       ...resultado,
-      optimizer: OPTIMIZER_DISPONIBLE ? "v4.2" : "off"
+      optimizer: OPTIMIZER_DISPONIBLE ? VERSION_PIPELINE_IA : "off",
+      version_pipeline: VERSION_PIPELINE_IA
     });
   } catch (err) {
     return res.status(503).json({ ok: false, motivo: "api_error", detalle: err.message });

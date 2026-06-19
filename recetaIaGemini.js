@@ -986,7 +986,8 @@ async function probarConexionGemini() {
     ok: true,
     modelo: model,
     respuesta: (text || "OK").slice(0, 80),
-    optimizer: OPTIMIZER_DISPONIBLE ? "v4.1" : "off"
+    optimizer: OPTIMIZER_DISPONIBLE ? VERSION_PIPELINE_IA : "off",
+    version_pipeline: VERSION_PIPELINE_IA
   };
 }
 
@@ -1000,5 +1001,6 @@ module.exports = {
   formatoKeyPareceValido,
   probarConexionGemini,
   resolverGeminiApiKey,
-  OPTIMIZER_DISPONIBLE
+  OPTIMIZER_DISPONIBLE,
+  VERSION_PIPELINE_IA
 };
