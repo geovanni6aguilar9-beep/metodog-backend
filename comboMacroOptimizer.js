@@ -11,6 +11,14 @@ const TOLERANCIA = {
   grasas: 5
 };
 
+/** Cadenero Combo IA individual (±50 kcal vs meta combo). */
+const TOLERANCIA_COMBO = {
+  calorias: 50,
+  proteinas: 8,
+  carbohidratos: 15,
+  grasas: 12
+};
+
 /** Penalización asimétrica: exceso de grasa pesa 10x (nutrición deportiva). */
 const PESO_ERROR = {
   calorias: 1,
@@ -314,6 +322,36 @@ function dentroTolerancia(total, target) {
     Math.abs(num(total.carbohidratos) - num(target.carbohidratos)) <= TOLERANCIA.carbohidratos &&
     Math.abs(num(total.grasas) - num(target.grasas)) <= TOLERANCIA.grasas
   );
+}
+
+function dentroToleranciaCombo(total, target) {
+  if (excesoGrasa(total, target) > TOLERANCIA_COMBO.grasas) return false;
+  return (
+    Math.abs(num(total.calorias) - num(target.calorias)) <= TOLERANCIA_COMBO.calorias &&
+    Math.abs(num(total.proteinas) - num(target.proteinas)) <= TOLERANCIA_COMBO.proteinas &&
+    Math.abs(num(total.carbohidratos) - num(target.carbohidratos)) <= TOLERANCIA_COMBO.carbohidratos &&
+    Math.abs(num(total.grasas) - num(target.grasas)) <= TOLERANCIA_COMBO.grasas
+  );
+}
+
+function wrapComboComoDieta(items) {
+  return [{ alimentos_sugeridos: items }];
+}
+
+function unwrapComboItems(comidas) {
+  return comidas?.[0]?.alimentos_sugeridos || [];
+}
+
+function aplicarGuillotinaPorcionesCombo(combo, catalogoMap) {
+  if (!combo?.alimentos_sugeridos?.length) return combo;
+  const fake = { comidas: wrapComboComoDieta(combo.alimentos_sugeridos) };
+  aplicarGuillotinaPorcionesDieta(fake, catalogoMap);
+  combo.alimentos_sugeridos = unwrapComboItems(fake.comidas);
+  combo.macros_combo = sumarMacrosLista(combo.alimentos_sugeridos);
+  Object.keys(combo.macros_combo).forEach((k) => {
+    combo.macros_combo[k] = redondear(combo.macros_combo[k]);
+  });
+  return combo;
 }
 
 function excesoGrasa(total, target) {
@@ -708,13 +746,57 @@ function optimizarCombo(combo, catalogoMap, target, options = {}) {
   let items = reconstruirItems(combo.alimentos_sugeridos, catalogoMap);
   if (!items.length) return combo;
 
-  pasoEscalarCaloriasItems(items, target, catalogoMap);
-  items = reconstruirItems(items, catalogoMap);
+  try {
+    enriquecerCatalogoMap(catalogoMap);
+    let fake = { comidas: wrapComboComoDieta(items) };
+    aplicarGuillotinaPorcionesDieta(fake, catalogoMap);
+    items = unwrapComboItems(fake.comidas);
 
-  for (let i = 0; i < MAX_PASADAS_COMBO; i++) {
-    items = reconstruirItems(items, catalogoMap);
-    if (dentroTolerancia(sumarMacrosLista(items), target)) break;
-    if (!pasoAjusteCombo(items, catalogoMap, target, options)) break;
+    for (let i = 0; i < 24; i++) {
+      items = reconstruirItems(items, catalogoMap);
+      const total = sumarMacrosLista(items);
+      if (
+        num(total.calorias) <= num(target.calorias) + TOLERANCIA_COMBO.calorias &&
+        excesoGrasa(total, target) <= TOLERANCIA_COMBO.grasas
+      ) {
+        break;
+      }
+      fake = { comidas: wrapComboComoDieta(items) };
+      if (podaActivaDieta(fake.comidas, catalogoMap, target)) {
+        items = unwrapComboItems(fake.comidas);
+        continue;
+      }
+      if (num(total.calorias) > num(target.calorias) + TOLERANCIA_COMBO.calorias) {
+        escalarItems(items, factorEscalaCalorias(total, target), catalogoMap);
+        items = reconstruirItems(items, catalogoMap);
+        continue;
+      }
+      if (excesoGrasa(total, target) > TOLERANCIA_COMBO.grasas) {
+        fake = { comidas: wrapComboComoDieta(items) };
+        if (pasoRecorteGrasaEmergencia(fake.comidas, catalogoMap, target)) {
+          items = unwrapComboItems(fake.comidas);
+          continue;
+        }
+      }
+      break;
+    }
+
+    if (num(sumarMacrosLista(items).calorias) > num(target.calorias) + 80) {
+      pasoEscalarCaloriasItems(items, target, catalogoMap);
+      items = reconstruirItems(items, catalogoMap);
+    }
+
+    for (let i = 0; i < MAX_PASADAS_COMBO; i++) {
+      items = reconstruirItems(items, catalogoMap);
+      if (dentroToleranciaCombo(sumarMacrosLista(items), target)) break;
+      if (!pasoAjusteCombo(items, catalogoMap, target, options)) break;
+    }
+
+    fake = { comidas: wrapComboComoDieta(items) };
+    aplicarGuillotinaPorcionesDieta(fake, catalogoMap);
+    items = unwrapComboItems(fake.comidas);
+  } catch (optErr) {
+    console.warn("[comboMacroOptimizer] optimizarCombo:", optErr.message);
   }
 
   return finalizarCombo(combo, items, catalogoMap);
@@ -1619,9 +1701,12 @@ module.exports = {
   optimizarDietaDia,
   sumarMacrosLista,
   dentroTolerancia,
+  dentroToleranciaCombo,
   costoPlan,
   podaActivaDieta,
   aplicarGuillotinaPorcionesDieta,
+  aplicarGuillotinaPorcionesCombo,
   VERSION_OPTIMIZADOR,
-  TOLERANCIA
+  TOLERANCIA,
+  TOLERANCIA_COMBO
 };

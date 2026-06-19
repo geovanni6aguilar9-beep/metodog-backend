@@ -14,7 +14,8 @@ const MAX_CATALOGO_PROMPT = 96;
 let optimizarCombo = (combo) => combo;
 let optimizarDietaDia = (dieta) => dieta;
 let aplicarGuillotinaPorcionesDieta = (dieta) => dieta;
-const VERSION_PIPELINE_IA = "4.7-PromptElite";
+let aplicarGuillotinaPorcionesCombo = (combo) => combo;
+const VERSION_PIPELINE_IA = "4.7.1-PromptElite";
 let sumarMacrosLista = (items) =>
   (items || []).reduce(
     (t, m) => ({
@@ -32,6 +33,7 @@ try {
   optimizarCombo = mod.optimizarCombo;
   optimizarDietaDia = mod.optimizarDietaDia;
   aplicarGuillotinaPorcionesDieta = mod.aplicarGuillotinaPorcionesDieta || aplicarGuillotinaPorcionesDieta;
+  aplicarGuillotinaPorcionesCombo = mod.aplicarGuillotinaPorcionesCombo || aplicarGuillotinaPorcionesCombo;
   sumarMacrosLista = mod.sumarMacrosLista || sumarMacrosLista;
   OPTIMIZER_DISPONIBLE = typeof mod.optimizarDietaDia === "function";
 } catch (err) {
@@ -248,6 +250,25 @@ function evaluarCalidadPlanDieta(dieta, targetDia) {
   };
 }
 
+/** Cadenero Combo IA: ±50 kcal vs meta combo (ModalRecetaIa). */
+function evaluarCalidadCombo(combo, target) {
+  const total = combo?.macros_combo || {};
+  const kcalFinal = num(total.calorias);
+  const kcalMeta = num(target.calorias);
+  const grasFinal = num(total.grasas);
+  const grasMeta = num(target.grasas);
+  const carbFinal = num(total.carbohidratos);
+  const carbMeta = num(target.carbohidratos);
+  const kcalOk = Math.abs(kcalMeta - kcalFinal) <= 50;
+  const grasOk = grasFinal <= grasMeta + 15;
+  const carbOk = carbFinal >= carbMeta - 30;
+  if (kcalOk && grasOk && carbOk) return { ok: true };
+  return {
+    ok: false,
+    detalle: `${kcalFinal}/${kcalMeta} kcal · G${grasFinal}/${grasMeta}g · C${carbFinal}/${carbMeta}g`
+  };
+}
+
 function normalizarCombo(obj, catalogoMap, idsPermitidos = null) {
   return normalizarComboConMeta(obj, catalogoMap, idsPermitidos).combo;
 }
@@ -374,6 +395,11 @@ function mensajeErrorAmigable(motivo, esAdmin = false, detalle = "") {
       "La IA generó un plan fuera de tu meta (kcal o macros). Toca Reintentar — no lo apliques.";
     return esAdmin && detalle ? `${base} (${detalle.slice(0, 120)})` : base;
   }
+  if (motivo === "combo_no_cuadrado") {
+    const base =
+      "El combo quedó fuera de la meta de esta comida (±50 kcal). Toca Reintentar.";
+    return esAdmin && detalle ? `${base} (${detalle.slice(0, 120)})` : base;
+  }
   if (motivo === "formato_key") {
     return detalle || "La clave de Gemini parece incompleta. Revisa GEMINI_API_KEY en Render.";
   }
@@ -453,56 +479,55 @@ async function generarRecetaComida(payload, db = null, options = {}) {
     ? [envModel, ...MODELOS_FALLBACK.filter((m) => m !== envModel)]
     : MODELOS_FALLBACK;
 
-  const system = `Eres un Planificador Nutricional Deportivo de MétodoG (México).
-Tu trabajo NO es dar recetas de cocina ni pasos de preparación.
+  const targetComboPrompt = {
+    calorias: redondear(num(macrosObjetivo.calorias)),
+    proteinas: redondear(num(macrosObjetivo.proteinas)),
+    carbohidratos: redondear(num(macrosObjetivo.carbohidratos)),
+    grasas: redondear(num(macrosObjetivo.grasas)),
+    sodio: redondear(num(macrosObjetivo.sodio))
+  };
+  const macrosActualesComida =
+    payload?.macros_actuales_comida || plan?.macros_esta_comida || null;
+  const yaEnComida = num(macrosActualesComida?.calorias) > 5;
 
-OBJETIVO: Armar un COMBO apetitoso y coherente para UNA comida del día que se acerque a los macros objetivo.
+  console.log(`[MetodoG] Pipeline ${VERSION_PIPELINE_IA} ACTIVA — receta-ia combo`, new Date().toISOString());
 
-BALANCE DE MACROS (crítico — igual de importante que kcal y proteína):
-- Debes acercarte a carbohidratos Y grasas del objetivo, no solo kcal/proteína.
-- Tolerancia orientativa: ±30 kcal, ±5 g en proteína, carbohidratos y grasas (no busques perfección matemática).
-- Si subes proteína con carnes/huevos/nueces/aguacate, COMPENSA con carbs limpios (arroz, avena, fruta, pan, papa) y MODERA grasas.
-- Para llenar kcal restantes prioriza carbohidratos complejos antes que más grasa.
-- Incluye al menos una fuente clara de carbohidratos en cada combo (no solo proteína + grasa).
+  const system = `Eres un Planificador Nutricional Deportivo de MétodoG (México) — atleta de alto rendimiento.
+Arma UN SOLO COMBO para completar UNA comida. NO es receta de cocina ni pasos de preparación.
 
-GUSTO GASTRONÓMICO (muy importante):
-- El combo debe sonar rico y lógico para un atleta mexicano: nombres creativos pero reales (ej. "Bowl de yogur con manzana y granola", "Tacos fitness de pollo con tortilla").
-- Desayuno: prioriza opciones ligeras, lácteos, fruta, avena, huevo, pan — evita platos de comida fuerte (arroz con pollo a las 7am).
-- Comida/Cena: puedes combinar proteína + carb complejo + verdura.
-- Snacks: porciones pequeñas, prácticas (fruta, yogur, nueces, galletas de arroz).
-- Mezcla texturas y colores; no repitas el mismo tipo 3 veces si hay alternativas en catálogo.
+REGLAS DE ORO ABSOLUTAS (incumplir = combo inválido):
 
-PREFERENCIAS DEL ATLETA (si vienen en preferencias):
-- gustos_lista: PRIORIZA esos grupos al elegir (más variedad dentro de lo que le gusta).
-- disgustos_lista: PROHIBIDO usar alimentos de esas categorías (el catálogo ya viene filtrado, respétalo).
-- notas_medicas: ajústalas (ej. hipertensión → menos sodio; diabetes → carbs controlados).
+1) META CALÓRICA ESTRICTA
+- El combo debe aportar ~${targetComboPrompt.calorias} kcal (±50 máximo).
+- PROHIBIDO exceder ${targetComboPrompt.calorias + 50} kcal en el combo.
+- Prioridad 1: PROTEÍNA ~${targetComboPrompt.proteinas}g (±8g).
+- Prioridad 2: grasa ≤ ${targetComboPrompt.grasas}g (mejor quedarte corto).
+- Prioridad 3: carbohidratos ~${targetComboPrompt.carbohidratos}g (±15g) — complejos primero.
+${yaEnComida ? `- Ya hay alimentos en esta comida (${redondear(num(macrosActualesComida.calorias))} kcal). Tu combo cubre SOLO lo faltante — NO dupliques lo que ya está.` : ""}
 
-REGLA DE ORO — CATÁLOGO CERRADO:
-- SOLO alimentos del arreglo "catalogo" con su "id" exacto como id_alimento.
-- PROHIBIDO inventar alimentos o marcas.
-- Cantidades en la unidad del catálogo (g, ml, scoop, pieza). Macros son POR porcion_base.
-- 1 scoop de whey, caseína o proteína vegetal = cantidad_sugerida: 1 (no confundir scoop con gramos).
-- Entre 2 y 6 alimentos por combo.
+2) PORCIONES HUMANAS (borrador conservador — el optimizador ajustará)
+- Máximo 4 alimentos por combo. NO acumules 5–6 ítems densos.
+- PROHIBIDO más de 100g de fruta por combo.
+- Máximo 15g miel/azúcar rápido.
+- Claras/huevo: máx 150g o 2 piezas. Whey: máx 1 scoop.
+- Arroz/papa/avena: 40–80g. Jamón/pavo: 60–90g. Bagel/tortilla: 1 pieza SOLO si cabe en la meta.
+- NO envíes platos compuestos gigantes (2 huevos rancheros + bagel + frijoles + mermelada = demasiado denso).
 
-CONTEXTO DEL PLAN:
-- objetivo "definir" = déficit — ligero, proteína alta.
-- objetivo "subir" = volumen — saciante, más carbs/kcal.
-- objetivo "mantener" = equilibrio.
+3) COHERENCIA DE TÍTULO
+- El "nombre" del combo DEBE coincidir con los ingredientes reales del catálogo.
 
-MODO OBJETIVO (campo plan.modo_objetivo):
-- ultima_comida: el combo debe cubrir casi todo restante_dia (última comida vacía).
-- repartir_restante: parte equitativa del restante entre comidas vacías.
-- cerrar_dia: ajuste fino; prioriza restante_dia sobre referencia.
-- llenar_comida: completa esta comida hacia referencia_comida_equilibrada.
+4) CATÁLOGO CERRADO
+- SOLO id_alimento del arreglo "catalogo". PROHIBIDO inventar alimentos.
+- Cantidades en unidad del catálogo (g, ml, scoop, pieza). Macros son POR porcion_base.
+- Respeta preferencias (gustos/disgustos/notas_medicas).
 
-Puedes incluir creatina, whey o BCAA del catálogo si ayudan a proteína sin pasarte de kcal.
-
-Si hay macros_actuales_comida, COMPLEMENTA lo ya puesto (evita duplicar el mismo id).
+MODO OBJETIVO (plan.modo_objetivo):
+- ultima_comida / repartir_restante / cerrar_dia / llenar_comida — ajusta densidad pero NUNCA rompas la meta de kcal del combo.
 
 Responde SOLO JSON válido (sin markdown):
 {
   "nombre": "nombre apetitoso del combo (máx. 60 caracteres)",
-  "consejo": "1-2 frases: qué cubre en macros, por qué encaja con su objetivo Y con sus gustos",
+  "consejo": "1-2 frases: qué cubre en macros y por qué encaja",
   "alimentos_sugeridos": [
     { "id_alimento": número_id_del_catalogo, "cantidad_sugerida": número }
   ]
@@ -575,11 +600,23 @@ Responde SOLO JSON válido (sin markdown):
           };
           let combo = comboRaw;
           try {
-            combo = optimizarCombo(comboRaw, catalogoMap, targetCombo);
+            if (OPTIMIZER_DISPONIBLE) {
+              combo = aplicarGuillotinaPorcionesCombo(comboRaw, catalogoMap);
+              combo = optimizarCombo(combo, catalogoMap, targetCombo);
+              combo = aplicarGuillotinaPorcionesCombo(combo, catalogoMap);
+            }
+            const calidad = evaluarCalidadCombo(combo, targetCombo);
+            if (!calidad.ok) {
+              ultimoError = "combo_no_cuadrado";
+              ultimoDetalle = calidad.detalle || "macros fuera de meta combo";
+              continue;
+            }
           } catch (optErr) {
             console.warn("[recetaIaGemini] optimizarCombo:", optErr.message);
           }
-          return { ok: true, receta: combo, combo, ia: true, comida, modelo: model };
+          combo.version_pipeline = VERSION_PIPELINE_IA;
+          combo.optimizer = OPTIMIZER_DISPONIBLE ? "4.6-guillotina" : "off";
+          return { ok: true, receta: combo, combo, ia: true, comida, modelo: model, version_pipeline: VERSION_PIPELINE_IA };
         }
 
         console.warn(`[recetaIaGemini] ${model} parse vacío:`, text.slice(0, 200));
@@ -958,6 +995,7 @@ Responde SOLO JSON válido:
   }
   if (
     ultimoError === "plan_no_cuadrado" ||
+    ultimoError === "combo_no_cuadrado" ||
     ultimoError === "optimizador_fallo" ||
     ultimoError === "optimizador_off"
   ) {
