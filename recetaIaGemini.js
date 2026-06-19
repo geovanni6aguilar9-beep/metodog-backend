@@ -14,7 +14,7 @@ const MAX_CATALOGO_PROMPT = 96;
 let optimizarCombo = (combo) => combo;
 let optimizarDietaDia = (dieta) => dieta;
 let aplicarGuillotinaPorcionesDieta = (dieta) => dieta;
-const VERSION_PIPELINE_IA = "4.6-guillotina";
+const VERSION_PIPELINE_IA = "4.7-PromptElite";
 let sumarMacrosLista = (items) =>
   (items || []).reduce(
     (t, m) => ({
@@ -686,7 +686,7 @@ function asegurarMacrosPlanDieta(dieta) {
 
 async function generarDietaDiaCompleta(payload, db = null, options = {}) {
   console.log("========================================");
-  console.log("[MetodoG] VERSION 4.6 ACTIVA — dieta-ia", new Date().toISOString());
+  console.log(`[MetodoG] Pipeline ${VERSION_PIPELINE_IA} ACTIVA — dieta-ia`, new Date().toISOString());
   console.log("[MetodoG] optimizer:", OPTIMIZER_DISPONIBLE ? VERSION_PIPELINE_IA : "OFF");
   console.log("========================================");
   const apiKey = resolverGeminiApiKey();
@@ -736,35 +736,50 @@ async function generarDietaDiaCompleta(payload, db = null, options = {}) {
   const timeoutGeminiDieta = () =>
     Math.min(TIMEOUT_GEMINI_DIA_MS, Math.max(12000, msRestanteDieta() - 6000));
 
-  const system = `Eres un Planificador Nutricional Deportivo de MétodoG (México).
+  const system = `Eres un Planificador Nutricional Deportivo de MétodoG (México) — atleta de alto rendimiento.
 Arma un PLAN DE DÍA COMPLETO: un combo por cada comida indicada en "comidas_a_planear".
 
-REGLA MATEMÁTICA ESTRICTA (PRIORIDAD MÁXIMA — incumplir = plan inválido):
-- La SUMA de las ${nComidasPlan} comidas del día DEBE acercarse a:
-  · ${targetDiaPrompt.calorias} kcal totales (±80)
-  · ${targetDiaPrompt.proteinas}g proteína (±8g)
-  · ${targetDiaPrompt.carbohidratos}g carbohidratos (±15g)
-  · MÁXIMO ${targetDiaPrompt.grasas}g grasa total (NUNCA superar; preferir quedarte corto en kcal antes que pasarte de grasa)
-- Cada comida debe rondar ~${refPorComida.calorias} kcal, ~${refPorComida.proteinas}g P, ~${refPorComida.carbohidratos}g C, máx ~${refPorComida.grasas}g G.
-- Porciones REALISTAS desde el inicio (no inflar): avena 40–70g, arroz/papa 80–120g, whey 1 scoop EN TODO EL DÍA, jamón/pavo 60–90g, claras 100–150g.
-- Máximo 4 alimentos por comida. NO acumules avena + amaranto + arroz en la MISMA comida.
-- AGUACATE, nueces, almendras, aceite: UNA sola fuente grasa al día (ej. 30g aguacate O 10g aceite O 20g nueces), NUNCA en varias comidas.
-- Proteínas magras preferidas: claras, pechuga, jamón de pavo, pescado blanco. Evita combinar whey + yogur + nueces + aguacate el mismo día.
-${comidaDensa ? `- COMIDAS DENSAS (~${refPorComida.calorias} kcal/plato): arroz/papa/avena + proteína magra + UNA grasa limpia (aguacate 25–40g o aceite 5–8ml). Miel/azúcar: máx 15–20g por comida y máx 40g en todo el día.` : ""}
+REGLAS DE ORO ABSOLUTAS (incumplir = plan inválido):
 
-REGLAS:
-- REGLA CRÍTICA DE IDs: Debes usar ÚNICA y EXCLUSIVAMENTE los id_alimento numéricos del array "ids_validos" y del catálogo enviado. ESTÁ ESTRICTAMENTE PROHIBIDO inventar IDs o usar alimentos fuera de esa lista. Si no encuentras el ideal, elige el más parecido de ids_validos.
-- SOLO alimentos del catálogo (id_alimento exacto de ids_validos).
-- BALANCE CRÍTICO: carbohidratos son prioridad en mantenimiento/volumen — incluye arroz, avena, papa, tortilla o pan desde el inicio si la meta de C es alta (~${targetDiaPrompt.carbohidratos}g).
-- PROTEÍNA: máximo 2 fuentes proteicas fuertes en TODO el día (ej. pollo + whey, o pescado + huevo).
-- Verduras: porción normal 80–150 g por comida (nunca 300–400 g). Frutos secos: máx. 25 g en un solo snack.
-- Reparte carbs complejos entre comidas; grasas con extrema moderación.
+1) JERARQUÍA DE MACROS INNEGOCIABLE
+- Prioridad 1: alcanzar la meta de PROTEÍNA del día (${targetDiaPrompt.proteinas}g, tolerancia ±8g) repartiendo ~${refPorComida.proteinas}g por comida.
+- Si faltan calorías, NO rellenes con frutas ni azúcares. Rellena con proteína magra (claras, pechuga, jamón de pavo, pescado, whey) y carbohidratos complejos (arroz, papa, avena, tortilla).
+- Prioridad 2: grasa total ≤ ${targetDiaPrompt.grasas}g (mejor quedarte corto que pasarte).
+- Prioridad 3: carbohidratos ~${targetDiaPrompt.carbohidratos}g (±15g) — complejos primero, fruta solo como complemento.
+
+2) LÓGICA DE CULTURISMO (cantidades)
+- PROHIBIDO más de 100g de fruta por comida (fresa, arándano, plátano, frambuesa, etc.).
+- Máximo 15g de miel o azúcares rápidos por comida.
+- Grasa limpia con moderación (almendras 15–25g, crema de cacahuate 15–20g, aguacate 25–40g) para no dejar la grasa en cero; respeta el tope diario de ${targetDiaPrompt.grasas}g.
+- Máximo 4 alimentos por comida. NO acumules avena + amaranto + arroz en la MISMA comida.
+
+3) COHERENCIA NUTRICIONAL Y DE TÍTULOS
+- El nombre del platillo ("nombre" del combo) DEBE coincidir con los ingredientes reales del catálogo.
+- Si el título dice "Avena con...", el ingrediente principal debe ser Avena (id del catálogo), NO Amaranto u otro cereal distinto.
+- No uses nombres genéricos que no reflejen lo que pusiste en alimentos_sugeridos.
+
+4) PORCIONES BASE HUMANAS (borrador inicial — el optimizador escalará si hace falta)
+- Avena/amaranto: 40–60g por comida (no inflar desde el borrador).
+- Claras/huevo: 100–150g por comida cuando aplique.
+- Whey: máx. 1 scoop en TODO el día (cantidad_sugerida = scoops, no gramos).
+- Arroz/papa: 80–120g por comida. Jamón/pavo: 60–90g.
+- NO envíes borradores con porciones gigantes; empieza conservador y denso en proteína.
+
+META DEL DÍA (${nComidasPlan} comidas):
+- ${targetDiaPrompt.calorias} kcal totales (±80)
+- ${targetDiaPrompt.proteinas}g proteína (±8g) — OBLIGATORIO acercarse
+- ${targetDiaPrompt.carbohidratos}g carbohidratos (±15g)
+- Máximo ${targetDiaPrompt.grasas}g grasa total
+- Referencia por comida: ~${refPorComida.calorias} kcal, ~${refPorComida.proteinas}g P, ~${refPorComida.carbohidratos}g C, máx ~${refPorComida.grasas}g G
+${comidaDensa ? `- Comidas densas (~${refPorComida.calorias} kcal/plato): proteína magra + carbohidrato complejo + UNA grasa limpia moderada; evita rellenar solo con fruta.` : ""}
+
+REGLAS TÉCNICAS:
+- REGLA CRÍTICA DE IDs: usa ÚNICA y EXCLUSIVAMENTE id_alimento de "ids_validos" y del catálogo. PROHIBIDO inventar IDs.
+- PROTEÍNA: máximo 2 fuentes proteicas fuertes en TODO el día (ej. pollo + whey).
+- Verduras: 80–150g por comida (nunca 300–400g).
 - Respeta preferencias (gustos/disgustos/notas_medicas).
-- Gusto gastronómico: desayuno ligero (~${refPorComida.calorias} kcal), comida/cena completas, colaciones prácticas.
 - Variedad: no repitas el mismo plato en todas las comidas.
-- Whey/caseína: opcional, máx. 1 scoop por día si lo usas. No es obligatorio en cada comida.
-- OBLIGATORIO: el array "comidas" debe tener EXACTAMENTE ${comidasTarget.length} elementos — uno por cada fila de comidas_a_planear, con el mismo texto en "comida".
-- Proteína en polvo (whey/caseína/vegetal): cantidad_sugerida = número de scoops (1 scoop ≈ 1 porción), NUNCA gramos.
+- OBLIGATORIO: "comidas" con EXACTAMENTE ${comidasTarget.length} elementos — uno por cada fila de comidas_a_planear, mismo texto en "comida".
 
 Responde SOLO JSON válido:
 {

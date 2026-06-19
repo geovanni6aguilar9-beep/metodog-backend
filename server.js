@@ -635,7 +635,7 @@ app.post("/api/alimentos/dieta-ia", async (req, res) => {
   if (!user) return res.status(401).json({ ok: false, error: "Sesión requerida" });
 
   console.log("========================================");
-  console.log("[MetodoG] VERSION 4.6 ACTIVA — POST /api/alimentos/dieta-ia", new Date().toISOString());
+  console.log(`[MetodoG] Pipeline 4.7-PromptElite ACTIVA — POST /api/alimentos/dieta-ia`, new Date().toISOString());
   console.log("========================================");
 
   const puede = await usuarioPuedeRecetasIa(user.id, user.rol);
