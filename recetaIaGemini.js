@@ -237,9 +237,10 @@ function evaluarCalidadPlanDieta(dieta, targetDia) {
   const grasMeta = num(targetDia.grasas);
   const carbFinal = num(total.carbohidratos);
   const carbMeta = num(targetDia.carbohidratos);
-  const grasOk = grasFinal <= grasMeta + 8;
-  const carbOk = carbFinal >= carbMeta - 25;
-  const kcalOk = Math.abs(kcalMeta - kcalFinal) <= 120;
+  // Alineado con cadenero UI (ModalDietaIa): ±150 kcal, +20g grasa, −55g carbos
+  const grasOk = grasFinal <= grasMeta + 20;
+  const carbOk = carbFinal >= carbMeta - 55;
+  const kcalOk = Math.abs(kcalMeta - kcalFinal) <= 150;
   if (grasOk && carbOk && kcalOk) return { ok: true };
   return {
     ok: false,
