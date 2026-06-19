@@ -179,19 +179,6 @@ function macrosDesdeCatalogo(item, cantidad) {
   };
 }
 
-function sumarMacrosLista(items) {
-  return items.reduce(
-    (t, m) => ({
-      calorias: t.calorias + num(m.calorias),
-      proteinas: t.proteinas + num(m.proteinas),
-      carbohidratos: t.carbohidratos + num(m.carbohidratos),
-      grasas: t.grasas + num(m.grasas),
-      sodio: t.sodio + num(m.sodio)
-    }),
-    { calorias: 0, proteinas: 0, carbohidratos: 0, grasas: 0, sodio: 0 }
-  );
-}
-
 function normalizarCantidadSugerida(cantidad, cat) {
   const qty = num(cantidad, 0);
   if (qty <= 0) return 0;
