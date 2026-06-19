@@ -6,6 +6,8 @@
 
 const MODELOS_FALLBACK = ["gemini-2.5-flash", "gemini-2.5-flash-lite"];
 const TIMEOUT_GEMINI_MS = 26000;
+const TIMEOUT_GEMINI_DIA_MS = 42000;
+const DEADLINE_DIETA_IA_MS = 48000;
 const TIMEOUT_GEMINI_PROBE_MS = 15000;
 const MAX_CATALOGO_PROMPT = 96;
 
@@ -335,7 +337,8 @@ function mensajeErrorAmigable(motivo, esAdmin = false, detalle = "") {
     return "La IA no pudo sugerir esta comida. Prueba otra comida o ajusta tus «evitar».";
   }
   if (motivo === "timeout") {
-    const base = "La IA tardó demasiado. Intenta de nuevo (menos comidas vacías o en 1 min).";
+    const base =
+      "La IA tardó demasiado. Con 3 comidas densas tarda más — prueba 4–5 comidas, reintenta en 1 min o deja menos comidas vacías.";
     return esAdmin && detalle ? `${base} (${detalle.slice(0, 100)})` : base;
   }
   if (motivo === "api_error" || motivo === "modelo_no_disponible" || motivo === "red") {
@@ -727,6 +730,11 @@ async function generarDietaDiaCompleta(payload, db = null, options = {}) {
     carbohidratos: Math.round(targetDiaPrompt.carbohidratos / nComidasPlan),
     grasas: Math.max(4, Math.round(targetDiaPrompt.grasas / nComidasPlan))
   };
+  const comidaDensa = refPorComida.calorias >= 620;
+  const tInicio = Date.now();
+  const msRestanteDieta = () => DEADLINE_DIETA_IA_MS - (Date.now() - tInicio);
+  const timeoutGeminiDieta = () =>
+    Math.min(TIMEOUT_GEMINI_DIA_MS, Math.max(12000, msRestanteDieta() - 6000));
 
   const system = `Eres un Planificador Nutricional Deportivo de MétodoG (México).
 Arma un PLAN DE DÍA COMPLETO: un combo por cada comida indicada en "comidas_a_planear".
@@ -742,6 +750,7 @@ REGLA MATEMÁTICA ESTRICTA (PRIORIDAD MÁXIMA — incumplir = plan inválido):
 - Máximo 4 alimentos por comida. NO acumules avena + amaranto + arroz en la MISMA comida.
 - AGUACATE, nueces, almendras, aceite: UNA sola fuente grasa al día (ej. 30g aguacate O 10g aceite O 20g nueces), NUNCA en varias comidas.
 - Proteínas magras preferidas: claras, pechuga, jamón de pavo, pescado blanco. Evita combinar whey + yogur + nueces + aguacate el mismo día.
+${comidaDensa ? `- COMIDAS DENSAS (~${refPorComida.calorias} kcal/plato): arroz/papa/avena + proteína magra + UNA grasa limpia (aguacate 25–40g o aceite 5–8ml). Miel/azúcar: máx 15–20g por comida y máx 40g en todo el día.` : ""}
 
 REGLAS:
 - REGLA CRÍTICA DE IDs: Debes usar ÚNICA y EXCLUSIVAMENTE los id_alimento numéricos del array "ids_validos" y del catálogo enviado. ESTÁ ESTRICTAMENTE PROHIBIDO inventar IDs o usar alimentos fuera de esa lista. Si no encuentras el ideal, elige el más parecido de ids_validos.
@@ -804,17 +813,21 @@ Responde SOLO JSON válido:
   let ultimoDetalle = "";
   const intentos = [
     { model: modelos[0], usarJson: true, correccionIds: false },
-    { model: modelos[1] || modelos[0], usarJson: true, correccionIds: false },
-    { model: modelos[0], usarJson: false, correccionIds: false }
+    { model: modelos[1] || modelos[0], usarJson: true, correccionIds: false }
   ];
 
   for (let i = 0; i < intentos.length; i++) {
     const { model, usarJson, correccionIds } = intentos[i];
+    if (timeoutGeminiDieta() < 12000) {
+      ultimoError = "timeout";
+      ultimoDetalle = "deadline interno antes de llamar a Gemini";
+      break;
+    }
     const user = buildUserDieta(correccionIds);
     try {
       const { res, data } = await llamarGemini(apiKey, model, system, user, usarJson, {
         maxOutputTokens: 6144,
-        timeoutMs: TIMEOUT_GEMINI_MS
+        timeoutMs: timeoutGeminiDieta()
       });
       if (res.status === 429) return { ok: false, motivo: "cuota" };
       if (!res.ok) {
@@ -874,8 +887,13 @@ Responde SOLO JSON válido:
             const sobreCarga =
               num(macrosPreOpt.calorias) > num(targetDia.calorias) * 1.2 ||
               num(macrosPreOpt.grasas) > num(targetDia.grasas) + 25;
-            const maxOptPasses = sobreCarga ? 10 : 6;
+            const maxOptPasses = sobreCarga ? 3 : 2;
             for (let optPass = 0; optPass < maxOptPasses; optPass++) {
+              if (msRestanteDieta() < 4000) {
+                console.warn("[recetaIaGemini] optimizador: deadline, mejor plan disponible");
+                dieta.optimizador_parcial = true;
+                break;
+              }
               dieta = optimizarDietaDia(dieta, catalogoMap, targetDia);
               const gapKcal = num(targetDia.calorias) - num(dieta.macros_plan?.calorias);
               const gapGras = num(targetDia.grasas) - num(dieta.macros_plan?.grasas);
