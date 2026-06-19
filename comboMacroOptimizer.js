@@ -11,12 +11,12 @@ const TOLERANCIA = {
   grasas: 5
 };
 
-/** Cadenero Combo IA individual (±50 kcal vs meta combo). */
+/** Cadenero Combo IA individual (jun 2026 — alineado coach: ajuste manual en editor). */
 const TOLERANCIA_COMBO = {
-  calorias: 50,
-  proteinas: 8,
-  carbohidratos: 15,
-  grasas: 12
+  calorias: 120,
+  proteinas: 25,
+  carbohidratos: 30,
+  grasas: 15
 };
 
 /** Penalización asimétrica: exceso de grasa pesa 10x (nutrición deportiva). */
@@ -325,7 +325,6 @@ function dentroTolerancia(total, target) {
 }
 
 function dentroToleranciaCombo(total, target) {
-  if (excesoGrasa(total, target) > TOLERANCIA_COMBO.grasas) return false;
   return (
     Math.abs(num(total.calorias) - num(target.calorias)) <= TOLERANCIA_COMBO.calorias &&
     Math.abs(num(total.proteinas) - num(target.proteinas)) <= TOLERANCIA_COMBO.proteinas &&

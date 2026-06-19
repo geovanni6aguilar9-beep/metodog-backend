@@ -15,7 +15,7 @@ let optimizarCombo = (combo) => combo;
 let optimizarDietaDia = (dieta) => dieta;
 let aplicarGuillotinaPorcionesDieta = (dieta) => dieta;
 let aplicarGuillotinaPorcionesCombo = (combo) => combo;
-const VERSION_PIPELINE_IA = "4.7.1-PromptElite";
+const VERSION_PIPELINE_IA = "4.7.2-PromptElite";
 let sumarMacrosLista = (items) =>
   (items || []).reduce(
     (t, m) => ({
@@ -250,22 +250,25 @@ function evaluarCalidadPlanDieta(dieta, targetDia) {
   };
 }
 
-/** Cadenero Combo IA: ±50 kcal vs meta combo (ModalRecetaIa). */
+/** Cadenero Combo IA: ±120 kcal · ±25g P/C · ±15g G (coach ajusta en editor). */
 function evaluarCalidadCombo(combo, target) {
   const total = combo?.macros_combo || {};
   const kcalFinal = num(total.calorias);
   const kcalMeta = num(target.calorias);
+  const protFinal = num(total.proteinas);
+  const protMeta = num(target.proteinas);
   const grasFinal = num(total.grasas);
   const grasMeta = num(target.grasas);
   const carbFinal = num(total.carbohidratos);
   const carbMeta = num(target.carbohidratos);
-  const kcalOk = Math.abs(kcalMeta - kcalFinal) <= 50;
-  const grasOk = grasFinal <= grasMeta + 15;
-  const carbOk = carbFinal >= carbMeta - 30;
-  if (kcalOk && grasOk && carbOk) return { ok: true };
+  const kcalOk = Math.abs(kcalMeta - kcalFinal) <= 120;
+  const protOk = Math.abs(protMeta - protFinal) <= 25;
+  const carbOk = Math.abs(carbMeta - carbFinal) <= 30;
+  const grasOk = Math.abs(grasMeta - grasFinal) <= 15;
+  if (kcalOk && protOk && carbOk && grasOk) return { ok: true };
   return {
     ok: false,
-    detalle: `${kcalFinal}/${kcalMeta} kcal · G${grasFinal}/${grasMeta}g · C${carbFinal}/${carbMeta}g`
+    detalle: `${kcalFinal}/${kcalMeta} kcal · P${protFinal}/${protMeta}g · C${carbFinal}/${carbMeta}g · G${grasFinal}/${grasMeta}g`
   };
 }
 
@@ -397,7 +400,7 @@ function mensajeErrorAmigable(motivo, esAdmin = false, detalle = "") {
   }
   if (motivo === "combo_no_cuadrado") {
     const base =
-      "El combo quedó fuera de la meta de esta comida (±50 kcal). Toca Reintentar.";
+      "El combo quedó muy lejos de la meta (±120 kcal · ±25g P/C · ±15g G). Toca Reintentar.";
     return esAdmin && detalle ? `${base} (${detalle.slice(0, 120)})` : base;
   }
   if (motivo === "formato_key") {
@@ -497,12 +500,10 @@ Arma UN SOLO COMBO para completar UNA comida. NO es receta de cocina ni pasos de
 
 REGLAS DE ORO ABSOLUTAS (incumplir = combo inválido):
 
-1) META CALÓRICA ESTRICTA
-- El combo debe aportar ~${targetComboPrompt.calorias} kcal (±50 máximo).
-- PROHIBIDO exceder ${targetComboPrompt.calorias + 50} kcal en el combo.
-- Prioridad 1: PROTEÍNA ~${targetComboPrompt.proteinas}g (±8g).
-- Prioridad 2: grasa ≤ ${targetComboPrompt.grasas}g (mejor quedarte corto).
-- Prioridad 3: carbohidratos ~${targetComboPrompt.carbohidratos}g (±15g) — complejos primero.
+1) META CALÓRICA (borrador coach — tú afinas en el editor)
+- El combo debe aportar ~${targetComboPrompt.calorias} kcal (±120 kcal aceptable).
+- Objetivo macros: P ~${targetComboPrompt.proteinas}g (±25g) · C ~${targetComboPrompt.carbohidratos}g (±25g) · G ~${targetComboPrompt.grasas}g (±15g).
+- Prioriza proteína magra y carbohidratos complejos; modera grasa.
 ${yaEnComida ? `- Ya hay alimentos en esta comida (${redondear(num(macrosActualesComida.calorias))} kcal). Tu combo cubre SOLO lo faltante — NO dupliques lo que ya está.` : ""}
 
 2) PORCIONES HUMANAS (borrador conservador — el optimizador ajustará)
