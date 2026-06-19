@@ -564,6 +564,12 @@ async function usuarioPuedeRecetasIa(userId, rol) {
   return !!r.rows[0]?.paquete_rutina_6_dias;
 }
 
+function coachIdParaCatalogoIa(user) {
+  if (!user || (user.rol !== "COACH" && user.rol !== "SUPERADMIN")) return null;
+  const id = parseInt(user.id, 10);
+  return Number.isNaN(id) || id <= 0 ? null : id;
+}
+
 app.get("/api/alimentos/receta-ia/probe", async (req, res) => {
   const user = req.user;
   if (!user) return res.status(401).json({ ok: false, error: "Sesión requerida" });
@@ -591,8 +597,9 @@ app.post("/api/alimentos/receta-ia", async (req, res) => {
   }
 
   const payload = req.body || {};
+  const iaOpts = { coachId: coachIdParaCatalogoIa(user) };
   try {
-    const resultado = await generarRecetaComida(payload, db);
+    const resultado = await generarRecetaComida(payload, db, iaOpts);
     if (!resultado.ok) {
       const esAdmin = user.rol === "SUPERADMIN" || user.rol === "COACH";
       const mostrarDetalle = esAdmin || resultado.motivo === "formato_key";
@@ -640,8 +647,9 @@ app.post("/api/alimentos/dieta-ia", async (req, res) => {
   }
 
   const payload = req.body || {};
+  const iaOpts = { coachId: coachIdParaCatalogoIa(user) };
   try {
-    const resultado = await generarDietaDiaCompleta(payload, db);
+    const resultado = await generarDietaDiaCompleta(payload, db, iaOpts);
     if (!resultado.ok) {
       const esAdmin = user.rol === "SUPERADMIN" || user.rol === "COACH";
       const mostrarDetalle =

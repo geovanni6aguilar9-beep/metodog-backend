@@ -99,13 +99,20 @@ function normalizarCatalogo(catalogo) {
 }
 
 /** Catálogo autoritativo desde Turso (evita biblioteca cacheada en el cliente). */
-async function cargarCatalogoDesdeDb(db) {
+async function cargarCatalogoDesdeDb(db, coachId = null) {
   if (!db) return [];
-  const result = await db.execute({
-    sql: `SELECT id, nombre, grupo, grupo_equivalencia, porcion_base, unidad, calorias, proteinas, carbohidratos, grasas, sodio
-          FROM alimentos WHERE coach_id IS NULL ORDER BY grupo, nombre ASC`
-  });
-  return normalizarCatalogo(result.rows || []);
+  let sql = `SELECT id, nombre, grupo, grupo_equivalencia, porcion_base, unidad, calorias, proteinas, carbohidratos, grasas, sodio
+             FROM alimentos WHERE coach_id IS NULL`;
+  const args = [];
+  const cid = parseInt(coachId, 10);
+  if (cid > 0) {
+    sql = `SELECT id, nombre, grupo, grupo_equivalencia, porcion_base, unidad, calorias, proteinas, carbohidratos, grasas, sodio
+           FROM alimentos WHERE coach_id IS NULL OR coach_id = ?`;
+    args.push(cid);
+  }
+  sql += " ORDER BY grupo, nombre ASC";
+  const result = await db.execute({ sql, args });
+  return normalizarCatalogo(result?.rows || []);
 }
 
 /** DB gana sobre payload del frontend (macros/unidades actualizados). */
@@ -154,11 +161,11 @@ function catalogoLiteParaPrompt(catalogo) {
   }));
 }
 
-async function resolverCatalogoIa(payload, db) {
+async function resolverCatalogoIa(payload, db, options = {}) {
   const catalogoPayload = normalizarCatalogo(payload?.catalogo);
   if (!db) return catalogoPayload;
   try {
-    const catalogoDb = await cargarCatalogoDesdeDb(db);
+    const catalogoDb = await cargarCatalogoDesdeDb(db, options?.coachId);
     if (!catalogoDb.length) return catalogoPayload;
     return fusionarCatalogo(catalogoDb, catalogoPayload);
   } catch (err) {
@@ -414,12 +421,12 @@ async function llamarGemini(apiKey, model, system, user, usarJsonMode, opts = {}
   return { res, data };
 }
 
-async function generarRecetaComida(payload, db = null) {
+async function generarRecetaComida(payload, db = null, options = {}) {
   const apiKey = resolverGeminiApiKey();
   if (!apiKey) return { ok: false, motivo: "sin_api_key" };
 
   const comida = String(payload?.comida || "Comida").trim() || "Comida";
-  const catalogo = await resolverCatalogoIa(payload, db);
+  const catalogo = await resolverCatalogoIa(payload, db, options);
   if (!catalogo.length) return { ok: false, motivo: "sin_catalogo" };
 
   const plan = payload?.plan || null;
@@ -674,7 +681,7 @@ function asegurarMacrosPlanDieta(dieta) {
   return dieta;
 }
 
-async function generarDietaDiaCompleta(payload, db = null) {
+async function generarDietaDiaCompleta(payload, db = null, options = {}) {
   console.log("========================================");
   console.log("[MetodoG] VERSION 4.6 ACTIVA — dieta-ia", new Date().toISOString());
   console.log("[MetodoG] optimizer:", OPTIMIZER_DISPONIBLE ? VERSION_PIPELINE_IA : "OFF");
@@ -682,7 +689,7 @@ async function generarDietaDiaCompleta(payload, db = null) {
   const apiKey = resolverGeminiApiKey();
   if (!apiKey) return { ok: false, motivo: "sin_api_key" };
 
-  const catalogo = await resolverCatalogoIa(payload, db);
+  const catalogo = await resolverCatalogoIa(payload, db, options);
   if (!catalogo.length) return { ok: false, motivo: "sin_catalogo" };
 
   const plan = payload?.plan || null;
