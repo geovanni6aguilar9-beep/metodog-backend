@@ -223,7 +223,8 @@ async function inicializarBD() {
 
     for (const sql of [
       'ALTER TABLE perfiles_clientes ADD COLUMN peso_kg REAL',
-      'ALTER TABLE perfiles_clientes ADD COLUMN genero TEXT'
+      'ALTER TABLE perfiles_clientes ADD COLUMN genero TEXT',
+      "ALTER TABLE perfiles_clientes ADD COLUMN intencion_atleta TEXT"
     ]) {
       try { await db.execute(sql); } catch (_) { /* columna ya existe */ }
     }
@@ -1422,24 +1423,42 @@ app.delete("/api/mediciones/:id", async (req, res) => {
 
 // 🔥 NUEVA RUTA: GUARDAR O ACTUALIZAR EL FORMULARIO DEL CLIENTE
 app.post("/api/clientes/guardar-perfil", async (req, res) => {
-  const { usuario_id, edad, estatura, peso_kg, genero, gustos, disgustos, enfermedades } = req.body;
+  const { usuario_id, edad, estatura, peso_kg, genero, gustos, disgustos, enfermedades, intencion_atleta } = req.body;
   if (!(await assertAccesoUsuarioEdicion(db, req, res, usuario_id))) return;
   const generoNorm = genero === 'F' ? 'F' : genero === 'M' ? 'M' : null;
+  let intencionNorm = null;
+  if (intencion_atleta != null && String(intencion_atleta).trim() !== '') {
+    const raw = String(intencion_atleta).toLowerCase().trim();
+    if (raw === 'solo' || raw === 'coach' || raw === 'busco_coach') {
+      intencionNorm = raw === 'busco_coach' ? 'coach' : raw;
+    } else {
+      return res.status(400).json({ error: "intencion_atleta debe ser 'solo' o 'coach'" });
+    }
+  }
   try {
     await db.execute({
-      sql: `INSERT INTO perfiles_clientes (usuario_id, edad, estatura, peso_kg, genero, gustos, disgustos, enfermedades) 
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?) 
+      sql: `INSERT INTO perfiles_clientes (usuario_id, edad, estatura, peso_kg, genero, gustos, disgustos, enfermedades, intencion_atleta) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) 
             ON CONFLICT(usuario_id) 
-            DO UPDATE SET edad = excluded.edad, estatura = excluded.estatura, peso_kg = excluded.peso_kg, genero = excluded.genero, gustos = excluded.gustos, disgustos = excluded.disgustos, enfermedades = excluded.enfermedades`,
+            DO UPDATE SET 
+              edad = COALESCE(excluded.edad, perfiles_clientes.edad),
+              estatura = COALESCE(excluded.estatura, perfiles_clientes.estatura),
+              peso_kg = COALESCE(excluded.peso_kg, perfiles_clientes.peso_kg),
+              genero = COALESCE(excluded.genero, perfiles_clientes.genero),
+              gustos = COALESCE(NULLIF(excluded.gustos, ''), perfiles_clientes.gustos),
+              disgustos = COALESCE(NULLIF(excluded.disgustos, ''), perfiles_clientes.disgustos),
+              enfermedades = COALESCE(NULLIF(excluded.enfermedades, ''), perfiles_clientes.enfermedades),
+              intencion_atleta = COALESCE(excluded.intencion_atleta, perfiles_clientes.intencion_atleta)`,
       args: [
         usuario_id,
-        edad || null,
-        estatura || null,
+        edad != null && edad !== '' ? parseInt(edad, 10) : null,
+        estatura != null && estatura !== '' ? parseFloat(estatura) : null,
         peso_kg != null && peso_kg !== '' ? parseFloat(peso_kg) : null,
         generoNorm,
-        gustos ? gustos.trim() : "",
-        disgustos ? disgustos.trim() : "",
-        enfermedades ? enfermedades.trim() : ""
+        gustos != null ? String(gustos).trim() : null,
+        disgustos != null ? String(disgustos).trim() : null,
+        enfermedades != null ? String(enfermedades).trim() : null,
+        intencionNorm
       ]
     });
     res.json({ mensaje: "Perfil de diagnóstico guardado correctamente" });
@@ -1667,8 +1686,8 @@ app.get("/api/clientes/:id/resumen", async (req, res) => {
     if (infoRes.rows.length === 0) return res.status(404).json({ error: "Usuario no encontrado" });
     
     // 2. Obtener su perfil extendido (si no lo ha llenado, manda valores vacíos por defecto)
-    const perfilRes = await db.execute({ sql: "SELECT edad, estatura, peso_kg, genero, gustos, disgustos, enfermedades FROM perfiles_clientes WHERE usuario_id = ?", args: [req.params.id] });
-    const perfil = perfilRes.rows.length > 0 ? perfilRes.rows[0] : { edad: null, estatura: null, peso_kg: null, genero: null, gustos: "", disgustos: "", enfermedades: "" };
+    const perfilRes = await db.execute({ sql: "SELECT edad, estatura, peso_kg, genero, gustos, disgustos, enfermedades, intencion_atleta FROM perfiles_clientes WHERE usuario_id = ?", args: [req.params.id] });
+    const perfil = perfilRes.rows.length > 0 ? perfilRes.rows[0] : { edad: null, estatura: null, peso_kg: null, genero: null, gustos: "", disgustos: "", enfermedades: "", intencion_atleta: null };
 
     // 3. Obtener su historial de pesajes ordenados del más reciente al más antiguo
     const histRes = await db.execute({ sql: "SELECT id, peso, grasa, datos_extra, fecha FROM mediciones WHERE usuario_id = ? ORDER BY fecha DESC", args: [req.params.id] });
