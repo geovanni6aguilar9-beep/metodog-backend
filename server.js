@@ -40,6 +40,14 @@ const {
   notificarClientePlanActualizado
 } = require("./notificaciones");
 const { evaluarSuscripcionCoach } = require("./coachSuscripcion");
+const {
+  ensureTableConcesiones,
+  listarConcesiones,
+  otorgarConcesion,
+  revocarConcesion,
+  obtenerConcesionActiva,
+  badgeSuscripcionUsuario
+} = require("./concesionesAdmin");
 const { buildMeso2Payload, PROGRAMA_MESO2 } = require("./data/programa-meso2-geovanni");
 const { buildCorsOptions, isProduction } = require("./corsConfig");
 const { generarOpinionInformeMensual } = require("./aiInforme");
@@ -312,6 +320,8 @@ async function inicializarBD() {
     } catch (_) { /* ignore */ }
 
     await migrarPaquetesGrandfathered(db);
+
+    await ensureTableConcesiones(db);
 
     await ensureTablesNotificaciones(db);
 
@@ -1189,6 +1199,7 @@ app.get("/api/admin/usuarios", async (req, res) => {
   try {
     let sql = `
       SELECT u.id, u.nombre, u.email, u.rol, u.coach_id, u.fecha_inicio,
+        u.paquete_rutina_6_dias, u.paquete_grandfathered,
         sc.status AS coach_sub_status,
         sc.plan AS coach_plan,
         sa.status AS atleta_sub_status,
@@ -1208,21 +1219,92 @@ app.get("/api/admin/usuarios", async (req, res) => {
     args.push(limite);
 
     const result = await db.execute({ sql, args });
-    const rows = (result.rows || []).map(r => ({
-      id: Number(r.id),
-      nombre: r.nombre,
-      email: r.email,
-      rol: r.rol,
-      coach_id: r.coach_id != null ? Number(r.coach_id) : null,
-      fecha_inicio: r.fecha_inicio,
-      coach_sub_status: r.coach_sub_status || null,
-      coach_plan: r.coach_plan || null,
-      atleta_sub_status: r.atleta_sub_status || null,
-      directorio_verificado: !!Number(r.directorio_verificado)
-    }));
+    const rows = await Promise.all(
+      (result.rows || []).map(async (r) => {
+        const concesion = await obtenerConcesionActiva(db, r.id);
+        const activa = concesion && concesion.status === "active";
+        return {
+          id: Number(r.id),
+          nombre: r.nombre,
+          email: r.email,
+          rol: r.rol,
+          coach_id: r.coach_id != null ? Number(r.coach_id) : null,
+          fecha_inicio: r.fecha_inicio,
+          coach_sub_status: r.coach_sub_status || null,
+          coach_plan: r.coach_plan || null,
+          atleta_sub_status: r.atleta_sub_status || null,
+          paquete_rutina_6_dias: !!Number(r.paquete_rutina_6_dias),
+          paquete_grandfathered: !!Number(r.paquete_grandfathered),
+          directorio_verificado: !!Number(r.directorio_verificado),
+          suscripcion_badge: badgeSuscripcionUsuario(r, activa),
+          concesion_activa: activa,
+          concesion_tipo: activa ? concesion.tipo : null,
+          concesion_plan: activa ? concesion.plan : null,
+          concesion_fin: activa ? concesion.fin || null : null
+        };
+      })
+    );
     res.json(rows);
   } catch (err) {
     console.error("Error admin listar usuarios:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/api/admin/concesiones", async (req, res) => {
+  if (!assertSuperAdmin(req, res)) return;
+
+  const usuarioId = req.query.usuario_id ? parseInt(req.query.usuario_id, 10) : null;
+  const soloActivas = req.query.activas === "1" || req.query.activas === "true";
+
+  try {
+    const rows = await listarConcesiones(db, { usuarioId, soloActivas });
+    res.json(rows);
+  } catch (err) {
+    console.error("Error admin listar concesiones:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/admin/concesiones", async (req, res) => {
+  if (!assertSuperAdmin(req, res)) return;
+
+  try {
+    const result = await otorgarConcesion(db, {
+      ...req.body,
+      concedido_por: req.user.id
+    });
+    if (!result.ok) {
+      return res.status(result.status || 400).json({ error: result.error });
+    }
+    res.status(201).json(result);
+  } catch (err) {
+    console.error("Error admin otorgar concesión:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete("/api/admin/concesiones/:id", async (req, res) => {
+  if (!assertSuperAdmin(req, res)) return;
+
+  const concesionId = parseInt(req.params.id, 10);
+  if (!concesionId || Number.isNaN(concesionId)) {
+    return res.status(400).json({ error: "ID de concesión inválido" });
+  }
+
+  try {
+    const result = await revocarConcesion(
+      db,
+      concesionId,
+      req.user.id,
+      req.body?.motivo_revocacion
+    );
+    if (!result.ok) {
+      return res.status(result.status || 400).json({ error: result.error });
+    }
+    res.json(result);
+  } catch (err) {
+    console.error("Error admin revocar concesión:", err.message);
     res.status(500).json({ error: err.message });
   }
 });

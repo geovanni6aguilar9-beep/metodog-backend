@@ -2,8 +2,22 @@
  * Lógica de suscripción coach (sin Stripe) — evita dependencia circular pagos ↔ notificaciones.
  */
 const { limiteAlumnosCoach, suscripcionActiva, trialExpirado } = require("./planesSuscripcion");
+const { obtenerConcesionActiva, mapConcesionEntitlements } = require("./concesionesAdmin");
 
 async function evaluarSuscripcionCoach(db, coachId) {
+  const concesion = await obtenerConcesionActiva(db, coachId);
+  const ent = mapConcesionEntitlements(concesion);
+  if (ent?.tipo === "coach") {
+    return {
+      plan: ent.plan,
+      status: ent.status,
+      limite_efectivo: ent.limite_efectivo,
+      trial_end: null,
+      origen: "admin",
+      concesion_fin: ent.fin || null
+    };
+  }
+
   const subRes = await db.execute({
     sql: `SELECT plan, status, limite_clientes, trial_end
           FROM suscripciones_coach WHERE usuario_id = ?`,

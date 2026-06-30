@@ -14,6 +14,7 @@ const {
   trialExpirado
 } = require("./planesSuscripcion");
 const { evaluarSuscripcionCoach } = require("./coachSuscripcion");
+const { obtenerConcesionActiva, mapConcesionEntitlements } = require("./concesionesAdmin");
 
 const MONTO_PAQUETE_MXN_DEFAULT = 149;
 const PRODUCTO_PAQUETE_LEGACY_NOMBRE = "MétodoG — Rutina Full Week (6 días)";
@@ -1313,6 +1314,43 @@ async function enrichUsuarioConSuscripcion(db, usuario) {
     usuario.coach_stripe_vinculado = false;
     usuario.coach_en_trial = false;
     usuario.coach_trial_usado = false;
+  }
+
+  const concesion = await obtenerConcesionActiva(db, usuario.id);
+  const ent = mapConcesionEntitlements(concesion);
+
+  if (ent?.tipo === "atleta") {
+    usuario.paquete_rutina_6_dias = true;
+    usuario.atleta_suscripcion_activa = true;
+    usuario.suscripcion_origen = "admin";
+    usuario.concesion_admin_fin = ent.fin || null;
+    usuario.concesion_admin_tipo = "atleta";
+    usuario.concesion_admin_plan = ent.plan;
+  } else if (ent?.tipo === "coach") {
+    usuario.coach_plan = ent.plan;
+    usuario.coach_suscripcion_status = "active";
+    usuario.coach_suscripcion_activa = true;
+    usuario.coach_limite_clientes = ent.limite_efectivo;
+    usuario.coach_periodo_fin = ent.fin || null;
+    usuario.coach_cancel_at_period_end = false;
+    usuario.coach_en_trial = false;
+    usuario.coach_necesita_suscripcion = false;
+    usuario.suscripcion_origen = "admin";
+    usuario.concesion_admin_fin = ent.fin || null;
+    usuario.concesion_admin_tipo = "coach";
+    usuario.concesion_admin_plan = ent.plan;
+  } else if (
+    ["active", "trialing"].includes(usuario.coach_suscripcion_status) ||
+    ["active", "trialing"].includes(usuario.atleta_suscripcion_status)
+  ) {
+    usuario.suscripcion_origen = "stripe";
+    usuario.concesion_admin_fin = null;
+  } else if (usuario.paquete_grandfathered || usuario.paquete_rutina_6_dias) {
+    usuario.suscripcion_origen = "grandfathered";
+    usuario.concesion_admin_fin = null;
+  } else {
+    usuario.suscripcion_origen = null;
+    usuario.concesion_admin_fin = null;
   }
 
   return usuario;
