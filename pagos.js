@@ -1323,6 +1323,7 @@ async function enrichUsuarioConSuscripcion(db, usuario) {
     usuario.paquete_rutina_6_dias = true;
     usuario.atleta_suscripcion_activa = true;
     usuario.suscripcion_origen = "admin";
+    usuario.concesion_admin_id = ent.concesion_id || null;
     usuario.concesion_admin_fin = ent.fin || null;
     usuario.concesion_admin_tipo = "atleta";
     usuario.concesion_admin_plan = ent.plan;
@@ -1336,6 +1337,7 @@ async function enrichUsuarioConSuscripcion(db, usuario) {
     usuario.coach_en_trial = false;
     usuario.coach_necesita_suscripcion = false;
     usuario.suscripcion_origen = "admin";
+    usuario.concesion_admin_id = ent.concesion_id || null;
     usuario.concesion_admin_fin = ent.fin || null;
     usuario.concesion_admin_tipo = "coach";
     usuario.concesion_admin_plan = ent.plan;
