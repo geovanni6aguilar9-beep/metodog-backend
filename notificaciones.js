@@ -336,6 +336,36 @@ async function responderSolicitudVinculo(db, { solicitudId, coachUserId, accion,
   return { ok: true, mensaje: "Solicitud rechazada" };
 }
 
+/** Etiqueta legible de meta desde dieta sembrada en onboarding (modo libre). */
+function metaLabelFromDieta(datosDietaRaw) {
+  if (!datosDietaRaw) return null;
+  try {
+    const d = typeof datosDietaRaw === "string" ? JSON.parse(datosDietaRaw) : datosDietaRaw;
+    const etiqueta = d?.calculadora?.calcResultado?.etiqueta;
+    if (etiqueta && String(etiqueta).trim()) return String(etiqueta).trim();
+    const tipo = d?.calculadora?.calcForm?.tipoAjuste;
+    if (tipo === "restar") return "Perder grasa";
+    if (tipo === "sumar") return "Ganar músculo";
+    if (tipo === "mantener") return "Mantener peso";
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function buildPreviewSolicitud(sol, metaLabel) {
+  if (!sol) return null;
+  return {
+    edad: sol.edad != null ? Number(sol.edad) : null,
+    estatura: sol.estatura != null ? Number(sol.estatura) : null,
+    peso_kg: sol.peso_kg != null ? Number(sol.peso_kg) : null,
+    genero: sol.genero || null,
+    enfermedades: sol.enfermedades || "",
+    intencion_atleta: sol.intencion_atleta || null,
+    meta_label: metaLabel || null
+  };
+}
+
 async function listarNotificaciones(db, userId, { filtro, limite = 50 }) {
   const args = [userId];
   let sql = `SELECT id, tipo, titulo, cuerpo, ref_tipo, ref_id, leida, created_at
@@ -366,9 +396,11 @@ async function listarNotificaciones(db, userId, { filtro, limite = 50 }) {
   if (solicitudIds.length > 0) {
     const placeholders = solicitudIds.map(() => "?").join(",");
     const sRes = await db.execute({
-      sql: `SELECT s.id, s.estado, s.cliente_id, u.nombre AS cliente_nombre, u.email AS cliente_email
+      sql: `SELECT s.id, s.estado, s.cliente_id, u.nombre AS cliente_nombre, u.email AS cliente_email,
+                   p.edad, p.estatura, p.peso_kg, p.genero, p.enfermedades, p.intencion_atleta
             FROM solicitudes_vinculo s
             JOIN usuarios u ON u.id = s.cliente_id
+            LEFT JOIN perfiles_clientes p ON p.usuario_id = s.cliente_id
             WHERE s.id IN (${placeholders})`,
       args: solicitudIds
     });
@@ -377,9 +409,30 @@ async function listarNotificaciones(db, userId, { filtro, limite = 50 }) {
     }
   }
 
+  const clienteIds = [
+    ...new Set(
+      Object.values(solicitudesMap)
+        .map((s) => toNum(s.cliente_id))
+        .filter((id) => id != null)
+    )
+  ];
+  const metaPorCliente = {};
+  if (clienteIds.length > 0) {
+    const ph = clienteIds.map(() => "?").join(",");
+    const dRes = await db.execute({
+      sql: `SELECT usuario_id, datos_dieta FROM dietas WHERE usuario_id IN (${ph})`,
+      args: clienteIds
+    });
+    for (const row of dRes.rows || []) {
+      const cid = toNum(row.usuario_id);
+      if (cid != null) metaPorCliente[cid] = metaLabelFromDieta(row.datos_dieta);
+    }
+  }
+
   return items.map((n) => {
     const refId = toNum(n.ref_id);
     const sol = refId != null ? solicitudesMap[refId] : null;
+    const clienteId = sol ? toNum(sol.cliente_id) : null;
     return {
       ...n,
       id: toNum(n.id),
@@ -387,9 +440,12 @@ async function listarNotificaciones(db, userId, { filtro, limite = 50 }) {
       leida: !!n.leida,
       solicitud: sol
         ? {
-            ...sol,
             id: toNum(sol.id),
-            cliente_id: toNum(sol.cliente_id)
+            estado: sol.estado,
+            cliente_id: clienteId,
+            cliente_nombre: sol.cliente_nombre,
+            cliente_email: sol.cliente_email,
+            preview: buildPreviewSolicitud(sol, metaPorCliente[clienteId])
           }
         : null
     };
