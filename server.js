@@ -1888,7 +1888,10 @@ app.post("/api/directorio/guardar-perfil", async (req, res) => {
       mensaje = 'Perfil actualizado. No apareces en el directorio mientras la casilla esté desmarcada.';
     }
 
-    if (quiereVisible) {
+    const debeNotificarAdmin =
+      quiereVisible && (subStatus === 'active' || subStatus === 'trialing');
+
+    if (debeNotificarAdmin) {
       try {
         await notificarSuperadminsEscaparateCoach(db, {
           coachId: usuario_id,
@@ -1952,9 +1955,10 @@ app.get("/api/directorio/admin/revision", async (req, res) => {
         COALESCE(p.visible_en_directorio, 1) AS visible_en_directorio,
         s.status AS sub_status, s.plan AS sub_plan
       FROM usuarios u
+      INNER JOIN suscripciones_coach s ON s.usuario_id = u.id
       LEFT JOIN perfiles_coach_publicos p ON p.usuario_id = u.id
-      LEFT JOIN suscripciones_coach s ON s.usuario_id = u.id
       WHERE u.rol = 'COACH'
+        AND s.status IN ('active', 'trialing')
       ORDER BY COALESCE(p.verificado, 0) ASC, u.nombre ASC
     `);
     res.json((result.rows || []).map(mapCoachRevisionRow));
