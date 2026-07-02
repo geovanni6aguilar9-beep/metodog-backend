@@ -37,7 +37,8 @@ const {
   borrarNotificacion,
   borrarTodasNotificaciones,
   cancelarSolicitudesPendientesCliente,
-  notificarClientePlanActualizado
+  notificarClientePlanActualizado,
+  notificarSuperadminsEscaparateCoach
 } = require("./notificaciones");
 const { evaluarSuscripcionCoach } = require("./coachSuscripcion");
 const {
@@ -244,6 +245,11 @@ async function inicializarBD() {
     try {
       await db.execute(
         "ALTER TABLE perfiles_coach_publicos ADD COLUMN verificado INTEGER DEFAULT 0"
+      );
+    } catch (_) { /* columna ya existe */ }
+    try {
+      await db.execute(
+        "ALTER TABLE perfiles_coach_publicos ADD COLUMN redes_sociales TEXT DEFAULT '{}'"
       );
     } catch (_) { /* columna ya existe */ }
     try {
@@ -1731,7 +1737,8 @@ app.get("/api/directorio/coaches", async (req, res) => {
   try {
     const result = await db.execute(`
       SELECT u.id, u.nombre, u.calificacion, u.codigo_invitacion,
-        p.foto_url, p.bio, p.especialidad, p.logros, p.tarifa_base, p.whatsapp
+        p.foto_url, p.bio, p.especialidad, p.logros, p.tarifa_base, p.whatsapp,
+        COALESCE(p.redes_sociales, '{}') AS redes_sociales
       FROM usuarios u
       INNER JOIN perfiles_coach_publicos p ON p.usuario_id = u.id
       INNER JOIN suscripciones_coach s ON s.usuario_id = u.id
@@ -1766,7 +1773,8 @@ app.get("/api/directorio/mi-perfil/:usuario_id", async (req, res) => {
       return res.status(403).json({ error: "Solo coaches pueden tener perfil público" });
     }
     const perfilRes = await db.execute({
-      sql: `SELECT foto_url, bio, especialidad, logros, tarifa_base, whatsapp, visible_en_directorio, verificado
+      sql: `SELECT foto_url, bio, especialidad, logros, tarifa_base, whatsapp, visible_en_directorio, verificado,
+                   COALESCE(redes_sociales, '{}') AS redes_sociales
             FROM perfiles_coach_publicos WHERE usuario_id = ?`,
       args: [req.params.usuario_id]
     });
@@ -1776,7 +1784,7 @@ app.get("/api/directorio/mi-perfil/:usuario_id", async (req, res) => {
     });
     const perfil = perfilRes.rows[0] || {
       foto_url: '', bio: '', especialidad: '', logros: '', tarifa_base: null, whatsapp: '',
-      visible_en_directorio: 1, verificado: 0
+      visible_en_directorio: 1, verificado: 0, redes_sociales: '{}'
     };
     res.json({
       usuario: user,
@@ -1787,22 +1795,58 @@ app.get("/api/directorio/mi-perfil/:usuario_id", async (req, res) => {
 });
 
 app.post("/api/directorio/guardar-perfil", async (req, res) => {
-  const { usuario_id, foto_url, bio, especialidad, logros, tarifa_base, whatsapp, visible_en_directorio } = req.body;
+  const {
+    usuario_id, foto_url, bio, especialidad, logros, tarifa_base, whatsapp, visible_en_directorio,
+    redes_sociales
+  } = req.body;
   if (!usuario_id) return res.status(400).json({ error: "usuario_id requerido" });
   if (parseInt(usuario_id, 10) !== parseInt(req.user.id, 10)) {
     return res.status(403).json({ error: "Solo puedes editar tu perfil público" });
   }
+  const fotoRaw = String(foto_url || '');
+  if (fotoRaw.length > 500_000) {
+    return res.status(400).json({ error: "La foto es demasiado pesada. Usa otra imagen más ligera." });
+  }
   try {
-    const userRes = await db.execute({ sql: "SELECT rol FROM usuarios WHERE id = ?", args: [usuario_id] });
+    const userRes = await db.execute({
+      sql: "SELECT rol, nombre FROM usuarios WHERE id = ?",
+      args: [usuario_id]
+    });
     if (userRes.rows.length === 0) return res.status(404).json({ error: "Usuario no encontrado" });
     const rol = userRes.rows[0].rol;
+    const coachNombre = userRes.rows[0].nombre || '';
     if (rol !== 'COACH' && rol !== 'SUPERADMIN') {
       return res.status(403).json({ error: "Solo coaches pueden guardar perfil público" });
     }
+
+    const subRes = await db.execute({
+      sql: "SELECT status, plan FROM suscripciones_coach WHERE usuario_id = ?",
+      args: [usuario_id]
+    });
+    const subStatus = subRes.rows[0]?.status || null;
+    const quiereVisible = !(visible_en_directorio === false || visible_en_directorio === 0);
+    const puedePublicar = rol === 'SUPERADMIN' || subStatus === 'active';
+    const verificadoAuto = quiereVisible && puedePublicar ? 1 : 0;
+
+    let redesJson = '{}';
+    if (redes_sociales != null) {
+      if (typeof redes_sociales === 'string') {
+        try {
+          const p = JSON.parse(redes_sociales);
+          redesJson = JSON.stringify(p && typeof p === 'object' ? p : {});
+        } catch {
+          redesJson = '{}';
+        }
+      } else if (typeof redes_sociales === 'object') {
+        redesJson = JSON.stringify(redes_sociales);
+      }
+    }
+
     await db.execute({
       sql: `INSERT INTO perfiles_coach_publicos (
-              usuario_id, foto_url, bio, especialidad, logros, tarifa_base, whatsapp, visible_en_directorio
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+              usuario_id, foto_url, bio, especialidad, logros, tarifa_base, whatsapp,
+              visible_en_directorio, verificado, redes_sociales
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(usuario_id) DO UPDATE SET
               foto_url = excluded.foto_url,
               bio = excluded.bio,
@@ -1810,26 +1854,53 @@ app.post("/api/directorio/guardar-perfil", async (req, res) => {
               logros = excluded.logros,
               tarifa_base = excluded.tarifa_base,
               whatsapp = excluded.whatsapp,
-              visible_en_directorio = excluded.visible_en_directorio`,
+              visible_en_directorio = excluded.visible_en_directorio,
+              verificado = excluded.verificado,
+              redes_sociales = excluded.redes_sociales`,
       args: [
         usuario_id,
-        foto_url || '',
+        fotoRaw,
         bio || '',
         especialidad || '',
         logros || '',
         tarifa_base != null && tarifa_base !== '' ? parseFloat(tarifa_base) : null,
         whatsapp || '',
-        visible_en_directorio === false || visible_en_directorio === 0 ? 0 : 1
+        quiereVisible ? 1 : 0,
+        verificadoAuto,
+        redesJson
       ]
     });
     const perfilGuardado = await db.execute({
-      sql: `SELECT foto_url, bio, especialidad, logros, tarifa_base, whatsapp, visible_en_directorio, verificado
+      sql: `SELECT foto_url, bio, especialidad, logros, tarifa_base, whatsapp, visible_en_directorio, verificado,
+                   COALESCE(redes_sociales, '{}') AS redes_sociales
             FROM perfiles_coach_publicos WHERE usuario_id = ?`,
       args: [usuario_id]
     });
+
+    let mensaje = 'Perfil guardado correctamente.';
+    if (quiereVisible && verificadoAuto) {
+      mensaje = 'Perfil publicado con éxito. Ya eres visible en el directorio de coaches.';
+    } else if (quiereVisible && subStatus === 'trialing') {
+      mensaje = 'Perfil guardado. Activa tu suscripción de pago (no trial) para aparecer en el directorio público.';
+    } else if (quiereVisible && !puedePublicar) {
+      mensaje = 'Perfil guardado. Activa tu suscripción Coach PRO para publicarte en el directorio.';
+    } else if (!quiereVisible) {
+      mensaje = 'Perfil actualizado. No apareces en el directorio mientras la casilla esté desmarcada.';
+    }
+
+    if (quiereVisible) {
+      await notificarSuperadminsEscaparateCoach(db, {
+        coachId: usuario_id,
+        coachNombre,
+        publicado: !!verificadoAuto,
+        resend
+      });
+    }
+
     res.json({
-      mensaje: "Perfil público guardado. Aparecerás en el catálogo cuando MétodoG verifique tu cuenta.",
-      perfil: perfilGuardado.rows[0] || null
+      mensaje,
+      perfil: perfilGuardado.rows[0] || null,
+      publicado: !!verificadoAuto
     });
   } catch (err) {
     console.error("Error guardar perfil coach:", err.message);

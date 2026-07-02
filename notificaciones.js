@@ -115,6 +115,53 @@ async function enrichUsuarioVinculo(db, usuario) {
   return usuario;
 }
 
+async function enviarEmailSuperadminEscaparate(resend, admin, { coachNombre, publicado }) {
+  if (!resend || !admin?.email) return;
+  try {
+    const asunto = publicado
+      ? `📣 ${coachNombre} publicó su perfil en el directorio`
+      : `📝 ${coachNombre} actualizó su escaparate de coach`;
+    await resend.emails.send({
+      from: "MétodoG Notificaciones <onboarding@resend.dev>",
+      to: admin.email,
+      subject: asunto,
+      html: `<p>Hola <b>${admin.nombre || "Admin"}</b>,</p>
+             <p><b>${coachNombre || "Un coach"}</b> ${
+               publicado
+                 ? "publicó su perfil en el directorio público de MétodoG."
+                 : "guardó cambios en su escaparate (aún no visible en catálogo — revisa suscripción o trial)."
+             }</p>
+             <p>Abre la campanita en la app o ve a <b>Directorio → Revisión</b> para ver el perfil.</p>`
+    });
+  } catch (_) { /* best-effort */ }
+}
+
+/** Coach publicó o actualizó escaparate → inbox (y email best-effort) a todos los SUPERADMIN. */
+async function notificarSuperadminsEscaparateCoach(db, { coachId, coachNombre, publicado, resend }) {
+  const adminsRes = await db.execute({
+    sql: "SELECT id, email, nombre FROM usuarios WHERE rol = 'SUPERADMIN'"
+  });
+  const admins = adminsRes.rows || [];
+  if (admins.length === 0) return;
+
+  const titulo = publicado ? "Perfil publicado en directorio" : "Coach actualizó escaparate";
+  const cuerpo = publicado
+    ? `${coachNombre || "Un coach"} publicó su perfil. Ya es visible en el catálogo público.`
+    : `${coachNombre || "Un coach"} guardó su escaparate. Revisa si falta activar suscripción de pago.`;
+
+  for (const admin of admins) {
+    await crearNotificacion(db, {
+      usuarioId: admin.id,
+      tipo: "directorio_coach_publicado",
+      titulo,
+      cuerpo,
+      refTipo: "coach_perfil",
+      refId: coachId
+    });
+    await enviarEmailSuperadminEscaparate(resend, admin, { coachNombre, publicado });
+  }
+}
+
 /** Coach (o superadmin) guardó plan de un alumno → notificación in-app al cliente. */
 async function notificarClientePlanActualizado(db, req, clienteId, tipo) {
   const targetId = parseInt(clienteId, 10);
@@ -504,5 +551,6 @@ module.exports = {
   borrarNotificacion,
   borrarTodasNotificaciones,
   cancelarSolicitudesPendientesCliente,
-  notificarClientePlanActualizado
+  notificarClientePlanActualizado,
+  notificarSuperadminsEscaparateCoach
 };
