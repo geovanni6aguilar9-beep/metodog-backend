@@ -1889,12 +1889,16 @@ app.post("/api/directorio/guardar-perfil", async (req, res) => {
     }
 
     if (quiereVisible) {
-      await notificarSuperadminsEscaparateCoach(db, {
-        coachId: usuario_id,
-        coachNombre,
-        publicado: !!verificadoAuto,
-        resend
-      });
+      try {
+        await notificarSuperadminsEscaparateCoach(db, {
+          coachId: usuario_id,
+          coachNombre,
+          publicado: !!verificadoAuto,
+          resend
+        });
+      } catch (notifErr) {
+        console.warn('Notificación SUPERADMIN escaparate:', notifErr.message);
+      }
     }
 
     res.json({
