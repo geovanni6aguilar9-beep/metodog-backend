@@ -1746,13 +1746,14 @@ app.get("/api/directorio/coaches", async (req, res) => {
     const result = await db.execute(`
       SELECT u.id, u.nombre, u.calificacion, u.codigo_invitacion,
         p.foto_url, p.bio, p.especialidad, p.logros, p.tarifa_base, p.whatsapp,
-        COALESCE(p.redes_sociales, '{}') AS redes_sociales
+        COALESCE(p.redes_sociales, '{}') AS redes_sociales,
+        COALESCE(p.verificado, 0) AS verificado
       FROM usuarios u
       INNER JOIN perfiles_coach_publicos p ON p.usuario_id = u.id
       INNER JOIN suscripciones_coach s ON s.usuario_id = u.id
       WHERE u.rol IN ('COACH', 'SUPERADMIN')
         AND COALESCE(p.verificado, 0) = 1
-        AND COALESCE(p.visible_en_directorio, 1) = 1
+        AND COALESCE(p.visible_en_directorio, 0) = 1
         AND (
           u.rol = 'SUPERADMIN'
           OR s.status = 'active'
