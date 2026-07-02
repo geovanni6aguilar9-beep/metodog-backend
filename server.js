@@ -252,6 +252,14 @@ async function inicializarBD() {
         "ALTER TABLE perfiles_coach_publicos ADD COLUMN redes_sociales TEXT DEFAULT '{}'"
       );
     } catch (_) { /* columna ya existe */ }
+    for (const sql of [
+      "ALTER TABLE perfiles_coach_publicos ADD COLUMN nombre_completo TEXT DEFAULT ''",
+      "ALTER TABLE perfiles_coach_publicos ADD COLUMN edad INTEGER",
+      "ALTER TABLE perfiles_coach_publicos ADD COLUMN ciudad TEXT DEFAULT ''",
+      "ALTER TABLE perfiles_coach_publicos ADD COLUMN tiempo_entrenando TEXT DEFAULT ''"
+    ]) {
+      try { await db.execute(sql); } catch (_) { /* columna ya existe */ }
+    }
     try {
       await db.execute(`
         UPDATE perfiles_coach_publicos SET verificado = 1
@@ -1758,13 +1766,95 @@ app.get("/api/directorio/coaches", async (req, res) => {
   }
 });
 
+const PERFIL_COACH_SELECT = `foto_url, bio, especialidad, logros, tarifa_base, whatsapp,
+  visible_en_directorio, verificado, COALESCE(redes_sociales, '{}') AS redes_sociales,
+  COALESCE(nombre_completo, '') AS nombre_completo, edad, COALESCE(ciudad, '') AS ciudad,
+  COALESCE(tiempo_entrenando, '') AS tiempo_entrenando`;
+
+/** Valida ficha mínima para aparecer en directorio (coach + analytics MétodoG). */
+function validarEscaparateCoachPublicar(body, redesJson) {
+  const faltantes = [];
+  const nombre = String(body.nombre_completo ?? "").trim();
+  const ciudad = String(body.ciudad ?? "").trim();
+  const exp = String(body.tiempo_entrenando ?? "").trim();
+  const edad = parseInt(body.edad, 10);
+  const bio = String(body.bio ?? "").trim();
+  const esp = String(body.especialidad ?? "").trim();
+  if (nombre.length < 3) faltantes.push("nombre completo");
+  if (!Number.isFinite(edad) || edad < 18 || edad > 99) faltantes.push("edad válida (18–99)");
+  if (ciudad.length < 2) faltantes.push("ciudad");
+  if (exp.length < 2) faltantes.push("tiempo entrenando");
+  if (!esp) faltantes.push("especialidad");
+  if (bio.length < 8) faltantes.push("bio");
+  let redes = {};
+  try {
+    redes = JSON.parse(redesJson || "{}");
+  } catch (_) { redes = {}; }
+  if (!redes || typeof redes !== "object" || !Object.keys(redes).length) {
+    faltantes.push("al menos una red social");
+  }
+  return faltantes;
+}
+
+/** SUPERADMIN — fila de revisión directorio. */
+function mapCoachRevisionRow(row) {
+  const bio = String(row.bio ?? "").trim();
+  const especialidad = String(row.especialidad ?? "").trim();
+  const logros = String(row.logros ?? "").trim();
+  const whatsapp = String(row.whatsapp ?? "").trim();
+  const fotoUrl = String(row.foto_url ?? "").trim();
+  const nombreCompleto = String(row.nombre_completo ?? "").trim();
+  const ciudad = String(row.ciudad ?? "").trim();
+  const tiempoEntrenando = String(row.tiempo_entrenando ?? "").trim();
+  const edad = row.edad != null && row.edad !== "" ? Number(row.edad) : null;
+  const tarifaBase = row.tarifa_base != null && row.tarifa_base !== "" ? Number(row.tarifa_base) : null;
+  let redesCount = 0;
+  try {
+    const r = JSON.parse(String(row.redes_sociales || "{}"));
+    if (r && typeof r === "object") redesCount = Object.keys(r).length;
+  } catch (_) { /* ignore */ }
+  const perfilPublicado = !!(
+    nombreCompleto.length >= 3
+    && edad != null && edad >= 18
+    && ciudad.length >= 2
+    && tiempoEntrenando.length >= 2
+    && especialidad
+    && bio.length >= 8
+    && redesCount >= 1
+  );
+
+  return {
+    id: Number(row.id),
+    nombre: row.nombre,
+    nombre_completo: nombreCompleto,
+    email: row.email,
+    edad,
+    ciudad,
+    tiempo_entrenando: tiempoEntrenando,
+    calificacion: row.calificacion,
+    codigo_invitacion: row.codigo_invitacion,
+    foto_url: fotoUrl,
+    bio,
+    especialidad,
+    logros,
+    tarifa_base: tarifaBase,
+    whatsapp,
+    redes_sociales: row.redes_sociales || "{}",
+    verificado: !!Number(row.verificado),
+    visible_en_directorio: !!Number(row.visible_en_directorio ?? 1),
+    sub_status: row.sub_status || null,
+    sub_plan: row.sub_plan || null,
+    perfil_publicado: perfilPublicado
+  };
+}
+
 app.get("/api/directorio/mi-perfil/:usuario_id", async (req, res) => {
   if (parseInt(req.params.usuario_id, 10) !== parseInt(req.user.id, 10)) {
     return res.status(403).json({ error: "Solo puedes ver tu perfil de coach" });
   }
   try {
     const userRes = await db.execute({
-      sql: "SELECT id, nombre, rol, calificacion, codigo_invitacion FROM usuarios WHERE id = ?",
+      sql: "SELECT id, nombre, email, rol, calificacion, codigo_invitacion FROM usuarios WHERE id = ?",
       args: [req.params.usuario_id]
     });
     if (userRes.rows.length === 0) return res.status(404).json({ error: "Usuario no encontrado" });
@@ -1773,8 +1863,7 @@ app.get("/api/directorio/mi-perfil/:usuario_id", async (req, res) => {
       return res.status(403).json({ error: "Solo coaches pueden tener perfil público" });
     }
     const perfilRes = await db.execute({
-      sql: `SELECT foto_url, bio, especialidad, logros, tarifa_base, whatsapp, visible_en_directorio, verificado,
-                   COALESCE(redes_sociales, '{}') AS redes_sociales
+      sql: `SELECT ${PERFIL_COACH_SELECT}
             FROM perfiles_coach_publicos WHERE usuario_id = ?`,
       args: [req.params.usuario_id]
     });
@@ -1784,7 +1873,8 @@ app.get("/api/directorio/mi-perfil/:usuario_id", async (req, res) => {
     });
     const perfil = perfilRes.rows[0] || {
       foto_url: '', bio: '', especialidad: '', logros: '', tarifa_base: null, whatsapp: '',
-      visible_en_directorio: 1, verificado: 0, redes_sociales: '{}'
+      visible_en_directorio: 1, verificado: 0, redes_sociales: '{}',
+      nombre_completo: '', edad: null, ciudad: '', tiempo_entrenando: ''
     };
     res.json({
       usuario: user,
@@ -1797,7 +1887,7 @@ app.get("/api/directorio/mi-perfil/:usuario_id", async (req, res) => {
 app.post("/api/directorio/guardar-perfil", async (req, res) => {
   const {
     usuario_id, foto_url, bio, especialidad, logros, tarifa_base, whatsapp, visible_en_directorio,
-    redes_sociales
+    redes_sociales, nombre_completo, edad, ciudad, tiempo_entrenando
   } = req.body;
   if (!usuario_id) return res.status(400).json({ error: "usuario_id requerido" });
   if (parseInt(usuario_id, 10) !== parseInt(req.user.id, 10)) {
@@ -1825,8 +1915,6 @@ app.post("/api/directorio/guardar-perfil", async (req, res) => {
     });
     const subStatus = subRes.rows[0]?.status || null;
     const quiereVisible = !(visible_en_directorio === false || visible_en_directorio === 0);
-    const puedePublicar = rol === 'SUPERADMIN' || subStatus === 'active';
-    const verificadoAuto = quiereVisible && puedePublicar ? 1 : 0;
 
     let redesJson = '{}';
     if (redes_sociales != null) {
@@ -1842,11 +1930,30 @@ app.post("/api/directorio/guardar-perfil", async (req, res) => {
       }
     }
 
+    if (quiereVisible) {
+      const faltantes = validarEscaparateCoachPublicar(
+        { nombre_completo, edad, ciudad, tiempo_entrenando, bio, especialidad },
+        redesJson
+      );
+      if (faltantes.length) {
+        return res.status(400).json({
+          error: `Completa tu ficha para publicar: ${faltantes.join(', ')}.`
+        });
+      }
+    }
+
+    const puedePublicar = rol === 'SUPERADMIN' || subStatus === 'active';
+    const verificadoAuto = quiereVisible && puedePublicar ? 1 : 0;
+
+    const edadNum = edad != null && edad !== '' ? parseInt(edad, 10) : null;
+    const edadFinal = Number.isFinite(edadNum) ? edadNum : null;
+
     await db.execute({
       sql: `INSERT INTO perfiles_coach_publicos (
               usuario_id, foto_url, bio, especialidad, logros, tarifa_base, whatsapp,
-              visible_en_directorio, verificado, redes_sociales
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              visible_en_directorio, verificado, redes_sociales,
+              nombre_completo, edad, ciudad, tiempo_entrenando
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(usuario_id) DO UPDATE SET
               foto_url = excluded.foto_url,
               bio = excluded.bio,
@@ -1856,7 +1963,11 @@ app.post("/api/directorio/guardar-perfil", async (req, res) => {
               whatsapp = excluded.whatsapp,
               visible_en_directorio = excluded.visible_en_directorio,
               verificado = excluded.verificado,
-              redes_sociales = excluded.redes_sociales`,
+              redes_sociales = excluded.redes_sociales,
+              nombre_completo = excluded.nombre_completo,
+              edad = excluded.edad,
+              ciudad = excluded.ciudad,
+              tiempo_entrenando = excluded.tiempo_entrenando`,
       args: [
         usuario_id,
         fotoRaw,
@@ -1867,12 +1978,15 @@ app.post("/api/directorio/guardar-perfil", async (req, res) => {
         whatsapp || '',
         quiereVisible ? 1 : 0,
         verificadoAuto,
-        redesJson
+        redesJson,
+        String(nombre_completo || '').trim(),
+        edadFinal,
+        String(ciudad || '').trim(),
+        String(tiempo_entrenando || '').trim()
       ]
     });
     const perfilGuardado = await db.execute({
-      sql: `SELECT foto_url, bio, especialidad, logros, tarifa_base, whatsapp, visible_en_directorio, verificado,
-                   COALESCE(redes_sociales, '{}') AS redes_sociales
+      sql: `SELECT ${PERFIL_COACH_SELECT}
             FROM perfiles_coach_publicos WHERE usuario_id = ?`,
       args: [usuario_id]
     });
@@ -1915,36 +2029,6 @@ app.post("/api/directorio/guardar-perfil", async (req, res) => {
   }
 });
 
-/** SUPERADMIN — revisión manual de coaches para el directorio público (§15 paso 4). */
-function mapCoachRevisionRow(row) {
-  const bio = String(row.bio ?? "").trim();
-  const especialidad = String(row.especialidad ?? "").trim();
-  const logros = String(row.logros ?? "").trim();
-  const whatsapp = String(row.whatsapp ?? "").trim();
-  const fotoUrl = String(row.foto_url ?? "").trim();
-  const tarifaBase = row.tarifa_base != null && row.tarifa_base !== "" ? Number(row.tarifa_base) : null;
-  const perfilPublicado = !!(bio || especialidad || logros || whatsapp || fotoUrl || tarifaBase != null);
-
-  return {
-    id: Number(row.id),
-    nombre: row.nombre,
-    email: row.email,
-    calificacion: row.calificacion,
-    codigo_invitacion: row.codigo_invitacion,
-    foto_url: fotoUrl,
-    bio,
-    especialidad,
-    logros,
-    tarifa_base: tarifaBase,
-    whatsapp,
-    verificado: !!Number(row.verificado),
-    visible_en_directorio: !!Number(row.visible_en_directorio ?? 1),
-    sub_status: row.sub_status || null,
-    sub_plan: row.sub_plan || null,
-    perfil_publicado: perfilPublicado
-  };
-}
-
 app.get("/api/directorio/admin/revision", async (req, res) => {
   if (!assertSuperAdmin(req, res)) return;
   try {
@@ -1953,6 +2037,10 @@ app.get("/api/directorio/admin/revision", async (req, res) => {
         p.foto_url, p.bio, p.especialidad, p.logros, p.tarifa_base, p.whatsapp,
         COALESCE(p.verificado, 0) AS verificado,
         COALESCE(p.visible_en_directorio, 1) AS visible_en_directorio,
+        COALESCE(p.redes_sociales, '{}') AS redes_sociales,
+        COALESCE(p.nombre_completo, '') AS nombre_completo,
+        p.edad, COALESCE(p.ciudad, '') AS ciudad,
+        COALESCE(p.tiempo_entrenando, '') AS tiempo_entrenando,
         s.status AS sub_status, s.plan AS sub_plan
       FROM usuarios u
       INNER JOIN suscripciones_coach s ON s.usuario_id = u.id
