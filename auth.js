@@ -49,7 +49,8 @@ function isPublicApiRoute(req) {
     "/api/registro",
     "/api/solicitar-recuperacion",
     "/api/cambiar-password",
-    "/api/pagos/webhook"
+    "/api/pagos/webhook",
+    "/api/cron/trial-recordatorios"
   ].includes(path)) {
     return true;
   }

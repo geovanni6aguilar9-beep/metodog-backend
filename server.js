@@ -37,10 +37,10 @@ const {
   borrarNotificacion,
   borrarTodasNotificaciones,
   cancelarSolicitudesPendientesCliente,
-  notificarClientePlanActualizado,
-  notificarSuperadminsEscaparateCoach
+  notificarClientePlanActualizado
 } = require("./notificaciones");
 const { evaluarSuscripcionCoach } = require("./coachSuscripcion");
+const { procesarRecordatoriosTrialCoach } = require("./trialRecordatorios");
 const {
   ensureTableConcesiones,
   listarConcesiones,
@@ -247,23 +247,6 @@ async function inicializarBD() {
         "ALTER TABLE perfiles_coach_publicos ADD COLUMN verificado INTEGER DEFAULT 0"
       );
     } catch (_) { /* columna ya existe */ }
-    try {
-      await db.execute(
-        "ALTER TABLE perfiles_coach_publicos ADD COLUMN redes_sociales TEXT DEFAULT '{}'"
-      );
-    } catch (_) { /* columna ya existe */ }
-    for (const sql of [
-      "ALTER TABLE perfiles_coach_publicos ADD COLUMN nombre_completo TEXT DEFAULT ''",
-      "ALTER TABLE perfiles_coach_publicos ADD COLUMN edad INTEGER",
-      "ALTER TABLE perfiles_coach_publicos ADD COLUMN ciudad TEXT DEFAULT ''",
-      "ALTER TABLE perfiles_coach_publicos ADD COLUMN tiempo_entrenando TEXT DEFAULT ''",
-      "ALTER TABLE perfiles_coach_publicos ADD COLUMN metodologia TEXT DEFAULT ''",
-      "ALTER TABLE perfiles_coach_publicos ADD COLUMN condiciones TEXT DEFAULT ''",
-      "ALTER TABLE perfiles_coach_publicos ADD COLUMN entregables_json TEXT DEFAULT '{}'",
-      "ALTER TABLE perfiles_coach_publicos ADD COLUMN paquetes_json TEXT DEFAULT '[]'"
-    ]) {
-      try { await db.execute(sql); } catch (_) { /* columna ya existe */ }
-    }
     try {
       await db.execute(`
         UPDATE perfiles_coach_publicos SET verificado = 1
@@ -1749,19 +1732,13 @@ app.get("/api/directorio/coaches", async (req, res) => {
   try {
     const result = await db.execute(`
       SELECT u.id, u.nombre, u.calificacion, u.codigo_invitacion,
-        p.foto_url, p.bio, p.especialidad, p.logros, p.tarifa_base, p.whatsapp,
-        COALESCE(p.redes_sociales, '{}') AS redes_sociales,
-        COALESCE(p.verificado, 0) AS verificado,
-        COALESCE(p.metodologia, '') AS metodologia,
-        COALESCE(p.condiciones, '') AS condiciones,
-        COALESCE(p.entregables_json, '{}') AS entregables_json,
-        COALESCE(p.paquetes_json, '[]') AS paquetes_json
+        p.foto_url, p.bio, p.especialidad, p.logros, p.tarifa_base, p.whatsapp
       FROM usuarios u
       INNER JOIN perfiles_coach_publicos p ON p.usuario_id = u.id
       INNER JOIN suscripciones_coach s ON s.usuario_id = u.id
       WHERE u.rol IN ('COACH', 'SUPERADMIN')
         AND COALESCE(p.verificado, 0) = 1
-        AND COALESCE(p.visible_en_directorio, 0) = 1
+        AND COALESCE(p.visible_en_directorio, 1) = 1
         AND (
           u.rol = 'SUPERADMIN'
           OR s.status = 'active'
@@ -1775,177 +1752,13 @@ app.get("/api/directorio/coaches", async (req, res) => {
   }
 });
 
-const PERFIL_COACH_SELECT = `foto_url, bio, especialidad, logros, tarifa_base, whatsapp,
-  visible_en_directorio, verificado, COALESCE(redes_sociales, '{}') AS redes_sociales,
-  COALESCE(nombre_completo, '') AS nombre_completo, edad, COALESCE(ciudad, '') AS ciudad,
-  COALESCE(tiempo_entrenando, '') AS tiempo_entrenando,
-  COALESCE(metodologia, '') AS metodologia, COALESCE(condiciones, '') AS condiciones,
-  COALESCE(entregables_json, '{}') AS entregables_json, COALESCE(paquetes_json, '[]') AS paquetes_json`;
-
-const LINEAS_PAQUETE_VALIDAS = new Set(['recreativo', 'competitivo', 'otro']);
-const PERIODOS_PAQUETE_VALIDOS = new Set(['mes', 'trimestre', 'semestre', 'unico']);
-const MAX_PAQUETES_COACH = 3;
-
-function normalizarEntregablesJson(raw) {
-  const base = { nutricion: { items: [], nota: '' }, entrenamiento: { items: [], nota: '' } };
-  let data = raw;
-  if (typeof raw === 'string') {
-    try { data = JSON.parse(raw || '{}'); } catch { return JSON.stringify(base); }
-  }
-  if (!data || typeof data !== 'object') return JSON.stringify(base);
-  for (const key of ['nutricion', 'entrenamiento']) {
-    const bloque = data[key];
-    if (!bloque || typeof bloque !== 'object') continue;
-    base[key] = {
-      items: Array.isArray(bloque.items) ? bloque.items.map(String).slice(0, 12) : [],
-      nota: String(bloque.nota || '').trim().slice(0, 500)
-    };
-  }
-  return JSON.stringify(base);
-}
-
-function normalizarPaquetesJson(raw) {
-  let data = raw;
-  if (typeof raw === 'string') {
-    try { data = JSON.parse(raw || '[]'); } catch { return '[]'; }
-  }
-  if (!Array.isArray(data)) return '[]';
-  const list = data.slice(0, MAX_PAQUETES_COACH).map((p, i) => {
-    const precio = parseFloat(p?.precio_mxn);
-    const linea = LINEAS_PAQUETE_VALIDAS.has(p?.linea) ? p.linea : 'otro';
-    const periodo = PERIODOS_PAQUETE_VALIDOS.has(p?.periodo) ? p.periodo : 'mes';
-    return {
-      id: String(p?.id || `p${i + 1}`),
-      linea,
-      nombre: String(p?.nombre || '').trim().slice(0, 80),
-      precio_mxn: Number.isFinite(precio) && precio > 0 ? precio : 0,
-      periodo,
-      descripcion: String(p?.descripcion || '').trim().slice(0, 300),
-      destacado: !!p?.destacado
-    };
-  }).filter((p) => p.nombre && p.precio_mxn > 0);
-  return JSON.stringify(list);
-}
-
-function tarifaMinDesdePaquetesJson(paquetesJson) {
-  try {
-    const list = JSON.parse(paquetesJson || '[]');
-    if (!Array.isArray(list) || !list.length) return null;
-    const nums = list.map((p) => parseFloat(p?.precio_mxn)).filter((n) => Number.isFinite(n) && n > 0);
-    return nums.length ? Math.min(...nums) : null;
-  } catch {
-    return null;
-  }
-}
-
-function normalizarCondiciones(raw) {
-  if (raw == null) return '';
-  if (typeof raw === 'object') {
-    const toggles = Array.isArray(raw.toggles) ? raw.toggles.map(String).slice(0, 10) : [];
-    const texto = String(raw.texto || '').trim().slice(0, 3000);
-    if (!toggles.length && !texto) return '';
-    return JSON.stringify({ toggles, texto });
-  }
-  const s = String(raw).trim();
-  if (!s) return '';
-  if (s.startsWith('{')) {
-    try {
-      const data = JSON.parse(s);
-      if (data && typeof data === 'object') {
-        const toggles = Array.isArray(data.toggles) ? data.toggles.map(String).slice(0, 10) : [];
-        const texto = String(data.texto || '').trim().slice(0, 3000);
-        if (!toggles.length && !texto) return '';
-        return JSON.stringify({ toggles, texto });
-      }
-    } catch { /* texto plano legacy */ }
-  }
-  return s.slice(0, 3000);
-}
-
-/** Valida ficha mínima para aparecer en directorio (coach + analytics MétodoG). */
-function validarEscaparateCoachPublicar(body, redesJson) {
-  const faltantes = [];
-  const nombre = String(body.nombre_completo ?? "").trim();
-  const ciudad = String(body.ciudad ?? "").trim();
-  const exp = String(body.tiempo_entrenando ?? "").trim();
-  const edad = parseInt(body.edad, 10);
-  const bio = String(body.bio ?? "").trim();
-  const esp = String(body.especialidad ?? "").trim();
-  if (nombre.length < 3) faltantes.push("nombre completo");
-  if (!Number.isFinite(edad) || edad < 18 || edad > 99) faltantes.push("edad válida (18–99)");
-  if (ciudad.length < 2) faltantes.push("ciudad");
-  if (exp.length < 2) faltantes.push("tiempo entrenando");
-  if (!esp) faltantes.push("especialidad");
-  if (bio.length < 8) faltantes.push("bio");
-  let redes = {};
-  try {
-    redes = JSON.parse(redesJson || "{}");
-  } catch (_) { redes = {}; }
-  if (!redes || typeof redes !== "object" || !Object.keys(redes).length) {
-    faltantes.push("al menos una red social");
-  }
-  return faltantes;
-}
-
-/** SUPERADMIN — fila de revisión directorio. */
-function mapCoachRevisionRow(row) {
-  const bio = String(row.bio ?? "").trim();
-  const especialidad = String(row.especialidad ?? "").trim();
-  const logros = String(row.logros ?? "").trim();
-  const whatsapp = String(row.whatsapp ?? "").trim();
-  const fotoUrl = String(row.foto_url ?? "").trim();
-  const nombreCompleto = String(row.nombre_completo ?? "").trim();
-  const ciudad = String(row.ciudad ?? "").trim();
-  const tiempoEntrenando = String(row.tiempo_entrenando ?? "").trim();
-  const edad = row.edad != null && row.edad !== "" ? Number(row.edad) : null;
-  const tarifaBase = row.tarifa_base != null && row.tarifa_base !== "" ? Number(row.tarifa_base) : null;
-  let redesCount = 0;
-  try {
-    const r = JSON.parse(String(row.redes_sociales || "{}"));
-    if (r && typeof r === "object") redesCount = Object.keys(r).length;
-  } catch (_) { /* ignore */ }
-  const perfilPublicado = !!(
-    nombreCompleto.length >= 3
-    && edad != null && edad >= 18
-    && ciudad.length >= 2
-    && tiempoEntrenando.length >= 2
-    && especialidad
-    && bio.length >= 8
-    && redesCount >= 1
-  );
-
-  return {
-    id: Number(row.id),
-    nombre: row.nombre,
-    nombre_completo: nombreCompleto,
-    email: row.email,
-    edad,
-    ciudad,
-    tiempo_entrenando: tiempoEntrenando,
-    calificacion: row.calificacion,
-    codigo_invitacion: row.codigo_invitacion,
-    foto_url: fotoUrl,
-    bio,
-    especialidad,
-    logros,
-    tarifa_base: tarifaBase,
-    whatsapp,
-    redes_sociales: row.redes_sociales || "{}",
-    verificado: !!Number(row.verificado),
-    visible_en_directorio: !!Number(row.visible_en_directorio ?? 1),
-    sub_status: row.sub_status || null,
-    sub_plan: row.sub_plan || null,
-    perfil_publicado: perfilPublicado
-  };
-}
-
 app.get("/api/directorio/mi-perfil/:usuario_id", async (req, res) => {
   if (parseInt(req.params.usuario_id, 10) !== parseInt(req.user.id, 10)) {
     return res.status(403).json({ error: "Solo puedes ver tu perfil de coach" });
   }
   try {
     const userRes = await db.execute({
-      sql: "SELECT id, nombre, email, rol, calificacion, codigo_invitacion FROM usuarios WHERE id = ?",
+      sql: "SELECT id, nombre, rol, calificacion, codigo_invitacion FROM usuarios WHERE id = ?",
       args: [req.params.usuario_id]
     });
     if (userRes.rows.length === 0) return res.status(404).json({ error: "Usuario no encontrado" });
@@ -1954,7 +1767,7 @@ app.get("/api/directorio/mi-perfil/:usuario_id", async (req, res) => {
       return res.status(403).json({ error: "Solo coaches pueden tener perfil público" });
     }
     const perfilRes = await db.execute({
-      sql: `SELECT ${PERFIL_COACH_SELECT}
+      sql: `SELECT foto_url, bio, especialidad, logros, tarifa_base, whatsapp, visible_en_directorio, verificado
             FROM perfiles_coach_publicos WHERE usuario_id = ?`,
       args: [req.params.usuario_id]
     });
@@ -1964,9 +1777,7 @@ app.get("/api/directorio/mi-perfil/:usuario_id", async (req, res) => {
     });
     const perfil = perfilRes.rows[0] || {
       foto_url: '', bio: '', especialidad: '', logros: '', tarifa_base: null, whatsapp: '',
-      visible_en_directorio: 1, verificado: 0, redes_sociales: '{}',
-      nombre_completo: '', edad: null, ciudad: '', tiempo_entrenando: '',
-      metodologia: '', condiciones: '', entregables_json: '{}', paquetes_json: '[]'
+      visible_en_directorio: 1, verificado: 0
     };
     res.json({
       usuario: user,
@@ -1977,87 +1788,22 @@ app.get("/api/directorio/mi-perfil/:usuario_id", async (req, res) => {
 });
 
 app.post("/api/directorio/guardar-perfil", async (req, res) => {
-  const {
-    usuario_id, foto_url, bio, especialidad, logros, tarifa_base, whatsapp, visible_en_directorio,
-    redes_sociales, nombre_completo, edad, ciudad, tiempo_entrenando,
-    metodologia, condiciones, entregables_json, paquetes_json
-  } = req.body;
+  const { usuario_id, foto_url, bio, especialidad, logros, tarifa_base, whatsapp, visible_en_directorio } = req.body;
   if (!usuario_id) return res.status(400).json({ error: "usuario_id requerido" });
   if (parseInt(usuario_id, 10) !== parseInt(req.user.id, 10)) {
     return res.status(403).json({ error: "Solo puedes editar tu perfil público" });
   }
-  const fotoRaw = String(foto_url || '');
-  if (fotoRaw.length > 500_000) {
-    return res.status(400).json({ error: "La foto es demasiado pesada. Usa otra imagen más ligera." });
-  }
   try {
-    const userRes = await db.execute({
-      sql: "SELECT rol, nombre FROM usuarios WHERE id = ?",
-      args: [usuario_id]
-    });
+    const userRes = await db.execute({ sql: "SELECT rol FROM usuarios WHERE id = ?", args: [usuario_id] });
     if (userRes.rows.length === 0) return res.status(404).json({ error: "Usuario no encontrado" });
     const rol = userRes.rows[0].rol;
-    const coachNombre = userRes.rows[0].nombre || '';
     if (rol !== 'COACH' && rol !== 'SUPERADMIN') {
       return res.status(403).json({ error: "Solo coaches pueden guardar perfil público" });
     }
-
-    const subRes = await db.execute({
-      sql: "SELECT status, plan FROM suscripciones_coach WHERE usuario_id = ?",
-      args: [usuario_id]
-    });
-    const subStatus = subRes.rows[0]?.status || null;
-    const quiereVisible = !(visible_en_directorio === false || visible_en_directorio === 0);
-
-    let redesJson = '{}';
-    if (redes_sociales != null) {
-      if (typeof redes_sociales === 'string') {
-        try {
-          const p = JSON.parse(redes_sociales);
-          redesJson = JSON.stringify(p && typeof p === 'object' ? p : {});
-        } catch {
-          redesJson = '{}';
-        }
-      } else if (typeof redes_sociales === 'object') {
-        redesJson = JSON.stringify(redes_sociales);
-      }
-    }
-
-    if (quiereVisible) {
-      const faltantes = validarEscaparateCoachPublicar(
-        { nombre_completo, edad, ciudad, tiempo_entrenando, bio, especialidad },
-        redesJson
-      );
-      if (faltantes.length) {
-        return res.status(400).json({
-          error: `Completa tu ficha para publicar: ${faltantes.join(', ')}.`
-        });
-      }
-    }
-
-    const puedePublicar = rol === 'SUPERADMIN' || subStatus === 'active';
-    const verificadoAuto = quiereVisible && puedePublicar ? 1 : 0;
-
-    const edadNum = edad != null && edad !== '' ? parseInt(edad, 10) : null;
-    const edadFinal = Number.isFinite(edadNum) ? edadNum : null;
-
-    const entregablesFinal = normalizarEntregablesJson(entregables_json);
-    const paquetesFinal = normalizarPaquetesJson(paquetes_json);
-    const metodologiaFinal = String(metodologia || '').trim().slice(0, 3000);
-    const condicionesFinal = normalizarCondiciones(condiciones);
-    const tarifaMinPaquetes = tarifaMinDesdePaquetesJson(paquetesFinal);
-    const tarifaManual = tarifa_base != null && tarifa_base !== '' ? parseFloat(tarifa_base) : null;
-    const tarifaFinal = tarifaMinPaquetes != null
-      ? tarifaMinPaquetes
-      : (Number.isFinite(tarifaManual) ? tarifaManual : null);
-
     await db.execute({
       sql: `INSERT INTO perfiles_coach_publicos (
-              usuario_id, foto_url, bio, especialidad, logros, tarifa_base, whatsapp,
-              visible_en_directorio, verificado, redes_sociales,
-              nombre_completo, edad, ciudad, tiempo_entrenando,
-              metodologia, condiciones, entregables_json, paquetes_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              usuario_id, foto_url, bio, especialidad, logros, tarifa_base, whatsapp, visible_en_directorio
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(usuario_id) DO UPDATE SET
               foto_url = excluded.foto_url,
               bio = excluded.bio,
@@ -2065,81 +1811,62 @@ app.post("/api/directorio/guardar-perfil", async (req, res) => {
               logros = excluded.logros,
               tarifa_base = excluded.tarifa_base,
               whatsapp = excluded.whatsapp,
-              visible_en_directorio = excluded.visible_en_directorio,
-              verificado = excluded.verificado,
-              redes_sociales = excluded.redes_sociales,
-              nombre_completo = excluded.nombre_completo,
-              edad = excluded.edad,
-              ciudad = excluded.ciudad,
-              tiempo_entrenando = excluded.tiempo_entrenando,
-              metodologia = excluded.metodologia,
-              condiciones = excluded.condiciones,
-              entregables_json = excluded.entregables_json,
-              paquetes_json = excluded.paquetes_json`,
+              visible_en_directorio = excluded.visible_en_directorio`,
       args: [
         usuario_id,
-        fotoRaw,
+        foto_url || '',
         bio || '',
         especialidad || '',
         logros || '',
-        tarifaFinal,
+        tarifa_base != null && tarifa_base !== '' ? parseFloat(tarifa_base) : null,
         whatsapp || '',
-        quiereVisible ? 1 : 0,
-        verificadoAuto,
-        redesJson,
-        String(nombre_completo || '').trim(),
-        edadFinal,
-        String(ciudad || '').trim(),
-        String(tiempo_entrenando || '').trim(),
-        metodologiaFinal,
-        condicionesFinal,
-        entregablesFinal,
-        paquetesFinal
+        visible_en_directorio === false || visible_en_directorio === 0 ? 0 : 1
       ]
     });
     const perfilGuardado = await db.execute({
-      sql: `SELECT ${PERFIL_COACH_SELECT}
+      sql: `SELECT foto_url, bio, especialidad, logros, tarifa_base, whatsapp, visible_en_directorio, verificado
             FROM perfiles_coach_publicos WHERE usuario_id = ?`,
       args: [usuario_id]
     });
-
-    let mensaje = 'Perfil guardado correctamente.';
-    if (quiereVisible && verificadoAuto) {
-      mensaje = 'Perfil publicado con éxito. Ya eres visible en el directorio de coaches.';
-    } else if (quiereVisible && subStatus === 'trialing') {
-      mensaje = 'Perfil guardado. Activa tu suscripción de pago (no trial) para aparecer en el directorio público.';
-    } else if (quiereVisible && !puedePublicar) {
-      mensaje = 'Perfil guardado. Activa tu suscripción Coach PRO para publicarte en el directorio.';
-    } else if (!quiereVisible) {
-      mensaje = 'Perfil actualizado. No apareces en el directorio mientras la casilla esté desmarcada.';
-    }
-
-    const debeNotificarAdmin =
-      quiereVisible && (subStatus === 'active' || subStatus === 'trialing');
-
-    if (debeNotificarAdmin) {
-      try {
-        await notificarSuperadminsEscaparateCoach(db, {
-          coachId: usuario_id,
-          coachNombre,
-          publicado: !!verificadoAuto,
-          resend
-        });
-      } catch (notifErr) {
-        console.warn('Notificación SUPERADMIN escaparate:', notifErr.message);
-      }
-    }
-
     res.json({
-      mensaje,
-      perfil: perfilGuardado.rows[0] || null,
-      publicado: !!verificadoAuto
+      mensaje: "Perfil público guardado. Aparecerás en el catálogo cuando MétodoG verifique tu cuenta.",
+      perfil: perfilGuardado.rows[0] || null
     });
   } catch (err) {
     console.error("Error guardar perfil coach:", err.message);
     res.status(500).json({ error: err.message });
   }
 });
+
+/** SUPERADMIN — revisión manual de coaches para el directorio público (§15 paso 4). */
+function mapCoachRevisionRow(row) {
+  const bio = String(row.bio ?? "").trim();
+  const especialidad = String(row.especialidad ?? "").trim();
+  const logros = String(row.logros ?? "").trim();
+  const whatsapp = String(row.whatsapp ?? "").trim();
+  const fotoUrl = String(row.foto_url ?? "").trim();
+  const tarifaBase = row.tarifa_base != null && row.tarifa_base !== "" ? Number(row.tarifa_base) : null;
+  const perfilPublicado = !!(bio || especialidad || logros || whatsapp || fotoUrl || tarifaBase != null);
+
+  return {
+    id: Number(row.id),
+    nombre: row.nombre,
+    email: row.email,
+    calificacion: row.calificacion,
+    codigo_invitacion: row.codigo_invitacion,
+    foto_url: fotoUrl,
+    bio,
+    especialidad,
+    logros,
+    tarifa_base: tarifaBase,
+    whatsapp,
+    verificado: !!Number(row.verificado),
+    visible_en_directorio: !!Number(row.visible_en_directorio ?? 1),
+    sub_status: row.sub_status || null,
+    sub_plan: row.sub_plan || null,
+    perfil_publicado: perfilPublicado
+  };
+}
 
 app.get("/api/directorio/admin/revision", async (req, res) => {
   if (!assertSuperAdmin(req, res)) return;
@@ -2149,16 +1876,11 @@ app.get("/api/directorio/admin/revision", async (req, res) => {
         p.foto_url, p.bio, p.especialidad, p.logros, p.tarifa_base, p.whatsapp,
         COALESCE(p.verificado, 0) AS verificado,
         COALESCE(p.visible_en_directorio, 1) AS visible_en_directorio,
-        COALESCE(p.redes_sociales, '{}') AS redes_sociales,
-        COALESCE(p.nombre_completo, '') AS nombre_completo,
-        p.edad, COALESCE(p.ciudad, '') AS ciudad,
-        COALESCE(p.tiempo_entrenando, '') AS tiempo_entrenando,
         s.status AS sub_status, s.plan AS sub_plan
       FROM usuarios u
-      INNER JOIN suscripciones_coach s ON s.usuario_id = u.id
       LEFT JOIN perfiles_coach_publicos p ON p.usuario_id = u.id
+      LEFT JOIN suscripciones_coach s ON s.usuario_id = u.id
       WHERE u.rol = 'COACH'
-        AND s.status IN ('active', 'trialing')
       ORDER BY COALESCE(p.verificado, 0) ASC, u.nombre ASC
     `);
     res.json((result.rows || []).map(mapCoachRevisionRow));
@@ -2416,6 +2138,23 @@ app.post("/api/cambiar-password", async (req, res) => {
     
     res.json({ mensaje: "Contraseña actualizada con éxito" });
   } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+/** Cron Render: recordatorios trial coach (campanita + email). Header x-cron-secret = CRON_SECRET */
+app.post("/api/cron/trial-recordatorios", async (req, res) => {
+  const secret = (req.headers["x-cron-secret"] || req.query.secret || "").trim();
+  const expected = (process.env.CRON_SECRET || "").trim();
+  if (!expected || secret !== expected) {
+    return res.status(401).json({ error: "No autorizado" });
+  }
+  try {
+    const stats = await procesarRecordatoriosTrialCoach(db, resend);
+    console.log("✓ Cron trial-recordatorios:", stats);
+    res.json({ ok: true, ...stats });
+  } catch (err) {
+    console.error("Cron trial-recordatorios:", err.message);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 const PORT = process.env.PORT || 4000;
