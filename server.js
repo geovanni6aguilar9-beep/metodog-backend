@@ -11,6 +11,7 @@ const {
   requireAuthMiddleware,
   assertAccesoUsuario,
   assertAccesoUsuarioEdicion,
+  assertCoachSuscripcionActiva,
   assertCoachOAdmin,
   assertSuperAdmin,
   assertComunidadSelf
@@ -511,6 +512,7 @@ app.post("/api/planes/preview-import", async (req, res) => {
 
 app.post("/api/planes/preview-import-ia", async (req, res) => {
   if (!(await assertCoachOAdmin(db, req, res))) return;
+  if (!(await assertCoachSuscripcionActiva(db, req, res))) return;
   const { texto, origen, tipo } = req.body || {};
   if (!texto || typeof texto !== "string") {
     return res.status(400).json({ error: "Envía el texto en el campo «texto»." });
@@ -547,6 +549,7 @@ app.post("/api/planes/importar-pdf", uploadPdf.single("pdf"), async (req, res) =
 
 app.post("/api/alimentos/importar-csv", async (req, res) => {
   if (!(await assertCoachOAdmin(db, req, res))) return;
+  if (!(await assertCoachSuscripcionActiva(db, req, res))) return;
   const { csv, alcance, mapeo } = req.body || {};
   if (!csv || typeof csv !== "string") {
     return res.status(400).json({ error: "Envía el contenido del archivo en el campo «csv»." });
@@ -599,6 +602,7 @@ app.get("/api/alimentos/receta-ia/probe", async (req, res) => {
 app.post("/api/alimentos/receta-ia", async (req, res) => {
   const user = req.user;
   if (!user) return res.status(401).json({ ok: false, error: "Sesión requerida" });
+  if (!(await assertCoachSuscripcionActiva(db, req, res))) return;
 
   const puede = await usuarioPuedeRecetasIa(user.id, user.rol);
   if (!puede) {
@@ -645,6 +649,7 @@ app.post("/api/alimentos/receta-ia", async (req, res) => {
 app.post("/api/alimentos/dieta-ia", async (req, res) => {
   const user = req.user;
   if (!user) return res.status(401).json({ ok: false, error: "Sesión requerida" });
+  if (!(await assertCoachSuscripcionActiva(db, req, res))) return;
 
   console.log("========================================");
   console.log(`[MetodoG] Pipeline 4.7-PromptElite ACTIVA — POST /api/alimentos/dieta-ia`, new Date().toISOString());

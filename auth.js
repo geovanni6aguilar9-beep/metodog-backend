@@ -1,5 +1,5 @@
 const jwt = require("jsonwebtoken");
-const { coachPuedeEditarPerfilAjeno } = require("./coachSuscripcion");
+const { coachPuedeEditarPerfilAjeno, evaluarSuscripcionCoach } = require("./coachSuscripcion");
 
 const MSG_GRACIA_SOLO_LECTURA =
   "Tu acceso de edición está en pausa. Tus alumnos siguen viendo su plan actual; reactiva tu suscripción para actualizar rutinas, dietas y medidas.";
@@ -136,6 +136,24 @@ async function assertAccesoUsuarioEdicion(db, req, res, targetUserId) {
   return true;
 }
 
+/** Coach con suscripción activa (trial o pagado). Bloquea herramientas PRO en gracia. */
+async function assertCoachSuscripcionActiva(db, req, res) {
+  if (req.user.rol === "SUPERADMIN") return true;
+  if (req.user.rol !== "COACH") return true;
+  const aid = parseInt(req.user.id, 10);
+  if (!aid || Number.isNaN(aid)) {
+    res.status(403).json({ error: "Sesión inválida" });
+    return false;
+  }
+  const sub = await evaluarSuscripcionCoach(db, aid);
+  if (sub) return true;
+  res.status(402).json({
+    error: MSG_GRACIA_SOLO_LECTURA,
+    coach_solo_lectura: true
+  });
+  return false;
+}
+
 async function assertCoachOAdmin(db, req, res) {
   if (req.user.rol === "COACH" || req.user.rol === "SUPERADMIN") return true;
   try {
@@ -173,6 +191,7 @@ module.exports = {
   puedeAccederUsuario,
   assertAccesoUsuario,
   assertAccesoUsuarioEdicion,
+  assertCoachSuscripcionActiva,
   assertCoachOAdmin,
   assertSuperAdmin,
   assertComunidadSelf,
