@@ -7,7 +7,7 @@ const { previewImportPlan } = require('./importarPlan');
 
 const MAX_PDF_BYTES = 5 * 1024 * 1024;
 const MAX_TEXTO_PDF = 18000;
-const MODELOS = ['gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-2.0-flash'];
+const MODELOS = ['gemini-3.5-flash', 'gemini-3.1-flash-lite', 'gemini-2.5-flash', 'gemini-2.5-flash-lite'];
 
 function apiKey() {
   return (process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || '').trim();
