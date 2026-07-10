@@ -114,7 +114,8 @@ Conviértelo SOLO a CSV con cabecera exacta (primera línea):
 dia,grupo,nombre,series,reps,rir
 
 Reglas:
-- Si el PDF usa "Sesión 1", "Sesión 2", etc., escribe en la columna dia: Sesión 1, Sesión 2… (o Lunes, Martes si ya vienen días de la semana).
+- Extrae TODOS los días o sesiones del PDF (Lunes, Martes, Miércoles, Jueves, Viernes, Sábado). No te quedes solo con el primer día.
+- Si el PDF usa "Sesión 1", "Sesión 2", etc., mapea: Sesión 1→Lunes, Sesión 2→Martes, Sesión 3→Miércoles, Sesión 4→Jueves, Sesión 5→Viernes, Sesión 6→Sábado.
 - Extrae grupo muscular, nombre del ejercicio, series, repeticiones (ej. 10-15) y RIR/RPE.
 - Ignora calentamientos genéricos, notas legales y texto que no sea ejercicio.
 - Sin markdown, sin explicaciones: solo líneas CSV después de la cabecera.
