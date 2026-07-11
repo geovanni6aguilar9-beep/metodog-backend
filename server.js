@@ -511,23 +511,12 @@ app.post("/api/planes/preview-import", async (req, res) => {
 });
 
 app.post("/api/planes/preview-import-ia", async (req, res) => {
+  if (!(await assertCoachOAdmin(db, req, res))) return;
+  if (!(await assertCoachSuscripcionActiva(db, req, res))) return;
   const { texto, origen, tipo } = req.body || {};
   if (!texto || typeof texto !== "string") {
     return res.status(400).json({ error: "Envía el texto en el campo «texto»." });
   }
-
-  const esCliente = req.user.rol === "CLIENTE";
-  if (esCliente) {
-    if (tipo !== "rutina") {
-      return res.status(403).json({
-        error: "La importación con IA de dietas está disponible solo para coaches."
-      });
-    }
-  } else {
-    if (!(await assertCoachOAdmin(db, req, res))) return;
-    if (!(await assertCoachSuscripcionActiva(db, req, res))) return;
-  }
-
   try {
     const esPdf = origen === "pdf";
     const resultado =
