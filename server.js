@@ -579,6 +579,12 @@ async function usuarioPuedeRecetasIa(userId, rol) {
   return !!r.rows[0]?.paquete_rutina_6_dias;
 }
 
+/** Combo IA: coaches + clientes (freemium 3 intentos en app). Día IA sigue con Full Week. */
+async function usuarioPuedeComboIa(userId, rol) {
+  if (rol === "SUPERADMIN" || rol === "COACH" || rol === "CLIENTE") return true;
+  return usuarioPuedeRecetasIa(userId, rol);
+}
+
 function coachIdParaCatalogoIa(user) {
   if (!user || (user.rol !== "COACH" && user.rol !== "SUPERADMIN")) return null;
   const id = parseInt(user.id, 10);
@@ -604,7 +610,7 @@ app.post("/api/alimentos/receta-ia", async (req, res) => {
   if (!user) return res.status(401).json({ ok: false, error: "Sesión requerida" });
   if (!(await assertCoachSuscripcionActiva(db, req, res))) return;
 
-  const puede = await usuarioPuedeRecetasIa(user.id, user.rol);
+  const puede = await usuarioPuedeComboIa(user.id, user.rol);
   if (!puede) {
     return res.status(403).json({
       ok: false,
