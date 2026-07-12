@@ -62,6 +62,17 @@ const { buildResumenRutina } = require("./resumenRutinaInforme");
 const { contextoMesInforme } = require("./informeMesContext");
 const { seedAlimentosMetodog } = require("./seedAlimentos");
 const { calcularSustitutos, SIN_SUSTITUTO } = require("./equivalenciasNutricion");
+const {
+  ensureTablaCuotaComboIa,
+  estadoCuotaComboIa,
+  reservarCuotaComboIa,
+  liberarReservaCuotaComboIa,
+  MAX_COMBOS_GRATIS
+} = require("./comboIaCuota");
+const {
+  aplicarSustitutoEnDatosDieta,
+  mapearAlimentoDesdeBiblioteca
+} = require("./dietaSustituir");
 const { importarAlimentosCsv, previewImportacionCsv, PLANTILLA_CSV } = require("./importarAlimentos");
 const {
   generarRecetaComida,
@@ -378,6 +389,8 @@ async function inicializarBD() {
       `CREATE INDEX IF NOT EXISTS idx_catalogo_ejercicios_owner ON catalogo_ejercicios_grupo(owner_id, scope)`
     );
 
+    await ensureTablaCuotaComboIa(db);
+
     await seedAlimentosMetodog(db);
     console.log("✅ Base de datos conectada (suscripciones atleta/coach + tiers).");
   } catch (error) {
@@ -579,10 +592,51 @@ async function usuarioPuedeRecetasIa(userId, rol) {
   return !!r.rows[0]?.paquete_rutina_6_dias;
 }
 
-/** Combo IA: coaches + clientes (freemium 3 intentos en app). Día IA sigue con Full Week. */
-async function usuarioPuedeComboIa(userId, rol) {
-  if (rol === "SUPERADMIN" || rol === "COACH" || rol === "CLIENTE") return true;
-  return usuarioPuedeRecetasIa(userId, rol);
+/**
+ * Combo IA:
+ * - COACH/SUPERADMIN: sí (sujeto a suscripción coach en la ruta)
+ * - CLIENTE Full Week: ilimitado
+ * - CLIENTE con coach_id: no (el plan es del coach)
+ * - CLIENTE libre: cuota Turso freemium
+ */
+async function resolverAccesoComboIa(userId, rol) {
+  if (rol === "SUPERADMIN" || rol === "COACH") {
+    return { ok: true, ilimitado: true, restantes: null };
+  }
+  if (rol !== "CLIENTE") {
+    return { ok: false, motivo: "rol", error: "No autorizado para Combo IA." };
+  }
+  const uid = parseInt(userId, 10);
+  const r = await db.execute({
+    sql: "SELECT coach_id, paquete_rutina_6_dias FROM usuarios WHERE id = ?",
+    args: [uid]
+  });
+  const row = r.rows[0];
+  if (!row) {
+    return { ok: false, motivo: "usuario", error: "Usuario no encontrado." };
+  }
+  if (row.paquete_rutina_6_dias) {
+    return { ok: true, ilimitado: true, restantes: null };
+  }
+  const coachId = row.coach_id != null && row.coach_id !== "" ? Number(row.coach_id) : null;
+  if (coachId && !Number.isNaN(coachId) && coachId > 0) {
+    return {
+      ok: false,
+      motivo: "plan_coach",
+      error: "Tu dieta la gestiona tu coach. El Combo IA libre no aplica aquí."
+    };
+  }
+  const cuota = await estadoCuotaComboIa(db, uid);
+  if (cuota.restantes <= 0) {
+    return {
+      ok: false,
+      motivo: "sin_cuota",
+      error: "Ya usaste tus 3 combos de prueba. Activa Full Week PRO para continuar.",
+      restantes: 0,
+      max: cuota.max
+    };
+  }
+  return { ok: true, ilimitado: false, restantes: cuota.restantes, max: cuota.max };
 }
 
 function coachIdParaCatalogoIa(user) {
@@ -590,6 +644,42 @@ function coachIdParaCatalogoIa(user) {
   const id = parseInt(user.id, 10);
   return Number.isNaN(id) || id <= 0 ? null : id;
 }
+
+app.get("/api/alimentos/receta-ia/cuota", async (req, res) => {
+  const user = req.user;
+  if (!user) return res.status(401).json({ ok: false, error: "Sesión requerida" });
+  if (user.rol === "SUPERADMIN" || user.rol === "COACH") {
+    return res.json({ ok: true, ilimitado: true, restantes: null, max: MAX_COMBOS_GRATIS });
+  }
+  if (user.rol !== "CLIENTE") {
+    return res.status(403).json({ ok: false, error: "No autorizado" });
+  }
+  try {
+    const acceso = await resolverAccesoComboIa(user.id, user.rol);
+    if (acceso.ilimitado) {
+      return res.json({ ok: true, ilimitado: true, restantes: null, max: MAX_COMBOS_GRATIS });
+    }
+    if (acceso.motivo === "plan_coach") {
+      return res.json({
+        ok: true,
+        ilimitado: false,
+        restantes: 0,
+        max: MAX_COMBOS_GRATIS,
+        plan_coach: true
+      });
+    }
+    const cuota = await estadoCuotaComboIa(db, user.id);
+    return res.json({
+      ok: true,
+      ilimitado: false,
+      restantes: cuota.restantes,
+      max: cuota.max,
+      usados: cuota.usados
+    });
+  } catch (err) {
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+});
 
 app.get("/api/alimentos/receta-ia/probe", async (req, res) => {
   const user = req.user;
@@ -610,12 +700,28 @@ app.post("/api/alimentos/receta-ia", async (req, res) => {
   if (!user) return res.status(401).json({ ok: false, error: "Sesión requerida" });
   if (!(await assertCoachSuscripcionActiva(db, req, res))) return;
 
-  const puede = await usuarioPuedeComboIa(user.id, user.rol);
-  if (!puede) {
+  const acceso = await resolverAccesoComboIa(user.id, user.rol);
+  if (!acceso.ok) {
     return res.status(403).json({
       ok: false,
-      error: "Activa Full Week PRO para usar recetas con IA."
+      motivo: acceso.motivo || "sin_acceso",
+      error: acceso.error || "Activa Full Week PRO para usar recetas con IA.",
+      restantes: acceso.restantes ?? 0
     });
+  }
+
+  let reservado = false;
+  if (!acceso.ilimitado) {
+    const reserva = await reservarCuotaComboIa(db, user.id);
+    if (!reserva.ok) {
+      return res.status(403).json({
+        ok: false,
+        motivo: "sin_cuota",
+        error: "Ya usaste tus 3 combos de prueba. Activa Full Week PRO para continuar.",
+        restantes: reserva.restantes ?? 0
+      });
+    }
+    reservado = true;
   }
 
   const payload = req.body || {};
@@ -623,6 +729,7 @@ app.post("/api/alimentos/receta-ia", async (req, res) => {
   try {
     const resultado = await generarRecetaComida(payload, db, iaOpts);
     if (!resultado.ok) {
+      if (reservado) await liberarReservaCuotaComboIa(db, user.id);
       const esAdmin = user.rol === "SUPERADMIN" || user.rol === "COACH";
       const mostrarDetalle = esAdmin || resultado.motivo === "formato_key";
       const err400 = [
@@ -642,8 +749,14 @@ app.post("/api/alimentos/receta-ia", async (req, res) => {
         )
       });
     }
-    res.json(resultado);
+    let cuotaOut = { ilimitado: true, restantes: null };
+    if (!acceso.ilimitado) {
+      const est = await estadoCuotaComboIa(db, user.id);
+      cuotaOut = { ilimitado: false, restantes: est.restantes, max: est.max, usados: est.usados };
+    }
+    res.json({ ...resultado, cuota_combo: cuotaOut });
   } catch (err) {
+    if (reservado) await liberarReservaCuotaComboIa(db, user.id);
     console.error("receta-ia:", err.message);
     res.status(500).json({
       ok: false,
@@ -801,6 +914,31 @@ app.put("/api/coach/notas-ejercicio", async (req, res) => {
 app.post("/api/dietas/guardar", async (req, res) => {
   const { usuario_id, datos_dieta, macros_totales, notas_dieta } = req.body;
   if (!(await assertAccesoUsuarioEdicion(db, req, res, usuario_id))) return;
+
+  // Blindaje A: CLIENTE con coach no puede reescribir su dieta por este endpoint.
+  try {
+    const tid = parseInt(usuario_id, 10);
+    const aid = parseInt(req.user.id, 10);
+    if (req.user.rol === "CLIENTE" && tid === aid) {
+      const u = await db.execute({
+        sql: "SELECT coach_id FROM usuarios WHERE id = ?",
+        args: [aid]
+      });
+      const coachRaw = u.rows[0]?.coach_id;
+      const coachId = coachRaw != null && coachRaw !== "" ? Number(coachRaw) : null;
+      if (coachId && !Number.isNaN(coachId) && coachId > 0) {
+        return res.status(403).json({
+          error: "Tu plan lo administra tu coach. No puedes sobrescribir la dieta completa. Usa Sustituir (Full Week PRO) para un intercambio puntual.",
+          codigo: "dieta_solo_coach",
+          ruta_alternativa: "/api/dietas/sustituir"
+        });
+      }
+    }
+  } catch (err) {
+    console.error("dietas/guardar guardrail:", err.message);
+    return res.status(500).json({ error: "No se pudo validar el acceso a la dieta." });
+  }
+
   try {
     await db.execute({
       sql: `INSERT INTO dietas (usuario_id, datos_dieta, macros_totales, notas_dieta) VALUES (?, ?, ?, ?) ON CONFLICT(usuario_id) DO UPDATE SET datos_dieta = excluded.datos_dieta, macros_totales = excluded.macros_totales, notas_dieta = excluded.notas_dieta`,
@@ -809,6 +947,152 @@ app.post("/api/dietas/guardar", async (req, res) => {
     await notificarClientePlanActualizado(db, req, usuario_id, "plan_dieta");
     res.json({ mensaje: "Dieta asignada" });
   } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+/**
+ * Sustitución puntual (cliente con coach + Full Week).
+ * Solo reemplaza un alimento; no acepta reescritura del plan completo.
+ */
+app.post("/api/dietas/sustituir", async (req, res) => {
+  const user = req.user;
+  if (!user) return res.status(401).json({ error: "Sesión requerida" });
+  if (user.rol !== "CLIENTE") {
+    return res.status(403).json({ error: "Solo el atleta puede usar esta ruta de sustitución." });
+  }
+
+  const aid = parseInt(user.id, 10);
+  const {
+    comida_id: comidaId,
+    id_unico: idUnico,
+    sustituto_id: sustitutoId,
+    cantidad,
+    cantidad_sugerida: cantidadSugerida
+  } = req.body || {};
+
+  const qty = parseFloat(cantidad ?? cantidadSugerida);
+  if (comidaId == null || !idUnico || !sustitutoId || !Number.isFinite(qty) || qty <= 0) {
+    return res.status(400).json({
+      error: "comida_id, id_unico, sustituto_id y cantidad son obligatorios."
+    });
+  }
+
+  try {
+    const u = await db.execute({
+      sql: "SELECT coach_id, paquete_rutina_6_dias FROM usuarios WHERE id = ?",
+      args: [aid]
+    });
+    const row = u.rows[0];
+    if (!row) return res.status(404).json({ error: "Usuario no encontrado" });
+
+    const coachRaw = row.coach_id;
+    const coachId = coachRaw != null && coachRaw !== "" ? Number(coachRaw) : null;
+    if (!coachId || Number.isNaN(coachId) || coachId <= 0) {
+      return res.status(403).json({
+        error: "Esta ruta es para atletas con coach. En modo libre usa el guardado normal."
+      });
+    }
+    if (!row.paquete_rutina_6_dias) {
+      return res.status(403).json({
+        error: "Activa Full Week PRO para aplicar equivalencias a tu plan.",
+        codigo: "requiere_full_week"
+      });
+    }
+
+    const dietaRes = await db.execute({
+      sql: "SELECT datos_dieta, macros_totales, notas_dieta FROM dietas WHERE usuario_id = ?",
+      args: [aid]
+    });
+    if (!dietaRes.rows?.length) {
+      return res.status(404).json({ error: "Aún no tienes dieta asignada." });
+    }
+
+    let datosDieta;
+    try {
+      datosDieta = JSON.parse(dietaRes.rows[0].datos_dieta);
+    } catch {
+      return res.status(500).json({ error: "Dieta corrupta en servidor." });
+    }
+
+    // Localizar alimento original
+    const comidas = Array.isArray(datosDieta)
+      ? datosDieta
+      : Array.isArray(datosDieta?.planDiario)
+        ? datosDieta.planDiario
+        : null;
+    if (!comidas) {
+      return res.status(400).json({ error: "Formato de dieta no soportado para sustitución." });
+    }
+
+    let original = null;
+    for (const c of comidas) {
+      if (String(c.id) !== String(comidaId) && Number(c.id) !== Number(comidaId)) continue;
+      original = (c.alimentos || []).find((a) => String(a.idUnico) === String(idUnico));
+      if (original) break;
+    }
+    if (!original) {
+      return res.status(404).json({ error: "No se encontró ese alimento en tu plan." });
+    }
+
+    const bibOrig = original.id
+      ? await db.execute({ sql: "SELECT * FROM alimentos WHERE id = ?", args: [original.id] })
+      : { rows: [] };
+    let filaOrig = bibOrig.rows[0];
+    if (!filaOrig && original.nombre) {
+      const byName = await db.execute({
+        sql: "SELECT * FROM alimentos WHERE LOWER(nombre) = LOWER(?) LIMIT 1",
+        args: [String(original.nombre).trim()]
+      });
+      filaOrig = byName.rows[0];
+    }
+
+    const bibNew = await db.execute({
+      sql: "SELECT * FROM alimentos WHERE id = ?",
+      args: [parseInt(sustitutoId, 10)]
+    });
+    const filaNew = bibNew.rows[0];
+    if (!filaNew) {
+      return res.status(404).json({ error: "Sustituto no encontrado en biblioteca." });
+    }
+
+    const geOrig = String(filaOrig?.grupo_equivalencia || original.grupo_equivalencia || "").trim();
+    const geNew = String(filaNew.grupo_equivalencia || "").trim();
+    if (!geOrig || !geNew || geOrig !== geNew || SIN_SUSTITUTO.has(geOrig)) {
+      return res.status(400).json({
+        error: "El sustituto no es equivalente nutricional al alimento original.",
+        codigo: "grupo_invalido"
+      });
+    }
+
+    const alimentoNuevo = mapearAlimentoDesdeBiblioteca(filaNew, qty, String(idUnico));
+    if (!alimentoNuevo) {
+      return res.status(400).json({ error: "Cantidad de sustituto inválida." });
+    }
+
+    const aplicado = aplicarSustitutoEnDatosDieta(datosDieta, {
+      comidaId,
+      idUnico: String(idUnico),
+      alimentoNuevo
+    });
+    if (!aplicado.ok) {
+      return res.status(400).json({ error: aplicado.error || "No se pudo aplicar el sustituto." });
+    }
+
+    const macrosPrev = dietaRes.rows[0].macros_totales;
+    await db.execute({
+      sql: `UPDATE dietas SET datos_dieta = ?, ultima_actualizacion = CURRENT_TIMESTAMP WHERE usuario_id = ?`,
+      args: [JSON.stringify(aplicado.datos), aid]
+    });
+
+    res.json({
+      ok: true,
+      mensaje: "Sustituto aplicado",
+      datos_dieta: aplicado.datos,
+      macros_totales: macrosPrev ? JSON.parse(macrosPrev) : null
+    });
+  } catch (err) {
+    console.error("dietas/sustituir:", err.message);
+    res.status(500).json({ error: err.message || "Error al sustituir." });
+  }
 });
 
 app.get("/api/dietas/:usuario_id", async (req, res) => {
