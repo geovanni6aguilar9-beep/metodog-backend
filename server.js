@@ -1813,12 +1813,22 @@ app.post("/api/clientes/desvincular-coach", async (req, res) => {
   }
 });
 
+/** Código de invitación: quita espacios (UI espaciada A B C…) y normaliza mayúsculas. */
+function normalizarCodigoInvitacion(raw) {
+  return String(raw || "")
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, "");
+}
+
 app.post("/api/clientes/vincular-coach", async (req, res) => {
-  const { coach_id } = req.body || {};
-  const coachId = parseInt(coach_id, 10);
+  const { coach_id, codigo_invitacion, codigoIngresado, codigo } = req.body || {};
+  let coachId = parseInt(coach_id, 10);
+  const codigoNorm = normalizarCodigoInvitacion(
+    codigo_invitacion || codigoIngresado || codigo || ""
+  );
   const clienteId = parseInt(req.user.id, 10);
 
-  if (!coachId || Number.isNaN(coachId)) return res.status(400).json({ error: "coach_id requerido" });
   if (!clienteId || Number.isNaN(clienteId)) return res.status(400).json({ error: "Cliente inválido" });
 
   if (req.user.rol !== "CLIENTE") {
@@ -1826,6 +1836,21 @@ app.post("/api/clientes/vincular-coach", async (req, res) => {
   }
 
   try {
+    if ((!coachId || Number.isNaN(coachId)) && codigoNorm) {
+      const porCodigo = await db.execute({
+        sql: "SELECT id FROM usuarios WHERE codigo_invitacion = ? AND rol IN ('COACH', 'SUPERADMIN') LIMIT 1",
+        args: [codigoNorm]
+      });
+      if (porCodigo.rows.length === 0) {
+        return res.status(404).json({ error: "No encontramos un coach con ese código." });
+      }
+      coachId = parseInt(porCodigo.rows[0].id, 10);
+    }
+
+    if (!coachId || Number.isNaN(coachId)) {
+      return res.status(400).json({ error: "Indica coach_id o código de invitación" });
+    }
+
     const result = await solicitarVinculoCoach(db, { clienteId, coachId, resend });
     if (!result.ok) {
       return res.status(result.status || 400).json({ error: result.error });
@@ -2050,6 +2075,57 @@ app.get("/api/directorio/coaches", async (req, res) => {
     res.json(result.rows || []);
   } catch (err) {
     console.error("Error directorio coaches:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/** Lookup por código de invitación — coaches fuera del catálogo (trial / sin verificación). Auth requerida. */
+app.get("/api/directorio/coach-por-codigo", async (req, res) => {
+  const codigo = normalizarCodigoInvitacion(req.query.codigo || "");
+  if (!codigo || codigo.length < 4) {
+    return res.status(400).json({ error: "Escribe un código de coach válido." });
+  }
+  try {
+    const coachRes = await db.execute({
+      sql: `SELECT u.id, u.nombre, u.rol, u.calificacion,
+              p.foto_url, p.bio, p.especialidad, p.tarifa_base,
+              COALESCE(p.verificado, 0) AS verificado,
+              COALESCE(p.visible_en_directorio, 1) AS visible_en_directorio
+            FROM usuarios u
+            LEFT JOIN perfiles_coach_publicos p ON p.usuario_id = u.id
+            WHERE u.codigo_invitacion = ? AND u.rol IN ('COACH', 'SUPERADMIN')
+            LIMIT 1`,
+      args: [codigo]
+    });
+    if (coachRes.rows.length === 0) {
+      return res.status(404).json({ error: "No encontramos un coach con ese código." });
+    }
+    const row = coachRes.rows[0];
+    if (row.rol === "COACH") {
+      const sub = await evaluarSuscripcionCoach(db, row.id);
+      if (!sub) {
+        return res.status(400).json({
+          error: "Este coach no puede recibir alumnos ahora (suscripción inactiva)."
+        });
+      }
+    }
+    const enDirectorio =
+      Number(row.verificado) === 1 && Number(row.visible_en_directorio) === 1;
+    res.json({
+      id: Number(row.id),
+      nombre: row.nombre,
+      calificacion: row.calificacion,
+      foto_url: row.foto_url || "",
+      bio: row.bio || "",
+      especialidad: row.especialidad || "",
+      tarifa_base: row.tarifa_base != null ? Number(row.tarifa_base) : null,
+      en_directorio: enDirectorio,
+      mensaje: enDirectorio
+        ? null
+        : "Coach privado — no aparece en el catálogo público."
+    });
+  } catch (err) {
+    console.error("Error coach-por-codigo:", err.message);
     res.status(500).json({ error: err.message });
   }
 });
@@ -2290,10 +2366,11 @@ app.post("/api/registro", async (req, res) => {
   const query = `INSERT INTO usuarios (nombre, email, password, rol, codigo_invitacion, coach_id) VALUES (?, ?, ?, ?, ?, ?)`;
   
   try {
-    if (codigoIngresado && codigoIngresado.trim() !== '') {
+    const codigoRegistro = normalizarCodigoInvitacion(codigoIngresado);
+    if (codigoRegistro) {
       const coachRes = await db.execute({
         sql: "SELECT id FROM usuarios WHERE codigo_invitacion = ?",
-        args: [codigoIngresado.toUpperCase()]
+        args: [codigoRegistro]
       });
       if (coachRes.rows.length === 0) {
         return res.status(400).json({ error: "El código de Coach que ingresaste no es válido." });
