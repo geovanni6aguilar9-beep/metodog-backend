@@ -3,6 +3,7 @@ const path = require("path");
 const express = require("express");
 const cors = require("cors");
 const { createClient } = require("@libsql/client");
+const { wrapTursoClient, mensajeErrorDb } = require("./tursoRetry");
 const bcrypt = require("bcryptjs");
 const { Resend } = require("resend");
 const {
@@ -191,7 +192,7 @@ function crearClienteDB() {
   return createClient({ url, authToken });
 }
 
-const db = crearClienteDB();
+const db = wrapTursoClient(crearClienteDB());
 
 // 💌 CONFIGURACIÓN DEL CARTERO RESEND
 const resend = new Resend(process.env.RESEND_API_KEY);
@@ -936,7 +937,10 @@ app.post("/api/dietas/guardar", async (req, res) => {
     }
   } catch (err) {
     console.error("dietas/guardar guardrail:", err.message);
-    return res.status(500).json({ error: "No se pudo validar el acceso a la dieta." });
+    return res.status(503).json({
+      error: mensajeErrorDb(err, "No se pudo validar el acceso a la dieta."),
+      codigo: "db_temporal"
+    });
   }
 
   try {
@@ -946,7 +950,10 @@ app.post("/api/dietas/guardar", async (req, res) => {
     });
     await notificarClientePlanActualizado(db, req, usuario_id, "plan_dieta");
     res.json({ mensaje: "Dieta asignada" });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) {
+    console.error("dietas/guardar:", err.message);
+    res.status(503).json({ error: mensajeErrorDb(err), codigo: "db_temporal" });
+  }
 });
 
 /**
@@ -2336,7 +2343,10 @@ app.post("/api/login", async (req, res) => {
     usuario = await enrichUsuarioVinculo(db, usuario);
     const token = signToken(usuario);
     res.json({ usuario, token });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) {
+    console.error("login:", err.message);
+    res.status(503).json({ error: mensajeErrorDb(err), codigo: "db_temporal" });
+  }
 });
 
 app.get("/api/auth/me", async (req, res) => {
@@ -2351,7 +2361,10 @@ app.get("/api/auth/me", async (req, res) => {
       payload.token = signToken(usuario);
     }
     res.json(payload);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) {
+    console.error("auth/me:", err.message);
+    res.status(503).json({ error: mensajeErrorDb(err), codigo: "db_temporal" });
+  }
 });
 
 app.post("/api/upgrade", async (req, res) => {
