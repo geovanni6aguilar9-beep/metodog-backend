@@ -109,17 +109,19 @@ function limpiarCsvGemini(text) {
 }
 
 function promptRutinaPdf(texto) {
-  return `Eres un entrenador élite. Lee este texto caótico extraído de un PDF de gimnasio.
+  return `Eres un entrenador élite. Lee este texto caótico de una rutina (PDF, WhatsApp, notas de coach, lista informal).
 Conviértelo SOLO a CSV con cabecera exacta (primera línea):
 dia,grupo,nombre,series,reps,rir
 
 Reglas:
-- Si el PDF usa "Sesión 1", "Sesión 2", etc., escribe en la columna dia: Sesión 1, Sesión 2… (o Lunes, Martes si ya vienen días de la semana).
-- Extrae grupo muscular, nombre del ejercicio, series, repeticiones (ej. 10-15) y RIR/RPE.
-- Ignora calentamientos genéricos, notas legales y texto que no sea ejercicio.
+- Detecta días (Lunes…Sábado) o "Sesión 1/2/3", "Día 1", "Pecho/Espalda", etc. Si solo hay grupos musculares sin día, asigna Lunes, Martes… en orden.
+- Columna dia: Lunes/Martes/… o Sesión 1, Sesión 2…
+- Extrae grupo muscular (Pecho, Espalda, Pierna…), nombre del ejercicio, series, repeticiones (ej. 10 o 8-12) y RIR/RPE si aparece (si no, 2).
+- Formatos típicos WhatsApp: "Press banca 4x10", "× 4 de 12", "4 series de 8-10", bullets, emojis.
+- Ignora saludos, stickers, "manda foto", calentamientos genéricos y texto que no sea ejercicio.
 - Sin markdown, sin explicaciones: solo líneas CSV después de la cabecera.
 
-TEXTO PDF:
+TEXTO:
 ${String(texto || '').slice(0, MAX_TEXTO)}`;
 }
 
