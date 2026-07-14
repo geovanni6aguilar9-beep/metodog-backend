@@ -1,4 +1,4 @@
-﻿require("dotenv").config({ quiet: true });
+require("dotenv").config({ quiet: true });
 const path = require("path");
 const express = require("express");
 const cors = require("cors");
@@ -70,6 +70,12 @@ const {
   liberarReservaCuotaComboIa,
   MAX_COMBOS_GRATIS
 } = require("./comboIaCuota");
+const {
+  MAX_DIETAS_GRATIS,
+  estadoCuotaDietaIa,
+  reservarCuotaDietaIa,
+  liberarReservaCuotaDietaIa
+} = require("./dietaIaCuota");
 const {
   aplicarSustitutoEnDatosDieta,
   mapearAlimentoDesdeBiblioteca
@@ -640,6 +646,52 @@ async function resolverAccesoComboIa(userId, rol) {
   return { ok: true, ilimitado: false, restantes: cuota.restantes, max: cuota.max };
 }
 
+
+/**
+ * Armar dia con IA:
+ * - COACH/SUPERADMIN / Full Week: ilimitado
+ * - CLIENTE con coach: no
+ * - CLIENTE libre: 1 intento Turso (beta)
+ */
+async function resolverAccesoDietaIa(userId, rol) {
+  if (rol === "SUPERADMIN" || rol === "COACH") {
+    return { ok: true, ilimitado: true, restantes: null };
+  }
+  if (rol !== "CLIENTE") {
+    return { ok: false, motivo: "rol", error: "No autorizado para plan IA." };
+  }
+  const uid = parseInt(userId, 10);
+  const r = await db.execute({
+    sql: "SELECT coach_id, paquete_rutina_6_dias FROM usuarios WHERE id = ?",
+    args: [uid]
+  });
+  const row = r.rows[0];
+  if (!row) {
+    return { ok: false, motivo: "usuario", error: "Usuario no encontrado." };
+  }
+  if (row.paquete_rutina_6_dias) {
+    return { ok: true, ilimitado: true, restantes: null };
+  }
+  const coachId = row.coach_id != null && row.coach_id !== "" ? Number(row.coach_id) : null;
+  if (coachId && !Number.isNaN(coachId) && coachId > 0) {
+    return {
+      ok: false,
+      motivo: "plan_coach",
+      error: "Tu dieta la gestiona tu coach. El planificador IA libre no aplica aquí."
+    };
+  }
+  const cuota = await estadoCuotaDietaIa(db, uid);
+  if (cuota.restantes <= 0) {
+    return {
+      ok: false,
+      motivo: "sin_cuota",
+      error: "Ya usaste tu prueba de Armar dia con IA. Activa Full Week PRO para continuar.",
+      restantes: 0,
+      max: cuota.max
+    };
+  }
+  return { ok: true, ilimitado: false, restantes: cuota.restantes, max: cuota.max };
+}
 function coachIdParaCatalogoIa(user) {
   if (!user || (user.rol !== "COACH" && user.rol !== "SUPERADMIN")) return null;
   const id = parseInt(user.id, 10);
@@ -766,6 +818,42 @@ app.post("/api/alimentos/receta-ia", async (req, res) => {
   }
 });
 
+
+app.get("/api/alimentos/dieta-ia/cuota", async (req, res) => {
+  const user = req.user;
+  if (!user) return res.status(401).json({ ok: false, error: "Sesión requerida" });
+  if (user.rol === "SUPERADMIN" || user.rol === "COACH") {
+    return res.json({ ok: true, ilimitado: true, restantes: null, max: MAX_DIETAS_GRATIS });
+  }
+  if (user.rol !== "CLIENTE") {
+    return res.status(403).json({ ok: false, error: "No autorizado" });
+  }
+  try {
+    const acceso = await resolverAccesoDietaIa(user.id, user.rol);
+    if (acceso.ilimitado) {
+      return res.json({ ok: true, ilimitado: true, restantes: null, max: MAX_DIETAS_GRATIS });
+    }
+    if (acceso.motivo === "plan_coach") {
+      return res.json({
+        ok: true,
+        ilimitado: false,
+        restantes: 0,
+        max: MAX_DIETAS_GRATIS,
+        plan_coach: true
+      });
+    }
+    const cuota = await estadoCuotaDietaIa(db, user.id);
+    return res.json({
+      ok: true,
+      ilimitado: false,
+      restantes: cuota.restantes,
+      max: cuota.max,
+      usados: cuota.usados
+    });
+  } catch (err) {
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+});
 app.post("/api/alimentos/dieta-ia", async (req, res) => {
   const user = req.user;
   if (!user) return res.status(401).json({ ok: false, error: "Sesión requerida" });
@@ -775,12 +863,28 @@ app.post("/api/alimentos/dieta-ia", async (req, res) => {
   console.log(`[MetodoG] Pipeline 4.7-PromptElite ACTIVA — POST /api/alimentos/dieta-ia`, new Date().toISOString());
   console.log("========================================");
 
-  const puede = await usuarioPuedeRecetasIa(user.id, user.rol);
-  if (!puede) {
+  const acceso = await resolverAccesoDietaIa(user.id, user.rol);
+  if (!acceso.ok) {
     return res.status(403).json({
       ok: false,
-      error: "Activa Full Week PRO para usar el planificador IA."
+      motivo: acceso.motivo || "sin_acceso",
+      error: acceso.error || "Activa Full Week PRO para usar el planificador IA.",
+      restantes: acceso.restantes ?? 0
     });
+  }
+
+  let reservado = false;
+  if (!acceso.ilimitado) {
+    const reserva = await reservarCuotaDietaIa(db, user.id);
+    if (!reserva.ok) {
+      return res.status(403).json({
+        ok: false,
+        motivo: "sin_cuota",
+        error: "Ya usaste tu prueba de Armar dia con IA. Activa Full Week PRO para continuar.",
+        restantes: reserva.restantes ?? 0
+      });
+    }
+    reservado = true;
   }
 
   const payload = req.body || {};
@@ -788,6 +892,7 @@ app.post("/api/alimentos/dieta-ia", async (req, res) => {
   try {
     const resultado = await generarDietaDiaCompleta(payload, db, iaOpts);
     if (!resultado.ok) {
+      if (reservado) await liberarReservaCuotaDietaIa(db, user.id);
       const esAdmin = user.rol === "SUPERADMIN" || user.rol === "COACH";
       const mostrarDetalle =
         esAdmin ||
@@ -816,8 +921,14 @@ app.post("/api/alimentos/dieta-ia", async (req, res) => {
         )
       });
     }
-    res.json(resultado);
+    let cuotaOut = { ilimitado: true, restantes: null };
+    if (!acceso.ilimitado) {
+      const est = await estadoCuotaDietaIa(db, user.id);
+      cuotaOut = { ilimitado: false, restantes: est.restantes, max: est.max, usados: est.usados };
+    }
+    res.json({ ...resultado, cuota_dieta: cuotaOut });
   } catch (err) {
+    if (reservado) await liberarReservaCuotaDietaIa(db, user.id);
     console.error("dieta-ia:", err.message);
     res.status(500).json({
       ok: false,
