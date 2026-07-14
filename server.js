@@ -77,6 +77,12 @@ const {
   liberarReservaCuotaDietaIa
 } = require("./dietaIaCuota");
 const {
+  MAX_IMPORT_PLAN_IA_GRATIS,
+  estadoCuotaImportPlanIa,
+  reservarCuotaImportPlanIa,
+  liberarReservaCuotaImportPlanIa
+} = require("./importPlanIaCuota");
+const {
   aplicarSustitutoEnDatosDieta,
   mapearAlimentoDesdeBiblioteca
 } = require("./dietaSustituir");
@@ -531,11 +537,38 @@ app.post("/api/planes/preview-import", async (req, res) => {
 });
 
 app.post("/api/planes/preview-import-ia", async (req, res) => {
-  if (!(await assertCoachOAdmin(db, req, res))) return;
+  const user = req.user;
+  if (!user) return res.status(401).json({ ok: false, error: "Sesion requerida" });
   if (!(await assertCoachSuscripcionActiva(db, req, res))) return;
+
+  const acceso = await resolverAccesoImportPlanIa(user.id, user.rol);
+  if (!acceso.ok) {
+    return res.status(403).json({
+      ok: false,
+      motivo: acceso.motivo || "sin_acceso",
+      error: acceso.error || "Activa Full Week PRO para importar con IA.",
+      restantes: acceso.restantes ?? 0
+    });
+  }
+
+  let reservado = false;
+  if (!acceso.ilimitado) {
+    const reserva = await reservarCuotaImportPlanIa(db, user.id);
+    if (!reserva.ok) {
+      return res.status(403).json({
+        ok: false,
+        motivo: "sin_cuota",
+        error: "Ya usaste tus 3 importaciones IA de prueba. Activa Full Week PRO para continuar.",
+        restantes: reserva.restantes ?? 0
+      });
+    }
+    reservado = true;
+  }
+
   const { texto, origen, tipo } = req.body || {};
   if (!texto || typeof texto !== "string") {
-    return res.status(400).json({ error: "Envía el texto en el campo «texto»." });
+    if (reservado) await liberarReservaCuotaImportPlanIa(db, user.id);
+    return res.status(400).json({ error: "Envia el texto en el campo texto." });
   }
   try {
     const esPdf = origen === "pdf";
@@ -543,9 +576,18 @@ app.post("/api/planes/preview-import-ia", async (req, res) => {
       tipo === "rutina"
         ? await previewImportRutinaIa(texto, { origen: esPdf ? "pdf" : "texto" })
         : await previewImportDietaIa(texto, { origen: esPdf ? "pdf" : "texto" });
-    if (!resultado.ok) return res.status(400).json(resultado);
-    res.json(resultado);
+    if (!resultado.ok) {
+      if (reservado) await liberarReservaCuotaImportPlanIa(db, user.id);
+      return res.status(400).json(resultado);
+    }
+    let cuotaOut = { ilimitado: true, restantes: null };
+    if (!acceso.ilimitado) {
+      const est = await estadoCuotaImportPlanIa(db, user.id);
+      cuotaOut = { ilimitado: false, restantes: est.restantes, max: est.max, usados: est.usados };
+    }
+    res.json({ ...resultado, cuota_import_ia: cuotaOut });
   } catch (err) {
+    if (reservado) await liberarReservaCuotaImportPlanIa(db, user.id);
     console.error("planes/preview-import-ia:", err.message);
     res.status(500).json({ error: err.message || "IA no disponible." });
   }
@@ -653,6 +695,53 @@ async function resolverAccesoComboIa(userId, rol) {
  * - CLIENTE con coach: no
  * - CLIENTE libre: 1 intento Turso (beta)
  */
+
+/**
+ * Import plan con IA (PDF/texto):
+ * - COACH/SUPERADMIN: ilimitado (sujeto a suscripcion coach en ruta)
+ * - CLIENTE Full Week: ilimitado
+ * - CLIENTE con coach: no
+ * - CLIENTE libre: 3 intentos Turso (carril import)
+ */
+async function resolverAccesoImportPlanIa(userId, rol) {
+  if (rol === "SUPERADMIN" || rol === "COACH") {
+    return { ok: true, ilimitado: true, restantes: null };
+  }
+  if (rol !== "CLIENTE") {
+    return { ok: false, motivo: "rol", error: "No autorizado para importar con IA." };
+  }
+  const uid = parseInt(userId, 10);
+  const r = await db.execute({
+    sql: "SELECT coach_id, paquete_rutina_6_dias FROM usuarios WHERE id = ?",
+    args: [uid]
+  });
+  const row = r.rows[0];
+  if (!row) {
+    return { ok: false, motivo: "usuario", error: "Usuario no encontrado." };
+  }
+  if (row.paquete_rutina_6_dias) {
+    return { ok: true, ilimitado: true, restantes: null };
+  }
+  const coachId = row.coach_id != null && row.coach_id !== "" ? Number(row.coach_id) : null;
+  if (coachId && !Number.isNaN(coachId) && coachId > 0) {
+    return {
+      ok: false,
+      motivo: "plan_coach",
+      error: "Tu rutina la gestiona tu coach. La importacion IA libre no aplica aqui."
+    };
+  }
+  const cuota = await estadoCuotaImportPlanIa(db, uid);
+  if (cuota.restantes <= 0) {
+    return {
+      ok: false,
+      motivo: "sin_cuota",
+      error: "Ya usaste tus 3 importaciones IA de prueba. Activa Full Week PRO para continuar.",
+      restantes: 0,
+      max: cuota.max
+    };
+  }
+  return { ok: true, ilimitado: false, restantes: cuota.restantes, max: cuota.max };
+}
 async function resolverAccesoDietaIa(userId, rol) {
   if (rol === "SUPERADMIN" || rol === "COACH") {
     return { ok: true, ilimitado: true, restantes: null };
