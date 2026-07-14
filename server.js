@@ -79,8 +79,8 @@ const {
 const {
   MAX_IMPORT_PLAN_IA_GRATIS,
   estadoCuotaImportPlanIa,
-  reservarCuotaImportPlanIa,
-  liberarReservaCuotaImportPlanIa
+  puedeIntentarImportPlanIa,
+  consumirCuotaImportPlanIa
 } = require("./importPlanIaCuota");
 const {
   aplicarSustitutoEnDatosDieta,
@@ -551,23 +551,20 @@ app.post("/api/planes/preview-import-ia", async (req, res) => {
     });
   }
 
-  let reservado = false;
   if (!acceso.ilimitado) {
-    const reserva = await reservarCuotaImportPlanIa(db, user.id);
-    if (!reserva.ok) {
+    const cupo = await puedeIntentarImportPlanIa(db, user.id);
+    if (!cupo.ok) {
       return res.status(403).json({
         ok: false,
         motivo: "sin_cuota",
         error: "Ya usaste tus 3 importaciones IA de prueba. Activa Full Week PRO para continuar.",
-        restantes: reserva.restantes ?? 0
+        restantes: cupo.restantes ?? 0
       });
     }
-    reservado = true;
   }
 
   const { texto, origen, tipo } = req.body || {};
   if (!texto || typeof texto !== "string") {
-    if (reservado) await liberarReservaCuotaImportPlanIa(db, user.id);
     return res.status(400).json({ error: "Envia el texto en el campo texto." });
   }
   try {
@@ -577,17 +574,17 @@ app.post("/api/planes/preview-import-ia", async (req, res) => {
         ? await previewImportRutinaIa(texto, { origen: esPdf ? "pdf" : "texto" })
         : await previewImportDietaIa(texto, { origen: esPdf ? "pdf" : "texto" });
     if (!resultado.ok) {
-      if (reservado) await liberarReservaCuotaImportPlanIa(db, user.id);
       return res.status(400).json(resultado);
     }
     let cuotaOut = { ilimitado: true, restantes: null };
     if (!acceso.ilimitado) {
+      // Solo se cobra intento cuando Gemini devolvio plan OK
+      await consumirCuotaImportPlanIa(db, user.id);
       const est = await estadoCuotaImportPlanIa(db, user.id);
       cuotaOut = { ilimitado: false, restantes: est.restantes, max: est.max, usados: est.usados };
     }
     res.json({ ...resultado, cuota_import_ia: cuotaOut });
   } catch (err) {
-    if (reservado) await liberarReservaCuotaImportPlanIa(db, user.id);
     console.error("planes/preview-import-ia:", err.message);
     res.status(500).json({ error: err.message || "IA no disponible." });
   }
