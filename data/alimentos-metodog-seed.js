@@ -322,7 +322,39 @@ const ALIMENTOS_METODOG = [
   { nombre: "Mass Gainer", grupo: "Otros", grupo_equivalencia: "carbohidrato_complejo", porcion_base: 50, unidad: "g", calorias: 190, proteinas: 12, carbohidratos: 32, grasas: 2, sodio: 180 },
   { nombre: "Clear Whey Isolate", grupo: "Carnes", grupo_equivalencia: "proteina_magra", porcion_base: 30, unidad: "g", calorias: 105, proteinas: 25, carbohidratos: 0.5, grasas: 0, sodio: 55 },
   { nombre: "Bebida Isotónica Light", grupo: "Otros", grupo_equivalencia: "libre", porcion_base: 500, unidad: "ml", calorias: 25, proteinas: 0, carbohidratos: 6, grasas: 0, sodio: 250 },
-  { nombre: "Jugo Verde Sin Azúcar", grupo: "Otros", grupo_equivalencia: "libre", porcion_base: 250, unidad: "ml", calorias: 45, proteinas: 2, carbohidratos: 9, grasas: 0.5, sodio: 80 }
+  { nombre: "Jugo Verde Sin Azúcar", grupo: "Otros", grupo_equivalencia: "libre", porcion_base: 250, unidad: "ml", calorias: 45, proteinas: 2, carbohidratos: 9, grasas: 0.5, sodio: 80 },
+
+  // —— Lácteos ampliados (+30) ——
+  { nombre: "Leche Semidescremada", grupo: "Lácteos", grupo_equivalencia: "lacteo", porcion_base: 250, unidad: "ml", calorias: 120, proteinas: 8, carbohidratos: 12, grasas: 4, sodio: 105 },
+  { nombre: "Leche Deslactosada Entera", grupo: "Lácteos", grupo_equivalencia: "lacteo", porcion_base: 250, unidad: "ml", calorias: 148, proteinas: 8, carbohidratos: 12, grasas: 8, sodio: 110 },
+  { nombre: "Leche Evaporada Light", grupo: "Lácteos", grupo_equivalencia: "lacteo", porcion_base: 100, unidad: "ml", calorias: 90, proteinas: 7, carbohidratos: 10, grasas: 2, sodio: 95 },
+  { nombre: "Leche en Polvo Descremada", grupo: "Lácteos", grupo_equivalencia: "lacteo", porcion_base: 25, unidad: "g", calorias: 90, proteinas: 9, carbohidratos: 13, grasas: 0.2, sodio: 130 },
+  { nombre: "Yogur Griego Natural Entero", grupo: "Lácteos", grupo_equivalencia: "lacteo", porcion_base: 200, unidad: "g", calorias: 190, proteinas: 18, carbohidratos: 7, grasas: 9, sodio: 70 },
+  { nombre: "Yogur Griego Light", grupo: "Lácteos", grupo_equivalencia: "lacteo", porcion_base: 200, unidad: "g", calorias: 110, proteinas: 18, carbohidratos: 7, grasas: 0.5, sodio: 65 },
+  { nombre: "Yogur Bebible Sin Azúcar", grupo: "Lácteos", grupo_equivalencia: "lacteo", porcion_base: 250, unidad: "ml", calorias: 95, proteinas: 8, carbohidratos: 12, grasas: 1.5, sodio: 90 },
+  { nombre: "Yogur Probiótico Light", grupo: "Lácteos", grupo_equivalencia: "lacteo", porcion_base: 200, unidad: "g", calorias: 100, proteinas: 9, carbohidratos: 12, grasas: 1.5, sodio: 80 },
+  { nombre: "Yogur de Fresa Light", grupo: "Lácteos", grupo_equivalencia: "lacteo", porcion_base: 200, unidad: "g", calorias: 130, proteinas: 8, carbohidratos: 20, grasas: 1.5, sodio: 85 },
+  { nombre: "Skyr Natural", grupo: "Lácteos", grupo_equivalencia: "lacteo", porcion_base: 200, unidad: "g", calorias: 120, proteinas: 22, carbohidratos: 6, grasas: 0.5, sodio: 60 },
+  { nombre: "Quark Bajo Grasa", grupo: "Lácteos", grupo_equivalencia: "proteina_magra", porcion_base: 100, unidad: "g", calorias: 70, proteinas: 12, carbohidratos: 4, grasas: 0.5, sodio: 40 },
+  { nombre: "Labneh Light", grupo: "Lácteos", grupo_equivalencia: "proteina_magra", porcion_base: 100, unidad: "g", calorias: 110, proteinas: 8, carbohidratos: 4, grasas: 7, sodio: 280 },
+  { nombre: "Queso Cottage Natural", grupo: "Lácteos", grupo_equivalencia: "proteina_magra", porcion_base: 100, unidad: "g", calorias: 98, proteinas: 11, carbohidratos: 3, grasas: 4, sodio: 340 },
+  { nombre: "Queso Panela Light", grupo: "Lácteos", grupo_equivalencia: "proteina_grasa", porcion_base: 100, unidad: "g", calorias: 180, proteinas: 18, carbohidratos: 3, grasas: 10, sodio: 480 },
+  { nombre: "Queso Oaxaca", grupo: "Lácteos", grupo_equivalencia: "proteina_grasa", porcion_base: 30, unidad: "g", calorias: 95, proteinas: 6, carbohidratos: 1, grasas: 7.5, sodio: 200 },
+  { nombre: "Queso Mozzarella Light", grupo: "Lácteos", grupo_equivalencia: "proteina_grasa", porcion_base: 30, unidad: "g", calorias: 70, proteinas: 7, carbohidratos: 1, grasas: 4, sodio: 160 },
+  { nombre: "Queso Mozzarella Fresca", grupo: "Lácteos", grupo_equivalencia: "proteina_grasa", porcion_base: 50, unidad: "g", calorias: 125, proteinas: 9, carbohidratos: 1, grasas: 9, sodio: 120 },
+  { nombre: "Queso Asadero Light", grupo: "Lácteos", grupo_equivalencia: "proteina_grasa", porcion_base: 30, unidad: "g", calorias: 85, proteinas: 7, carbohidratos: 1, grasas: 6, sodio: 180 },
+  { nombre: "Queso Gouda Light", grupo: "Lácteos", grupo_equivalencia: "proteina_grasa", porcion_base: 30, unidad: "g", calorias: 80, proteinas: 7, carbohidratos: 0.5, grasas: 5.5, sodio: 220 },
+  { nombre: "Queso Cheddar Light", grupo: "Lácteos", grupo_equivalencia: "proteina_grasa", porcion_base: 30, unidad: "g", calorias: 85, proteinas: 7, carbohidratos: 0.5, grasas: 6, sodio: 210 },
+  { nombre: "Queso Parmesano Rallado", grupo: "Lácteos", grupo_equivalencia: "proteina_grasa", porcion_base: 10, unidad: "g", calorias: 40, proteinas: 4, carbohidratos: 0.5, grasas: 2.5, sodio: 160 },
+  { nombre: "Queso Crema Light", grupo: "Lácteos", grupo_equivalencia: "proteina_grasa", porcion_base: 30, unidad: "g", calorias: 70, proteinas: 2, carbohidratos: 2, grasas: 6, sodio: 110 },
+  { nombre: "Queso Philadelphia Light", grupo: "Lácteos", grupo_equivalencia: "proteina_grasa", porcion_base: 30, unidad: "g", calorias: 65, proteinas: 3, carbohidratos: 2, grasas: 5, sodio: 115 },
+  { nombre: "Queso Amarillo Light", grupo: "Lácteos", grupo_equivalencia: "proteina_grasa", porcion_base: 1, unidad: "pieza", calorias: 50, proteinas: 4, carbohidratos: 1, grasas: 3.5, sodio: 220 },
+  { nombre: "Requesón Natural", grupo: "Lácteos", grupo_equivalencia: "proteina_magra", porcion_base: 100, unidad: "g", calorias: 98, proteinas: 11, carbohidratos: 3.5, grasas: 4.5, sodio: 360 },
+  { nombre: "Jocoque Seco", grupo: "Lácteos", grupo_equivalencia: "lacteo", porcion_base: 100, unidad: "g", calorias: 140, proteinas: 7, carbohidratos: 5, grasas: 10, sodio: 55 },
+  { nombre: "Crema Ácida Light", grupo: "Lácteos", grupo_equivalencia: "proteina_grasa", porcion_base: 30, unidad: "g", calorias: 45, proteinas: 1.5, carbohidratos: 2, grasas: 3.5, sodio: 20 },
+  { nombre: "Media Crema Light", grupo: "Lácteos", grupo_equivalencia: "proteina_grasa", porcion_base: 30, unidad: "ml", calorias: 50, proteinas: 1, carbohidratos: 2, grasas: 4, sodio: 25 },
+  { nombre: "Caseína en Polvo", grupo: "Lácteos", grupo_equivalencia: "proteina_magra", porcion_base: 30, unidad: "g", calorias: 110, proteinas: 24, carbohidratos: 2, grasas: 0.5, sodio: 50 },
+  { nombre: "Kefir Light", grupo: "Lácteos", grupo_equivalencia: "lacteo", porcion_base: 250, unidad: "ml", calorias: 90, proteinas: 9, carbohidratos: 10, grasas: 1, sodio: 95 }
 ];
 
 module.exports = { ALIMENTOS_METODOG };
