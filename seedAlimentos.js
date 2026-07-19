@@ -96,13 +96,18 @@ async function seedAlimentosMetodog(db) {
     }
   }
 
-    // Seguridad: aceites globales mal etiquetados como "1 g" con macros de cucharada
+  // Aceites mal etiquetados como "1 g" con macros de cucharada (global + coach)
   await db.execute({
     sql: `UPDATE alimentos
-          SET unidad = 'cucharada', porcion_base = 1
-          WHERE coach_id IS NULL
-            AND LOWER(nombre) LIKE '%aceite%'
-            AND LOWER(unidad) IN ('g', 'gr', 'gramo', 'gramos')
+          SET unidad = 'cucharada',
+              porcion_base = 1,
+              grupo = 'Grasas',
+              grupo_equivalencia = COALESCE(NULLIF(TRIM(grupo_equivalencia), ''), 'grasa')
+          WHERE (
+              LOWER(nombre) LIKE '%aceite%'
+              OR LOWER(TRIM(nombre)) = 'ghee'
+            )
+            AND LOWER(COALESCE(unidad, 'g')) IN ('g', 'gr', 'gramo', 'gramos')
             AND CAST(porcion_base AS REAL) <= 2
             AND CAST(grasas AS REAL) >= 10`
   });
