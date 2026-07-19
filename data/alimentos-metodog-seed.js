@@ -174,7 +174,7 @@ const ALIMENTOS_METODOG = [
   { nombre: "Chocolate Amargo 85%", grupo: "Otros", grupo_equivalencia: "grasa", porcion_base: 20, unidad: "g", calorias: 110, proteinas: 2, carbohidratos: 8, grasas: 9, sodio: 5 },
   { nombre: "Mermelada Sin Azúcar", grupo: "Otros", grupo_equivalencia: "azucar", porcion_base: 15, unidad: "g", calorias: 10, proteinas: 0, carbohidratos: 3, grasas: 0, sodio: 5 },
   { nombre: "Cacao en Polvo Sin Azúcar", grupo: "Otros", grupo_equivalencia: "libre", porcion_base: 10, unidad: "g", calorias: 23, proteinas: 2, carbohidratos: 3, grasas: 1, sodio: 2 },
-  { nombre: "Cocoa Hershey's", grupo: "Otros", grupo_equivalencia: "libre", porcion_base: 1, unidad: "cucharada", calorias: 10, proteinas: 1, carbohidratos: 3, grasas: 0.5, sodio: 0 },
+  { nombre: "Cocoa Hershey's", grupo: "Otros", grupo_equivalencia: "libre", porcion_base: 1, unidad: "cucharada", calorias: 20.5, proteinas: 1, carbohidratos: 3, grasas: 0.5, sodio: 0 },
   { nombre: "Tostadas Salmas", grupo: "Cereales", grupo_equivalencia: "carbohidrato_complejo", porcion_base: 1, unidad: "paquete", calorias: 67, proteinas: 1.7, carbohidratos: 13.5, grasas: 0.5, sodio: 85 },
   { nombre: "Esencia de Vainilla", grupo: "Otros", grupo_equivalencia: "condimento", porcion_base: 1, unidad: "cucharadita", calorias: 12, proteinas: 0, carbohidratos: 0.5, grasas: 0, sodio: 1 },
   { nombre: "Stevia (sobre)", grupo: "Otros", grupo_equivalencia: "libre", porcion_base: 1, unidad: "pieza", calorias: 0, proteinas: 0, carbohidratos: 0, grasas: 0, sodio: 0 },
