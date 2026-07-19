@@ -532,8 +532,14 @@ app.post("/api/planes/preview-import", async (req, res) => {
   if (!raw || typeof raw !== "string") {
     return res.status(400).json({ error: "Envía el contenido en el campo «texto» o «csv»." });
   }
+  if (raw.length > 50000) {
+    return res.status(400).json({
+      ok: false,
+      error: "El texto es demasiado largo. Recorta el plan o usa un archivo más corto."
+    });
+  }
   try {
-    const resultado = previewImportPlan(raw, {
+    const resultado = previewImportPlan(raw.slice(0, 50000), {
       tipo: tipo === "rutina" || tipo === "dieta" ? tipo : null
     });
     if (!resultado.ok) return res.status(400).json(resultado);
@@ -617,7 +623,7 @@ app.post("/api/planes/preview-import-ia", async (req, res) => {
   }
 });
 
-/** Captura/foto de rutina (modo libre + coaches) — misma cuota IA que preview-import-ia. */
+/** Captura/foto de dieta o rutina (modo libre + coaches) — misma cuota IA que preview-import-ia. */
 app.post("/api/planes/preview-import-imagen", (req, res) => {
   uploadImagenPlan.single("imagen")(req, res, async (errMulter) => {
     if (errMulter) {

@@ -218,9 +218,12 @@ ${String(texto || '').slice(0, MAX_TEXTO)}`;
 }
 
 function normalizarSalidaGemini(json, esPdf) {
-  const comidas = (json?.comidas || []).map((c) => ({
+  const comidas = (json?.comidas || [])
+    .slice(0, 8)
+    .map((c) => ({
     nombre: String(c.nombre || 'Desayuno').trim(),
     alimentos: (c.alimentos || [])
+      .slice(0, 40)
       .map((a) => ({
         nombre: String(a.nombre || '').trim(),
         cantidadSeleccionada: parseFloat(a.cantidad) || 0,
