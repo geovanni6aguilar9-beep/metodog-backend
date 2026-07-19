@@ -96,6 +96,12 @@ async function seedAlimentosMetodog(db) {
     }
   }
 
+  // Reemplazo: ficha singular incorrecta → «Tostadas Salmas» (1 paquete = 3 tostadas)
+  await db.execute({
+    sql: `DELETE FROM alimentos WHERE coach_id IS NULL AND LOWER(nombre) = LOWER(?)`,
+    args: ["Tostada Salmas"]
+  });
+
   // Aceites mal etiquetados como "1 g" con macros de cucharada (global + coach)
   await db.execute({
     sql: `UPDATE alimentos
