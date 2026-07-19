@@ -99,7 +99,7 @@ const {
 } = require("./recetaIaGemini");
 const { previewImportPlan } = require("./importarPlan");
 const { importarPdfPreview } = require("./importarPlanPdf");
-const { previewImportDietaIa, previewImportRutinaIa, previewImportRutinaDesdeImagen } = require("./importarPlanIa");
+const { previewImportDietaIa, previewImportRutinaIa, previewImportDietaDesdeImagen, previewImportRutinaDesdeImagen } = require("./importarPlanIa");
 const { deduplicarFilasHistorialFuerza } = require("./fuerzaHistorial");
 const {
   obtenerOverridesParaUsuario,
@@ -656,17 +656,16 @@ app.post("/api/planes/preview-import-imagen", (req, res) => {
       return res.status(400).json({ ok: false, error: "Sube una imagen en el campo «imagen»." });
     }
     const tipo = req.body?.tipo === "dieta" ? "dieta" : "rutina";
-    if (tipo !== "rutina") {
-      return res.status(400).json({
-        ok: false,
-        error: "Por ahora las capturas solo importan rutinas. Dieta: usa CSV/PDF/texto."
-      });
-    }
 
     try {
-      const resultado = await previewImportRutinaDesdeImagen(req.file.buffer, {
-        mimeType: req.file.mimetype
-      });
+      const resultado =
+        tipo === "dieta"
+          ? await previewImportDietaDesdeImagen(req.file.buffer, {
+              mimeType: req.file.mimetype
+            })
+          : await previewImportRutinaDesdeImagen(req.file.buffer, {
+              mimeType: req.file.mimetype
+            });
       if (!resultado.ok) return res.status(400).json(resultado);
       let cuotaOut = { ilimitado: true, restantes: null };
       if (!acceso.ilimitado) {

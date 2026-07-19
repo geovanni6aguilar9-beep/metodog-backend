@@ -130,6 +130,21 @@ async function llamarGeminiConPartes(parts, { json = false } = {}) {
   throw lastErr || new Error('Gemini no disponible.');
 }
 
+function promptDietaImagen() {
+  return `Eres un nutricionista experto. Analiza esta captura de pantalla o foto de un plan de dieta (app, Excel, papel, WhatsApp, menú de coach).
+Tu tarea:
+- Sepáralo en comidas distintas (Desayuno, Comida 1, Comida 2, Comida, Cena, Snack, Colación, Post-entreno, etc.).
+- Extrae SOLO el NOMBRE LIMPIO del alimento (sin calorías ni macros pegados).
+- Extrae la CANTIDAD numérica real y la unidad (g, gr, ml, unidad, cucharada, taza, pieza).
+- Ignora filas Total/subtotal y columnas sueltas de kcal, proteína, carbohidratos, grasas.
+- Si ves "DE POLLO 152 0 24", el alimento es "Pechuga de pollo" (o similar), NO incluyas los números de macros.
+- Nunca uses un número solo como nombre de alimento.
+- Lee todo el texto visible aunque esté borroso o en columnas.
+
+Responde SOLO JSON válido:
+{"comidas":[{"nombre":"Desayuno","alimentos":[{"nombre":"Avena","cantidad":40,"unidad":"g"}]}],"avisos":[]}`;
+}
+
 function promptRutinaImagen() {
   return `Eres un entrenador élite. Analiza esta captura de pantalla o foto de una rutina de entrenamiento (app, Excel, papel, WhatsApp, pizarra).
 Conviértelo SOLO a CSV con cabecera exacta (primera línea):
@@ -271,6 +286,45 @@ async function previewImportRutinaIa(texto, opts = {}) {
 }
 
 /**
+ * Captura/foto de dieta → Gemini vision → JSON → preview.
+ * @param {Buffer} buffer
+ * @param {{ mimeType?: string }} opts
+ */
+async function previewImportDietaDesdeImagen(buffer, opts = {}) {
+  if (!buffer?.length) {
+    return { ok: false, error: 'Imagen vacía.' };
+  }
+  if (buffer.length < 64) {
+    return { ok: false, error: 'La imagen es demasiado pequeña o está corrupta.' };
+  }
+  const mimeDetectado = mimeImagenDesdeBuffer(buffer);
+  if (!mimeDetectado) {
+    return {
+      ok: false,
+      error: 'El archivo no es una imagen JPG, PNG o WebP válida.'
+    };
+  }
+  const base64 = Buffer.from(buffer).toString('base64');
+  const json = await llamarGeminiConPartes(
+    [
+      { text: promptDietaImagen() },
+      { inline_data: { mime_type: mimeDetectado, data: base64 } }
+    ],
+    { json: true }
+  );
+  const out = normalizarSalidaGemini(json, false);
+  if (!out.ok) return out;
+  return {
+    ...out,
+    parser: 'imagen-ia',
+    avisos: [
+      ...(out.avisos || []),
+      'Captura de dieta interpretada con IA — revisa comidas y porciones.'
+    ]
+  };
+}
+
+/**
  * Captura/foto de rutina → Gemini vision → CSV → preview.
  * @param {Buffer} buffer
  * @param {{ mimeType?: string }} opts
@@ -318,6 +372,7 @@ async function previewImportRutinaDesdeImagen(buffer, opts = {}) {
 module.exports = {
   previewImportDietaIa,
   previewImportRutinaIa,
+  previewImportDietaDesdeImagen,
   previewImportRutinaDesdeImagen,
   esNombreAlimentoValido,
   mimeImagenDesdeBuffer
