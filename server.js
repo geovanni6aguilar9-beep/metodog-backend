@@ -575,21 +575,40 @@ app.post("/api/planes/preview-import-ia", async (req, res) => {
   if (!texto || typeof texto !== "string") {
     return res.status(400).json({ error: "Envia el texto en el campo texto." });
   }
+  if (texto.length > 50000) {
+    return res.status(400).json({
+      ok: false,
+      error: "El texto es demasiado largo. Recorta el plan o usa un archivo más corto."
+    });
+  }
   try {
     const esPdf = origen === "pdf";
+    const textoSafe = texto.slice(0, 50000);
     const resultado =
       tipo === "rutina"
-        ? await previewImportRutinaIa(texto, { origen: esPdf ? "pdf" : "texto" })
-        : await previewImportDietaIa(texto, { origen: esPdf ? "pdf" : "texto" });
+        ? await previewImportRutinaIa(textoSafe, { origen: esPdf ? "pdf" : "texto" })
+        : await previewImportDietaIa(textoSafe, { origen: esPdf ? "pdf" : "texto" });
     if (!resultado.ok) {
       return res.status(400).json(resultado);
     }
     let cuotaOut = { ilimitado: true, restantes: null };
     if (!acceso.ilimitado) {
-      // Solo se cobra intento cuando Gemini devolvio plan OK
-      await consumirCuotaImportPlanIa(db, user.id);
-      const est = await estadoCuotaImportPlanIa(db, user.id);
-      cuotaOut = { ilimitado: false, restantes: est.restantes, max: est.max, usados: est.usados };
+      // Solo se cobra intento cuando Gemini devolvio plan OK (atómico; sin fuga en carrera)
+      const cobro = await consumirCuotaImportPlanIa(db, user.id);
+      if (!cobro.ok) {
+        return res.status(403).json({
+          ok: false,
+          motivo: "sin_cuota",
+          error: "Ya usaste tus 3 importaciones IA de prueba. Activa Full Week PRO para continuar.",
+          restantes: cobro.restantes ?? 0
+        });
+      }
+      cuotaOut = {
+        ilimitado: false,
+        restantes: cobro.restantes,
+        max: cobro.max,
+        usados: cobro.usados
+      };
     }
     res.json({ ...resultado, cuota_import_ia: cuotaOut });
   } catch (err) {
@@ -651,9 +670,21 @@ app.post("/api/planes/preview-import-imagen", (req, res) => {
       if (!resultado.ok) return res.status(400).json(resultado);
       let cuotaOut = { ilimitado: true, restantes: null };
       if (!acceso.ilimitado) {
-        await consumirCuotaImportPlanIa(db, user.id);
-        const est = await estadoCuotaImportPlanIa(db, user.id);
-        cuotaOut = { ilimitado: false, restantes: est.restantes, max: est.max, usados: est.usados };
+        const cobro = await consumirCuotaImportPlanIa(db, user.id);
+        if (!cobro.ok) {
+          return res.status(403).json({
+            ok: false,
+            motivo: "sin_cuota",
+            error: "Ya usaste tus 3 importaciones IA de prueba. Activa Full Week PRO para continuar.",
+            restantes: cobro.restantes ?? 0
+          });
+        }
+        cuotaOut = {
+          ilimitado: false,
+          restantes: cobro.restantes,
+          max: cobro.max,
+          usados: cobro.usados
+        };
       }
       res.json({ ...resultado, cuota_import_ia: cuotaOut });
     } catch (err) {

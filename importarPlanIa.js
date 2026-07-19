@@ -8,6 +8,20 @@ const { previewImportPlan } = require('./importarPlan');
 const MODELOS = ['gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-2.0-flash'];
 const MAX_TEXTO = 18000;
 
+/** Detecta mime real por firma (no confiar solo en Content-Type del cliente). */
+function mimeImagenDesdeBuffer(buf) {
+  if (!Buffer.isBuffer(buf) || buf.length < 12) return null;
+  if (buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return 'image/jpeg';
+  if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) return 'image/png';
+  if (
+    buf.toString('ascii', 0, 4) === 'RIFF' &&
+    buf.toString('ascii', 8, 12) === 'WEBP'
+  ) {
+    return 'image/webp';
+  }
+  return null;
+}
+
 function apiKey() {
   return (process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || '').trim();
 }
@@ -265,15 +279,21 @@ async function previewImportRutinaDesdeImagen(buffer, opts = {}) {
   if (!buffer?.length) {
     return { ok: false, error: 'Imagen vacía.' };
   }
-  const mimeRaw = String(opts.mimeType || 'image/jpeg').toLowerCase();
-  const mime = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'].includes(mimeRaw)
-    ? (mimeRaw === 'image/jpg' ? 'image/jpeg' : mimeRaw)
-    : 'image/jpeg';
+  if (buffer.length < 64) {
+    return { ok: false, error: 'La imagen es demasiado pequeña o está corrupta.' };
+  }
+  const mimeDetectado = mimeImagenDesdeBuffer(buffer);
+  if (!mimeDetectado) {
+    return {
+      ok: false,
+      error: 'El archivo no es una imagen JPG, PNG o WebP válida.'
+    };
+  }
   const base64 = Buffer.from(buffer).toString('base64');
   const csv = await llamarGeminiConPartes(
     [
       { text: promptRutinaImagen() },
-      { inline_data: { mime_type: mime, data: base64 } }
+      { inline_data: { mime_type: mimeDetectado, data: base64 } }
     ],
     { json: false }
   );
@@ -299,5 +319,6 @@ module.exports = {
   previewImportDietaIa,
   previewImportRutinaIa,
   previewImportRutinaDesdeImagen,
-  esNombreAlimentoValido
+  esNombreAlimentoValido,
+  mimeImagenDesdeBuffer
 };
