@@ -14,6 +14,7 @@ const ALIMENTOS_METODOG = [
   { nombre: "Claras de Huevo", grupo: "Carnes", grupo_equivalencia: "proteina_magra", porcion_base: 100, unidad: "g", calorias: 48, proteinas: 11, carbohidratos: 0.7, grasas: 0.2, sodio: 166 },
   { nombre: "Queso Cottage Bajo Grasa", grupo: "Lácteos", grupo_equivalencia: "proteina_magra", porcion_base: 100, unidad: "g", calorias: 72, proteinas: 12, carbohidratos: 3, grasas: 1, sodio: 321 },
   { nombre: "Scoop Proteína Whey", grupo: "Carnes", grupo_equivalencia: "proteina_magra", porcion_base: 1, unidad: "scoop", calorias: 111, proteinas: 25, carbohidratos: 1, grasas: 0.5, sodio: 45 },
+  { nombre: "Proteína", grupo: "Carnes", grupo_equivalencia: "proteina_magra", porcion_base: 1, unidad: "scoop", calorias: 111, proteinas: 25, carbohidratos: 1, grasas: 0.5, sodio: 45 },
   { nombre: "Jamón de Pavo", grupo: "Carnes", grupo_equivalencia: "proteina_magra", porcion_base: 100, unidad: "g", calorias: 105, proteinas: 18, carbohidratos: 2, grasas: 3, sodio: 900 },
 
   // —— Proteína con más grasa ——
