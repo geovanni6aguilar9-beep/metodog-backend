@@ -354,7 +354,39 @@ const ALIMENTOS_METODOG = [
   { nombre: "Crema Ácida Light", grupo: "Lácteos", grupo_equivalencia: "proteina_grasa", porcion_base: 30, unidad: "g", calorias: 45, proteinas: 1.5, carbohidratos: 2, grasas: 3.5, sodio: 20 },
   { nombre: "Media Crema Light", grupo: "Lácteos", grupo_equivalencia: "proteina_grasa", porcion_base: 30, unidad: "ml", calorias: 50, proteinas: 1, carbohidratos: 2, grasas: 4, sodio: 25 },
   { nombre: "Caseína en Polvo", grupo: "Lácteos", grupo_equivalencia: "proteina_magra", porcion_base: 30, unidad: "g", calorias: 110, proteinas: 24, carbohidratos: 2, grasas: 0.5, sodio: 50 },
-  { nombre: "Kefir Light", grupo: "Lácteos", grupo_equivalencia: "lacteo", porcion_base: 250, unidad: "ml", calorias: 90, proteinas: 9, carbohidratos: 10, grasas: 1, sodio: 95 }
+  { nombre: "Kefir Light", grupo: "Lácteos", grupo_equivalencia: "lacteo", porcion_base: 250, unidad: "ml", calorias: 90, proteinas: 9, carbohidratos: 10, grasas: 1, sodio: 95 },
+
+  // —— Leguminosas ampliadas (+30) ——
+  { nombre: "Frijol Peruano Cocido", grupo: "Leguminosas", grupo_equivalencia: "legumbre", porcion_base: 100, unidad: "g", calorias: 127, proteinas: 8.5, carbohidratos: 23, grasas: 0.5, sodio: 2 },
+  { nombre: "Frijol Flor de Mayo Cocido", grupo: "Leguminosas", grupo_equivalencia: "legumbre", porcion_base: 100, unidad: "g", calorias: 130, proteinas: 8.7, carbohidratos: 23, grasas: 0.5, sodio: 2 },
+  { nombre: "Frijol Mayocoba Cocido", grupo: "Leguminosas", grupo_equivalencia: "legumbre", porcion_base: 100, unidad: "g", calorias: 128, proteinas: 8.4, carbohidratos: 23, grasas: 0.5, sodio: 2 },
+  { nombre: "Alubias Blancas Cocidas", grupo: "Leguminosas", grupo_equivalencia: "legumbre", porcion_base: 100, unidad: "g", calorias: 139, proteinas: 9.7, carbohidratos: 25, grasas: 0.5, sodio: 6 },
+  { nombre: "Alubias Negras Cocidas", grupo: "Leguminosas", grupo_equivalencia: "legumbre", porcion_base: 100, unidad: "g", calorias: 132, proteinas: 8.9, carbohidratos: 24, grasas: 0.5, sodio: 2 },
+  { nombre: "Frijol Ayocote Cocido", grupo: "Leguminosas", grupo_equivalencia: "legumbre", porcion_base: 100, unidad: "g", calorias: 135, proteinas: 9, carbohidratos: 24, grasas: 0.6, sodio: 3 },
+  { nombre: "Chícharo Seco Cocido", grupo: "Leguminosas", grupo_equivalencia: "legumbre", porcion_base: 100, unidad: "g", calorias: 118, proteinas: 8.3, carbohidratos: 21, grasas: 0.4, sodio: 2 },
+  { nombre: "Guisante Cocido", grupo: "Leguminosas", grupo_equivalencia: "legumbre", porcion_base: 100, unidad: "g", calorias: 84, proteinas: 5.4, carbohidratos: 15, grasas: 0.2, sodio: 3 },
+  { nombre: "Lenteja Pardina Cocida", grupo: "Leguminosas", grupo_equivalencia: "legumbre", porcion_base: 100, unidad: "g", calorias: 116, proteinas: 9, carbohidratos: 20, grasas: 0.4, sodio: 2 },
+  { nombre: "Lenteja Beluga Cocida", grupo: "Leguminosas", grupo_equivalencia: "legumbre", porcion_base: 100, unidad: "g", calorias: 120, proteinas: 9.5, carbohidratos: 20, grasas: 0.5, sodio: 3 },
+  { nombre: "Garbanzo en Conserva Enjuagado", grupo: "Leguminosas", grupo_equivalencia: "legumbre", porcion_base: 100, unidad: "g", calorias: 140, proteinas: 7.5, carbohidratos: 22, grasas: 2.5, sodio: 180 },
+  { nombre: "Frijol Negro en Conserva Enjuagado", grupo: "Leguminosas", grupo_equivalencia: "legumbre", porcion_base: 100, unidad: "g", calorias: 120, proteinas: 8, carbohidratos: 21, grasas: 0.5, sodio: 160 },
+  { nombre: "Hummus Light", grupo: "Leguminosas", grupo_equivalencia: "legumbre", porcion_base: 50, unidad: "g", calorias: 80, proteinas: 4, carbohidratos: 8, grasas: 4, sodio: 140 },
+  { nombre: "Falafel Horneado", grupo: "Leguminosas", grupo_equivalencia: "legumbre", porcion_base: 50, unidad: "g", calorias: 120, proteinas: 6, carbohidratos: 14, grasas: 5, sodio: 220 },
+  { nombre: "Tofu Suave", grupo: "Leguminosas", grupo_equivalencia: "legumbre", porcion_base: 100, unidad: "g", calorias: 55, proteinas: 6, carbohidratos: 1.5, grasas: 3, sodio: 5 },
+  { nombre: "Tofu Ahumado", grupo: "Leguminosas", grupo_equivalencia: "legumbre", porcion_base: 100, unidad: "g", calorias: 140, proteinas: 14, carbohidratos: 2, grasas: 8, sodio: 280 },
+  { nombre: "Tofu Extra Firme", grupo: "Leguminosas", grupo_equivalencia: "legumbre", porcion_base: 100, unidad: "g", calorias: 145, proteinas: 17, carbohidratos: 2, grasas: 8, sodio: 10 },
+  { nombre: "Tempeh de Soya", grupo: "Leguminosas", grupo_equivalencia: "legumbre", porcion_base: 100, unidad: "g", calorias: 193, proteinas: 19, carbohidratos: 9, grasas: 11, sodio: 9 },
+  { nombre: "Edamame con Cáscara", grupo: "Leguminosas", grupo_equivalencia: "legumbre", porcion_base: 100, unidad: "g", calorias: 120, proteinas: 11, carbohidratos: 9, grasas: 5, sodio: 6 },
+  { nombre: "Soya Cocida", grupo: "Leguminosas", grupo_equivalencia: "legumbre", porcion_base: 100, unidad: "g", calorias: 172, proteinas: 18, carbohidratos: 8, grasas: 9, sodio: 1 },
+  { nombre: "Harina de Garbanzo", grupo: "Leguminosas", grupo_equivalencia: "legumbre", porcion_base: 30, unidad: "g", calorias: 110, proteinas: 6, carbohidratos: 17, grasas: 2, sodio: 5 },
+  { nombre: "Harina de Lenteja", grupo: "Leguminosas", grupo_equivalencia: "legumbre", porcion_base: 30, unidad: "g", calorias: 105, proteinas: 7, carbohidratos: 17, grasas: 0.5, sodio: 3 },
+  { nombre: "Pasta de Lenteja Cocida", grupo: "Leguminosas", grupo_equivalencia: "legumbre", porcion_base: 100, unidad: "g", calorias: 150, proteinas: 12, carbohidratos: 25, grasas: 1, sodio: 5 },
+  { nombre: "Pasta de Garbanzo Cocida", grupo: "Leguminosas", grupo_equivalencia: "legumbre", porcion_base: 100, unidad: "g", calorias: 160, proteinas: 11, carbohidratos: 27, grasas: 2, sodio: 8 },
+  { nombre: "Mungo Cocido (Frijol Mungo)", grupo: "Leguminosas", grupo_equivalencia: "legumbre", porcion_base: 100, unidad: "g", calorias: 105, proteinas: 7, carbohidratos: 19, grasas: 0.4, sodio: 2 },
+  { nombre: "Azuki Cocido", grupo: "Leguminosas", grupo_equivalencia: "legumbre", porcion_base: 100, unidad: "g", calorias: 128, proteinas: 7.5, carbohidratos: 25, grasas: 0.2, sodio: 2 },
+  { nombre: "Cacahuate Cocido sin Sal", grupo: "Leguminosas", grupo_equivalencia: "legumbre", porcion_base: 30, unidad: "g", calorias: 95, proteinas: 4, carbohidratos: 5, grasas: 7, sodio: 3 },
+  { nombre: "Lupin Cocido", grupo: "Leguminosas", grupo_equivalencia: "legumbre", porcion_base: 100, unidad: "g", calorias: 120, proteinas: 16, carbohidratos: 10, grasas: 2.5, sodio: 15 },
+  { nombre: "Puré de Frijol Negro", grupo: "Leguminosas", grupo_equivalencia: "legumbre", porcion_base: 100, unidad: "g", calorias: 125, proteinas: 8, carbohidratos: 22, grasas: 0.8, sodio: 40 },
+  { nombre: "Ensalada de Lentejas", grupo: "Leguminosas", grupo_equivalencia: "legumbre", porcion_base: 150, unidad: "g", calorias: 175, proteinas: 11, carbohidratos: 26, grasas: 3, sodio: 180 }
 ];
 
 module.exports = { ALIMENTOS_METODOG };
