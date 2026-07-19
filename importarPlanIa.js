@@ -71,6 +71,13 @@ async function llamarGemini(prompt) {
 }
 
 async function llamarGeminiTexto(prompt) {
+  return llamarGeminiConPartes([{ text: prompt }], { json: false });
+}
+
+/**
+ * @param {Array<{ text?: string, inline_data?: { mime_type: string, data: string } }>} parts
+ */
+async function llamarGeminiConPartes(parts, { json = false } = {}) {
   const key = apiKey();
   if (!key) throw new Error('GEMINI_API_KEY no configurada en Render.');
 
@@ -82,8 +89,10 @@ async function llamarGeminiTexto(prompt) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
         body: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: { temperature: 0.1 }
+          contents: [{ parts }],
+          generationConfig: json
+            ? { temperature: 0.1, responseMimeType: 'application/json' }
+            : { temperature: 0.1 }
         })
       });
       const data = await res.json();
@@ -92,6 +101,12 @@ async function llamarGeminiTexto(prompt) {
         continue;
       }
       const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+      if (json) {
+        const parsed = parseJson(text);
+        if (parsed) return parsed;
+        lastErr = new Error('Gemini no devolvió JSON válido.');
+        continue;
+      }
       if (text?.trim()) return limpiarCsvGemini(text);
       lastErr = new Error('Gemini no devolvió texto.');
     } catch (e) {
@@ -99,6 +114,21 @@ async function llamarGeminiTexto(prompt) {
     }
   }
   throw lastErr || new Error('Gemini no disponible.');
+}
+
+function promptRutinaImagen() {
+  return `Eres un entrenador élite. Analiza esta captura de pantalla o foto de una rutina de entrenamiento (app, Excel, papel, WhatsApp, pizarra).
+Conviértelo SOLO a CSV con cabecera exacta (primera línea):
+dia,grupo,nombre,series,reps,rir
+
+Reglas:
+- Lee TODO el texto visible de ejercicios (aunque esté borroso o en columnas).
+- Detecta días (Lunes…Sábado) o "Sesión 1/2/3", "Día 1", "Pecho/Espalda", etc. Si solo hay grupos musculares sin día, asigna Lunes, Martes… en orden.
+- Columna dia: Lunes/Martes/… o Sesión 1, Sesión 2…
+- Extrae grupo muscular (Pecho, Espalda, Pierna…), nombre del ejercicio, series, repeticiones (ej. 10 o 8-12) y RIR/RPE si aparece (si no, 2).
+- Formatos típicos: "Press banca 4x10", "4×8-12", tablas con Series/Reps.
+- Ignora logos, anuncios, macros de comida, y texto que no sea ejercicio.
+- Sin markdown, sin explicaciones: solo líneas CSV después de la cabecera.`;
 }
 
 function limpiarCsvGemini(text) {
@@ -226,4 +256,48 @@ async function previewImportRutinaIa(texto, opts = {}) {
   };
 }
 
-module.exports = { previewImportDietaIa, previewImportRutinaIa, esNombreAlimentoValido };
+/**
+ * Captura/foto de rutina → Gemini vision → CSV → preview.
+ * @param {Buffer} buffer
+ * @param {{ mimeType?: string }} opts
+ */
+async function previewImportRutinaDesdeImagen(buffer, opts = {}) {
+  if (!buffer?.length) {
+    return { ok: false, error: 'Imagen vacía.' };
+  }
+  const mimeRaw = String(opts.mimeType || 'image/jpeg').toLowerCase();
+  const mime = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'].includes(mimeRaw)
+    ? (mimeRaw === 'image/jpg' ? 'image/jpeg' : mimeRaw)
+    : 'image/jpeg';
+  const base64 = Buffer.from(buffer).toString('base64');
+  const csv = await llamarGeminiConPartes(
+    [
+      { text: promptRutinaImagen() },
+      { inline_data: { mime_type: mime, data: base64 } }
+    ],
+    { json: false }
+  );
+  if (!csv || !/dia\s*,/i.test(csv.split('\n')[0] || '')) {
+    return { ok: false, error: 'La IA no leyó una rutina válida en la imagen. Prueba otra foto más nítida o CSV.' };
+  }
+  const preview = previewImportPlan(csv, { tipo: 'rutina' });
+  if (!preview.ok) {
+    return { ok: false, error: preview.error || 'No se pudo validar la rutina leída de la imagen.' };
+  }
+  return {
+    ...preview,
+    parser: 'imagen-ia',
+    texto_csv: csv,
+    avisos: [
+      ...(preview.avisos || []),
+      'Captura interpretada con IA — revisa días, series y nombres.'
+    ]
+  };
+}
+
+module.exports = {
+  previewImportDietaIa,
+  previewImportRutinaIa,
+  previewImportRutinaDesdeImagen,
+  esNombreAlimentoValido
+};

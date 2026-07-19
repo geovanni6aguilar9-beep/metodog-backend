@@ -99,7 +99,7 @@ const {
 } = require("./recetaIaGemini");
 const { previewImportPlan } = require("./importarPlan");
 const { importarPdfPreview } = require("./importarPlanPdf");
-const { previewImportDietaIa, previewImportRutinaIa } = require("./importarPlanIa");
+const { previewImportDietaIa, previewImportRutinaIa, previewImportRutinaDesdeImagen } = require("./importarPlanIa");
 const { deduplicarFilasHistorialFuerza } = require("./fuerzaHistorial");
 const {
   obtenerOverridesParaUsuario,
@@ -110,6 +110,14 @@ const multer = require("multer");
 const uploadPdf = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 5 * 1024 * 1024 }
+});
+const uploadImagenPlan = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 8 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    const ok = /^image\/(jpeg|jpg|png|webp)$/i.test(file.mimetype || "");
+    cb(ok ? null : new Error("Solo JPG, PNG o WebP"), ok);
+  }
 });
 
 const DEV_JWT_FALLBACK = "metodog-dev-cambiar-en-produccion";
@@ -588,6 +596,71 @@ app.post("/api/planes/preview-import-ia", async (req, res) => {
     console.error("planes/preview-import-ia:", err.message);
     res.status(500).json({ error: err.message || "IA no disponible." });
   }
+});
+
+/** Captura/foto de rutina (modo libre + coaches) — misma cuota IA que preview-import-ia. */
+app.post("/api/planes/preview-import-imagen", (req, res) => {
+  uploadImagenPlan.single("imagen")(req, res, async (errMulter) => {
+    if (errMulter) {
+      return res.status(400).json({
+        ok: false,
+        error: errMulter.message || "No se pudo leer la imagen (JPG, PNG o WebP, máx 8 MB)."
+      });
+    }
+    const user = req.user;
+    if (!user) return res.status(401).json({ ok: false, error: "Sesion requerida" });
+    if (!(await assertCoachSuscripcionActiva(db, req, res))) return;
+
+    const acceso = await resolverAccesoImportPlanIa(user.id, user.rol);
+    if (!acceso.ok) {
+      return res.status(403).json({
+        ok: false,
+        motivo: acceso.motivo || "sin_acceso",
+        error: acceso.error || "Activa Full Week PRO para importar con IA.",
+        restantes: acceso.restantes ?? 0
+      });
+    }
+
+    if (!acceso.ilimitado) {
+      const cupo = await puedeIntentarImportPlanIa(db, user.id);
+      if (!cupo.ok) {
+        return res.status(403).json({
+          ok: false,
+          motivo: "sin_cuota",
+          error: "Ya usaste tus 3 importaciones IA de prueba. Activa Full Week PRO para continuar.",
+          restantes: cupo.restantes ?? 0
+        });
+      }
+    }
+
+    if (!req.file?.buffer?.length) {
+      return res.status(400).json({ ok: false, error: "Sube una imagen en el campo «imagen»." });
+    }
+    const tipo = req.body?.tipo === "dieta" ? "dieta" : "rutina";
+    if (tipo !== "rutina") {
+      return res.status(400).json({
+        ok: false,
+        error: "Por ahora las capturas solo importan rutinas. Dieta: usa CSV/PDF/texto."
+      });
+    }
+
+    try {
+      const resultado = await previewImportRutinaDesdeImagen(req.file.buffer, {
+        mimeType: req.file.mimetype
+      });
+      if (!resultado.ok) return res.status(400).json(resultado);
+      let cuotaOut = { ilimitado: true, restantes: null };
+      if (!acceso.ilimitado) {
+        await consumirCuotaImportPlanIa(db, user.id);
+        const est = await estadoCuotaImportPlanIa(db, user.id);
+        cuotaOut = { ilimitado: false, restantes: est.restantes, max: est.max, usados: est.usados };
+      }
+      res.json({ ...resultado, cuota_import_ia: cuotaOut });
+    } catch (err) {
+      console.error("planes/preview-import-imagen:", err.message);
+      res.status(500).json({ ok: false, error: err.message || "IA no pudo leer la imagen." });
+    }
+  });
 });
 
 app.post("/api/planes/importar-pdf", uploadPdf.single("pdf"), async (req, res) => {
