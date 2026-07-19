@@ -13,7 +13,7 @@ const ALIMENTOS_METODOG = [
   { nombre: "Camarón", grupo: "Carnes", grupo_equivalencia: "proteina_magra", porcion_base: 100, unidad: "g", calorias: 85, proteinas: 20, carbohidratos: 0, grasas: 0.5, sodio: 119 },
   { nombre: "Claras de Huevo", grupo: "Carnes", grupo_equivalencia: "proteina_magra", porcion_base: 100, unidad: "g", calorias: 48, proteinas: 11, carbohidratos: 0.7, grasas: 0.2, sodio: 166 },
   { nombre: "Queso Cottage Bajo Grasa", grupo: "Lácteos", grupo_equivalencia: "proteina_magra", porcion_base: 100, unidad: "g", calorias: 72, proteinas: 12, carbohidratos: 3, grasas: 1, sodio: 321 },
-  { nombre: "Scoop Proteína Whey", grupo: "Carnes", grupo_equivalencia: "proteina_magra", porcion_base: 30, unidad: "g", calorias: 111, proteinas: 25, carbohidratos: 1, grasas: 0.5, sodio: 45 },
+  { nombre: "Scoop Proteína Whey", grupo: "Carnes", grupo_equivalencia: "proteina_magra", porcion_base: 1, unidad: "scoop", calorias: 111, proteinas: 25, carbohidratos: 1, grasas: 0.5, sodio: 45 },
   { nombre: "Jamón de Pavo", grupo: "Carnes", grupo_equivalencia: "proteina_magra", porcion_base: 100, unidad: "g", calorias: 105, proteinas: 18, carbohidratos: 2, grasas: 3, sodio: 900 },
 
   // —— Proteína con más grasa ——
@@ -58,8 +58,8 @@ const ALIMENTOS_METODOG = [
   { nombre: "Almendras", grupo: "Grasas", grupo_equivalencia: "grasa", porcion_base: 30, unidad: "g", calorias: 173, proteinas: 6, carbohidratos: 6, grasas: 15, sodio: 0 },
   { nombre: "Nueces", grupo: "Grasas", grupo_equivalencia: "grasa", porcion_base: 30, unidad: "g", calorias: 196, proteinas: 4.6, carbohidratos: 4, grasas: 19.5, sodio: 1 },
   { nombre: "Cacahuates", grupo: "Grasas", grupo_equivalencia: "grasa", porcion_base: 30, unidad: "g", calorias: 176, proteinas: 7, carbohidratos: 6, grasas: 15, sodio: 2 },
-  { nombre: "Crema de Cacahuate Natural", grupo: "Grasas", grupo_equivalencia: "grasa", porcion_base: 15, unidad: "g", calorias: 88, proteinas: 4, carbohidratos: 3, grasas: 7.5, sodio: 3 },
-  { nombre: "Aceite de Coco", grupo: "Grasas", grupo_equivalencia: "grasa", porcion_base: 10, unidad: "g", calorias: 89, proteinas: 0, carbohidratos: 0, grasas: 10, sodio: 0 },
+  { nombre: "Crema de Cacahuate Natural", grupo: "Grasas", grupo_equivalencia: "grasa", porcion_base: 1, unidad: "cucharada", calorias: 88, proteinas: 4, carbohidratos: 3, grasas: 7.5, sodio: 3 },
+  { nombre: "Aceite de Coco", grupo: "Grasas", grupo_equivalencia: "grasa", porcion_base: 1, unidad: "cucharada", calorias: 121, proteinas: 0, carbohidratos: 0, grasas: 13.5, sodio: 0 },
 
   // —— Lácteos ——
   { nombre: "Leche Entera", grupo: "Lácteos", grupo_equivalencia: "lacteo", porcion_base: 250, unidad: "ml", calorias: 150, proteinas: 8, carbohidratos: 12, grasas: 8, sodio: 105 },
@@ -160,7 +160,7 @@ const ALIMENTOS_METODOG = [
   { nombre: "Betabel Cocido", grupo: "Verduras", grupo_equivalencia: "verdura", porcion_base: 100, unidad: "g", calorias: 44, proteinas: 1.7, carbohidratos: 10, grasas: 0.2, sodio: 77 },
 
   // —— Grasas (ampliado) ——
-  { nombre: "Mantequilla de Almendra", grupo: "Grasas", grupo_equivalencia: "grasa", porcion_base: 15, unidad: "g", calorias: 98, proteinas: 3, carbohidratos: 3, grasas: 8.5, sodio: 2 },
+  { nombre: "Mantequilla de Almendra", grupo: "Grasas", grupo_equivalencia: "grasa", porcion_base: 1, unidad: "cucharada", calorias: 98, proteinas: 3, carbohidratos: 3, grasas: 8.5, sodio: 2 },
   { nombre: "Aceite de Aguacate", grupo: "Grasas", grupo_equivalencia: "grasa", porcion_base: 1, unidad: "cucharada", calorias: 124, proteinas: 0, carbohidratos: 0, grasas: 14, sodio: 0 },
   { nombre: "Guacamole Light", grupo: "Grasas", grupo_equivalencia: "grasa", porcion_base: 50, unidad: "g", calorias: 80, proteinas: 1, carbohidratos: 4, grasas: 7, sodio: 120 },
 
@@ -201,7 +201,7 @@ const ALIMENTOS_METODOG = [
   { nombre: "Barrita de Proteína", grupo: "Otros", grupo_equivalencia: "proteina_magra", porcion_base: 1, unidad: "pieza", calorias: 200, proteinas: 20, carbohidratos: 22, grasas: 6, sodio: 180 },
   { nombre: "Isopure Clear", grupo: "Otros", grupo_equivalencia: "proteina_magra", porcion_base: 1, unidad: "pieza", calorias: 90, proteinas: 20, carbohidratos: 0, grasas: 0, sodio: 45 },
   { nombre: "Electrolitos en Polvo", grupo: "Otros", grupo_equivalencia: "libre", porcion_base: 5, unidad: "g", calorias: 5, proteinas: 0, carbohidratos: 1, grasas: 0, sodio: 200 },
-  { nombre: "Proteína Caseína", grupo: "Carnes", grupo_equivalencia: "proteina_magra", porcion_base: 30, unidad: "g", calorias: 108, proteinas: 24, carbohidratos: 2, grasas: 1, sodio: 50 },
+  { nombre: "Proteína Caseína", grupo: "Carnes", grupo_equivalencia: "proteina_magra", porcion_base: 1, unidad: "scoop", calorias: 108, proteinas: 24, carbohidratos: 2, grasas: 1, sodio: 50 },
   { nombre: "Glutamina en Polvo", grupo: "Otros", grupo_equivalencia: "libre", porcion_base: 5, unidad: "g", calorias: 20, proteinas: 5, carbohidratos: 0, grasas: 0, sodio: 0 },
   { nombre: "EAA en Polvo", grupo: "Otros", grupo_equivalencia: "libre", porcion_base: 10, unidad: "g", calorias: 40, proteinas: 10, carbohidratos: 0, grasas: 0, sodio: 10 },
   { nombre: "Colágeno Hidrolizado", grupo: "Otros", grupo_equivalencia: "libre", porcion_base: 10, unidad: "g", calorias: 35, proteinas: 9, carbohidratos: 0, grasas: 0, sodio: 25 },
@@ -293,9 +293,9 @@ const ALIMENTOS_METODOG = [
   { nombre: "Mix de Vegetales al Vapor", grupo: "Verduras", grupo_equivalencia: "verdura", porcion_base: 150, unidad: "g", calorias: 55, proteinas: 3, carbohidratos: 10, grasas: 0.5, sodio: 40 },
 
   // —— Grasas y semillas ——
-  { nombre: "Tahini", grupo: "Grasas", grupo_equivalencia: "grasa", porcion_base: 15, unidad: "g", calorias: 89, proteinas: 3, carbohidratos: 3, grasas: 8, sodio: 15 },
-  { nombre: "Mantequilla de Maní Natural", grupo: "Grasas", grupo_equivalencia: "grasa", porcion_base: 15, unidad: "g", calorias: 90, proteinas: 4, carbohidratos: 3, grasas: 8, sodio: 3 },
-  { nombre: "Ghee", grupo: "Grasas", grupo_equivalencia: "grasa", porcion_base: 10, unidad: "g", calorias: 90, proteinas: 0, carbohidratos: 0, grasas: 10, sodio: 0 },
+  { nombre: "Tahini", grupo: "Grasas", grupo_equivalencia: "grasa", porcion_base: 1, unidad: "cucharada", calorias: 89, proteinas: 3, carbohidratos: 3, grasas: 8, sodio: 15 },
+  { nombre: "Mantequilla de Maní Natural", grupo: "Grasas", grupo_equivalencia: "grasa", porcion_base: 1, unidad: "cucharada", calorias: 90, proteinas: 4, carbohidratos: 3, grasas: 8, sodio: 3 },
+  { nombre: "Ghee", grupo: "Grasas", grupo_equivalencia: "grasa", porcion_base: 1, unidad: "cucharada", calorias: 120, proteinas: 0, carbohidratos: 0, grasas: 13.5, sodio: 0 },
   { nombre: "Aceite de Linaza", grupo: "Grasas", grupo_equivalencia: "grasa", porcion_base: 1, unidad: "cucharada", calorias: 124, proteinas: 0, carbohidratos: 0, grasas: 14, sodio: 0 },
   { nombre: "Macadamia", grupo: "Grasas", grupo_equivalencia: "grasa", porcion_base: 30, unidad: "g", calorias: 204, proteinas: 2, carbohidratos: 4, grasas: 21, sodio: 2 },
   { nombre: "Avellanas", grupo: "Grasas", grupo_equivalencia: "grasa", porcion_base: 30, unidad: "g", calorias: 188, proteinas: 4.5, carbohidratos: 5, grasas: 18, sodio: 0 },
@@ -320,7 +320,7 @@ const ALIMENTOS_METODOG = [
   { nombre: "Psyllium en Polvo", grupo: "Otros", grupo_equivalencia: "libre", porcion_base: 5, unidad: "g", calorias: 10, proteinas: 0, carbohidratos: 4, grasas: 0, sodio: 5 },
   { nombre: "Inulina en Polvo", grupo: "Otros", grupo_equivalencia: "libre", porcion_base: 5, unidad: "g", calorias: 10, proteinas: 0, carbohidratos: 5, grasas: 0, sodio: 0 },
   { nombre: "Mass Gainer", grupo: "Otros", grupo_equivalencia: "carbohidrato_complejo", porcion_base: 50, unidad: "g", calorias: 190, proteinas: 12, carbohidratos: 32, grasas: 2, sodio: 180 },
-  { nombre: "Clear Whey Isolate", grupo: "Carnes", grupo_equivalencia: "proteina_magra", porcion_base: 30, unidad: "g", calorias: 105, proteinas: 25, carbohidratos: 0.5, grasas: 0, sodio: 55 },
+  { nombre: "Clear Whey Isolate", grupo: "Carnes", grupo_equivalencia: "proteina_magra", porcion_base: 1, unidad: "scoop", calorias: 105, proteinas: 25, carbohidratos: 0.5, grasas: 0, sodio: 55 },
   { nombre: "Bebida Isotónica Light", grupo: "Otros", grupo_equivalencia: "libre", porcion_base: 500, unidad: "ml", calorias: 25, proteinas: 0, carbohidratos: 6, grasas: 0, sodio: 250 },
   { nombre: "Jugo Verde Sin Azúcar", grupo: "Otros", grupo_equivalencia: "libre", porcion_base: 250, unidad: "ml", calorias: 45, proteinas: 2, carbohidratos: 9, grasas: 0.5, sodio: 80 },
 
@@ -353,7 +353,7 @@ const ALIMENTOS_METODOG = [
   { nombre: "Jocoque Seco", grupo: "Lácteos", grupo_equivalencia: "lacteo", porcion_base: 100, unidad: "g", calorias: 140, proteinas: 7, carbohidratos: 5, grasas: 10, sodio: 55 },
   { nombre: "Crema Ácida Light", grupo: "Lácteos", grupo_equivalencia: "proteina_grasa", porcion_base: 30, unidad: "g", calorias: 45, proteinas: 1.5, carbohidratos: 2, grasas: 3.5, sodio: 20 },
   { nombre: "Media Crema Light", grupo: "Lácteos", grupo_equivalencia: "proteina_grasa", porcion_base: 30, unidad: "ml", calorias: 50, proteinas: 1, carbohidratos: 2, grasas: 4, sodio: 25 },
-  { nombre: "Caseína en Polvo", grupo: "Lácteos", grupo_equivalencia: "proteina_magra", porcion_base: 30, unidad: "g", calorias: 110, proteinas: 24, carbohidratos: 2, grasas: 0.5, sodio: 50 },
+  { nombre: "Caseína en Polvo", grupo: "Lácteos", grupo_equivalencia: "proteina_magra", porcion_base: 1, unidad: "scoop", calorias: 110, proteinas: 24, carbohidratos: 2, grasas: 0.5, sodio: 50 },
   { nombre: "Kefir Light", grupo: "Lácteos", grupo_equivalencia: "lacteo", porcion_base: 250, unidad: "ml", calorias: 90, proteinas: 9, carbohidratos: 10, grasas: 1, sodio: 95 },
 
   // —— Leguminosas ampliadas (+30) ——

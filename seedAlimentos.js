@@ -96,6 +96,17 @@ async function seedAlimentosMetodog(db) {
     }
   }
 
+    // Seguridad: aceites globales mal etiquetados como "1 g" con macros de cucharada
+  await db.execute({
+    sql: `UPDATE alimentos
+          SET unidad = 'cucharada', porcion_base = 1
+          WHERE coach_id IS NULL
+            AND LOWER(nombre) LIKE '%aceite%'
+            AND LOWER(unidad) IN ('g', 'gr', 'gramo', 'gramos')
+            AND CAST(porcion_base AS REAL) <= 2
+            AND CAST(grasas AS REAL) >= 10`
+  });
+
   const count = await db.execute("SELECT COUNT(*) AS n FROM alimentos");
   console.log(`✅ Biblioteca alimentos: ${count.rows[0]?.n ?? "?"} ítems (grupo_equivalencia activo).`);
 }
