@@ -1132,6 +1132,36 @@ app.post("/api/alimentos/dieta-ia", async (req, res) => {
   }
 });
 
+/** Normaliza nombres de plan vs biblioteca (s/azúcar ↔ sin azúcar, acentos). */
+function normNombreAlimento(s) {
+  return String(s || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/s\/\s*azucar/g, "sin azucar")
+    .replace(/\bsin\s+azucar\b/g, "sin azucar")
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/** Tokens útiles; ignora relleno tipo "natural" (plan Leonardo vs seed). */
+function tokensNombreAlimento(s) {
+  const stop = new Set(["de", "y", "con", "en", "el", "la", "los", "las", "natural"]);
+  return normNombreAlimento(s)
+    .split(" ")
+    .filter((t) => t && !stop.has(t));
+}
+
+function nombresAlimentoCompatibles(a, b) {
+  const ta = tokensNombreAlimento(a);
+  const tb = tokensNombreAlimento(b);
+  if (ta.length < 2 || tb.length < 2) return false;
+  const [short, longSet] =
+    ta.length <= tb.length ? [ta, new Set(tb)] : [tb, new Set(ta)];
+  return short.every((t) => longSet.has(t));
+}
+
 app.post("/api/alimentos/sustitutos", async (req, res) => {
   const { alimento_id, nombre, cantidad, prioridad } = req.body || {};
   const cant = parseFloat(cantidad);
@@ -1149,15 +1179,33 @@ app.post("/api/alimentos/sustitutos", async (req, res) => {
         args: [alimento_id]
       });
       alimento = r.rows[0];
-    } else {
-      const r = await db.execute({
+    }
+    // Si el id del plan está desfasado o es custom, cae a nombre (exacto + normalizado + tokens).
+    if (!alimento && nombre) {
+      const nombreTrim = String(nombre).trim();
+      const rExact = await db.execute({
         sql: "SELECT * FROM alimentos WHERE LOWER(nombre) = LOWER(?) LIMIT 1",
-        args: [String(nombre).trim()]
+        args: [nombreTrim]
       });
-      alimento = r.rows[0];
+      alimento = rExact.rows[0];
+      if (!alimento) {
+        const clave = normNombreAlimento(nombreTrim);
+        if (clave) {
+          const bib = await db.execute("SELECT * FROM alimentos");
+          const rows = bib.rows || [];
+          alimento = rows.find((a) => normNombreAlimento(a.nombre) === clave) || null;
+          if (!alimento) {
+            alimento = rows.find((a) => nombresAlimentoCompatibles(nombreTrim, a.nombre)) || null;
+          }
+        }
+      }
     }
     if (!alimento) {
-      return res.status(404).json({ error: "Alimento no encontrado en biblioteca" });
+      return res.status(404).json({
+        ok: false,
+        error: "alimento_no_encontrado",
+        mensaje: "Ese alimento no está en la biblioteca MétodoG. Avísale a tu coach para mapearlo."
+      });
     }
     const ge = String(alimento.grupo_equivalencia || "").trim();
     if (!ge || SIN_SUSTITUTO.has(ge)) {
