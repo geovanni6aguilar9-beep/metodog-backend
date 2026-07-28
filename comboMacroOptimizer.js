@@ -1530,8 +1530,12 @@ function optimizarDietaDia(dieta, catalogoMap, targetDia, options = {}) {
   }));
   refrescarMacrosComidas(dieta.comidas, catalogoMap);
 
-  for (let i = 0; i < 50; i++) {
+  /** D: si ya cuadra cadenero tras guillotina, saltar loops preliminares + fine-tune. */
+  if (!dentroCadeneroPlan(totalDieta(dieta.comidas), targetDia)) {
+
+  for (let i = 0; i < 12; i++) {
     const total = totalDieta(dieta.comidas);
+    if (dentroCadeneroPlan(total, targetDia)) break;
     if (num(total.calorias) <= num(targetDia.calorias) * 1.1 && excesoGrasa(total, targetDia) <= 15) {
       break;
     }
@@ -1543,16 +1547,18 @@ function optimizarDietaDia(dieta, catalogoMap, targetDia, options = {}) {
     break;
   }
 
-  for (let i = 0; i < 30; i++) {
+  for (let i = 0; i < 8; i++) {
     const total = totalDieta(dieta.comidas);
+    if (dentroCadeneroPlan(total, targetDia)) break;
     if (excesoGrasa(total, targetDia) <= TOLERANCIA.grasas) break;
     if (!pasoRecorteGrasaEmergencia(dieta.comidas, catalogoMap, targetDia)) {
       if (!pasoRecortarGrasaExceso(dieta.comidas, catalogoMap, targetDia)) break;
     }
   }
 
-  for (let i = 0; i < 35; i++) {
+  for (let i = 0; i < 10; i++) {
     const total = totalDieta(dieta.comidas);
+    if (dentroCadeneroPlan(total, targetDia)) break;
     const errCarb = num(targetDia.carbohidratos) - total.carbohidratos;
     const errCal = num(targetDia.calorias) - total.calorias;
     if (errCarb <= 15 && errCal <= 80) break;
@@ -1560,8 +1566,9 @@ function optimizarDietaDia(dieta, catalogoMap, targetDia, options = {}) {
     if (!pasoRellenarCarbDieta(dieta.comidas, catalogoMap, targetDia, { modoLimpio: true })) break;
   }
 
-  for (let i = 0; i < 10; i++) {
+  for (let i = 0; i < 4; i++) {
     const total = totalDieta(dieta.comidas);
+    if (dentroCadeneroPlan(total, targetDia)) break;
     const errCal = num(targetDia.calorias) - total.calorias;
     if (Math.abs(errCal) <= 80 && errCal >= -TOLERANCIA.calorias) break;
     if (errCal < -80 && podaActivaDieta(dieta.comidas, catalogoMap, targetDia)) continue;
@@ -1698,7 +1705,9 @@ function optimizarDietaDia(dieta, catalogoMap, targetDia, options = {}) {
     if (!escalaGlobalDieta(dieta.comidas, targetDia, catalogoMap)) break;
   }
 
-  } // fin !dentroCadeneroPlan (early-exit)
+  } // fin !dentroCadeneroPlan (fine-tune ±30)
+
+  } // fin !dentroCadeneroPlan (preliminares + fine-tune)
 
   } catch (optErr) {
     console.warn("[comboMacroOptimizer] optimizarDietaDia:", optErr.message);

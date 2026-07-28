@@ -989,7 +989,11 @@ Responde SOLO JSON válido:
             if (!calidad.ok) {
               ultimoError = "plan_no_cuadrado";
               ultimoDetalle = calidad.detalle || "macros fuera de meta";
-              continue;
+              /** No 2º Gemini: fallar rápido; el optimizador ya agotó pasadas. */
+              console.log(
+                `[dieta-ia timing] plan_no_cuadrado — sin 2º Gemini (${ultimoDetalle})`
+              );
+              break;
             }
             planAprobado = true;
             dieta.macros_ajustados = true;
