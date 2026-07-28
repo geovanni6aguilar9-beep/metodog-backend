@@ -6,10 +6,14 @@
 
 const MODELOS_FALLBACK = ["gemini-2.5-flash", "gemini-2.5-flash-lite"];
 const TIMEOUT_GEMINI_MS = 26000;
-const TIMEOUT_GEMINI_DIA_MS = 42000;
-const DEADLINE_DIETA_IA_MS = 48000;
+/** Día completo: más margen para 1 Gemini + optimizador sin falso timeout. */
+const TIMEOUT_GEMINI_DIA_MS = 50000;
+const DEADLINE_DIETA_IA_MS = 62000;
 const TIMEOUT_GEMINI_PROBE_MS = 15000;
 const MAX_CATALOGO_PROMPT = 96;
+/** TTL caché catálogo Turso (reduce latencia por request). */
+const CATALOGO_CACHE_TTL_MS = 8 * 60 * 1000;
+const catalogoCacheMemoria = new Map();
 
 let optimizarCombo = (combo) => combo;
 let optimizarDietaDia = (dieta) => dieta;
@@ -105,10 +109,16 @@ function normalizarCatalogo(catalogo) {
 /** Catálogo autoritativo desde Turso (evita biblioteca cacheada en el cliente). */
 async function cargarCatalogoDesdeDb(db, coachId = null) {
   if (!db) return [];
+  const cid = parseInt(coachId, 10);
+  const cacheKey = cid > 0 ? `c:${cid}` : "global";
+  const hit = catalogoCacheMemoria.get(cacheKey);
+  if (hit && Date.now() - hit.at < CATALOGO_CACHE_TTL_MS && Array.isArray(hit.rows)) {
+    console.log(`[dieta-ia timing] catalogo cache HIT key=${cacheKey}`);
+    return hit.rows;
+  }
   let sql = `SELECT id, nombre, grupo, grupo_equivalencia, porcion_base, unidad, calorias, proteinas, carbohidratos, grasas, sodio
              FROM alimentos WHERE coach_id IS NULL`;
   const args = [];
-  const cid = parseInt(coachId, 10);
   if (cid > 0) {
     sql = `SELECT id, nombre, grupo, grupo_equivalencia, porcion_base, unidad, calorias, proteinas, carbohidratos, grasas, sodio
            FROM alimentos WHERE coach_id IS NULL OR coach_id = ?`;
@@ -116,7 +126,9 @@ async function cargarCatalogoDesdeDb(db, coachId = null) {
   }
   sql += " ORDER BY grupo, nombre ASC";
   const result = await db.execute({ sql, args });
-  return normalizarCatalogo(result?.rows || []);
+  const rows = normalizarCatalogo(result?.rows || []);
+  catalogoCacheMemoria.set(cacheKey, { at: Date.now(), rows });
+  return rows;
 }
 
 /** DB gana sobre payload del frontend (macros/unidades actualizados). */
@@ -727,11 +739,15 @@ async function generarDietaDiaCompleta(payload, db = null, options = {}) {
   console.log("========================================");
   console.log(`[MetodoG] Pipeline ${VERSION_PIPELINE_IA} ACTIVA — dieta-ia`, new Date().toISOString());
   console.log("[MetodoG] optimizer:", OPTIMIZER_DISPONIBLE ? VERSION_PIPELINE_IA : "OFF");
+  console.log(`[MetodoG] deadlines: gemini≤${TIMEOUT_GEMINI_DIA_MS}ms · total≤${DEADLINE_DIETA_IA_MS}ms`);
   console.log("========================================");
+  const tPipeline = Date.now();
   const apiKey = resolverGeminiApiKey();
   if (!apiKey) return { ok: false, motivo: "sin_api_key" };
 
+  const tCat = Date.now();
   const catalogo = await resolverCatalogoIa(payload, db, options);
+  const msCatalogo = Date.now() - tCat;
   if (!catalogo.length) return { ok: false, motivo: "sin_catalogo" };
 
   const plan = payload?.plan || null;
@@ -865,6 +881,7 @@ Responde SOLO JSON válido:
 
   let ultimoError = "api_error";
   let ultimoDetalle = "";
+  /** Happy path: 1 modelo. 2º solo si el 1º falla calidad/parse/API. */
   const intentos = [
     { model: modelos[0], usarJson: true, correccionIds: false },
     { model: modelos[1] || modelos[0], usarJson: true, correccionIds: false }
@@ -878,11 +895,16 @@ Responde SOLO JSON válido:
       break;
     }
     const user = buildUserDieta(correccionIds);
+    const tGemini = Date.now();
     try {
       const { res, data } = await llamarGemini(apiKey, model, system, user, usarJson, {
         maxOutputTokens: 6144,
         timeoutMs: timeoutGeminiDieta()
       });
+      const msGemini = Date.now() - tGemini;
+      console.log(
+        `[dieta-ia timing] gemini intento=${i + 1} model=${model} ${msGemini}ms status=${res.status}`
+      );
       if (res.status === 429) return { ok: false, motivo: "cuota" };
       if (!res.ok) {
         ultimoError = res.status === 404 ? "modelo_no_disponible" : "api_error";
@@ -934,6 +956,7 @@ Responde SOLO JSON válido:
           );
           let dieta = aplicarGuillotinaPorcionesDieta(dietaRaw, catalogoMap);
           let planAprobado = false;
+          const tOpt = Date.now();
           try {
             if (!OPTIMIZER_DISPONIBLE) {
               throw new Error("optimizer_off");
@@ -949,12 +972,19 @@ Responde SOLO JSON válido:
                 break;
               }
               dieta = optimizarDietaDia(dieta, catalogoMap, targetDia);
+              dieta = aplicarGuillotinaPorcionesDieta(dieta, catalogoMap);
+              dieta = asegurarMacrosPlanDieta(dieta);
+              /** Early-exit: si ya pasó cadenero (±150/+20/−55), no seguir exprimiendo. */
+              const calidadPass = evaluarCalidadPlanDieta(dieta, targetDia);
+              if (calidadPass.ok) break;
               const gapKcal = num(targetDia.calorias) - num(dieta.macros_plan?.calorias);
               const gapGras = num(targetDia.grasas) - num(dieta.macros_plan?.grasas);
               if (Math.abs(gapKcal) <= 80 && gapGras >= -8) break;
             }
             dieta = aplicarGuillotinaPorcionesDieta(dieta, catalogoMap);
             dieta = asegurarMacrosPlanDieta(dieta);
+            const msOpt = Date.now() - tOpt;
+            console.log(`[dieta-ia timing] optimizador ${msOpt}ms`);
             const calidad = evaluarCalidadPlanDieta(dieta, targetDia);
             if (!calidad.ok) {
               ultimoError = "plan_no_cuadrado";
@@ -976,21 +1006,32 @@ Responde SOLO JSON válido:
           if (!planAprobado) continue;
           dieta.macros_meta = targetDia;
           dieta.version_pipeline = VERSION_PIPELINE_IA;
+          const msTotal = Date.now() - tPipeline;
+          console.log(
+            `[dieta-ia timing] OK total=${msTotal}ms catalogo=${msCatalogo}ms model=${model}`
+          );
         return {
           ok: true,
           dieta,
           ia: true,
           modelo: model,
           optimizer: OPTIMIZER_DISPONIBLE ? VERSION_PIPELINE_IA : "off",
-          version_pipeline: VERSION_PIPELINE_IA
+          version_pipeline: VERSION_PIPELINE_IA,
+          timing_ms: { total: Date.now() - tPipeline, catalogo: msCatalogo }
         };
     } catch (err) {
       const msg = err?.message || String(err);
       ultimoDetalle = msg;
       ultimoError = /timeout|aborted/i.test(msg) ? "timeout" : "red";
+      console.log(
+        `[dieta-ia timing] gemini FAIL intento=${i + 1} ${Date.now() - tGemini}ms: ${msg}`
+      );
     }
   }
 
+  console.log(
+    `[dieta-ia timing] FAIL total=${Date.now() - tPipeline}ms motivo=${ultimoError} catalogo=${msCatalogo}ms`
+  );
   if (ultimoError === "parse_error" || ultimoError === "ids_invalidos") {
     return { ok: false, motivo: ultimoError, detalle: ultimoDetalle };
   }

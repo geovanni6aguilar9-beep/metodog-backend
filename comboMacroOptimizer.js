@@ -324,6 +324,15 @@ function dentroTolerancia(total, target) {
   );
 }
 
+/** Cadenero plan día (±150 kcal / +20g G / −55g C) — early-exit del optimizador. */
+function dentroCadeneroPlan(total, target) {
+  return (
+    Math.abs(num(total.calorias) - num(target.calorias)) <= 150 &&
+    num(total.grasas) <= num(target.grasas) + 20 &&
+    num(total.carbohidratos) >= num(target.carbohidratos) - 55
+  );
+}
+
 function dentroToleranciaCombo(total, target) {
   return (
     Math.abs(num(total.calorias) - num(target.calorias)) <= TOLERANCIA_COMBO.calorias &&
@@ -1561,13 +1570,18 @@ function optimizarDietaDia(dieta, catalogoMap, targetDia, options = {}) {
     }
   }
 
+  /** Si ya pasó cadenero UI, no gastar CPU exprimiendo ±30 kcal. */
+  if (!dentroCadeneroPlan(totalDieta(dieta.comidas), targetDia)) {
+
   for (let pass = 0; pass < MAX_PASADAS_DIA; pass++) {
     if (dentroTolerancia(totalDieta(dieta.comidas), targetDia)) break;
+    if (dentroCadeneroPlan(totalDieta(dieta.comidas), targetDia)) break;
     if (!pasoAjusteDieta(dieta.comidas, catalogoMap, targetDia, options)) break;
   }
 
   for (let pass = 0; pass < 6; pass++) {
     const total = totalDieta(dieta.comidas);
+    if (dentroCadeneroPlan(total, targetDia)) break;
     const errCal = num(targetDia.calorias) - total.calorias;
     if (Math.abs(errCal) <= TOLERANCIA.calorias) break;
     if (total.calorias <= 0) break;
@@ -1589,11 +1603,12 @@ function optimizarDietaDia(dieta, catalogoMap, targetDia, options = {}) {
 
   for (let pass = 0; pass < 8; pass++) {
     if (dentroTolerancia(totalDieta(dieta.comidas), targetDia)) break;
+    if (dentroCadeneroPlan(totalDieta(dieta.comidas), targetDia)) break;
     if (!pasoAjusteDieta(dieta.comidas, catalogoMap, targetDia, options)) break;
   }
 
   const totalFinal = totalDieta(dieta.comidas);
-  if (Math.abs(num(targetDia.calorias) - totalFinal.calorias) > 50 && totalFinal.calorias > 0) {
+  if (!dentroCadeneroPlan(totalFinal, targetDia) && Math.abs(num(targetDia.calorias) - totalFinal.calorias) > 50 && totalFinal.calorias > 0) {
     const errProtFin = num(targetDia.proteinas) - totalFinal.proteinas;
     const errCalFin = num(targetDia.calorias) - totalFinal.calorias;
     if (errCalFin < -80) {
@@ -1616,12 +1631,14 @@ function optimizarDietaDia(dieta, catalogoMap, targetDia, options = {}) {
 
   for (let pass = 0; pass < MAX_PASADAS_BRECHA; pass++) {
     if (dentroTolerancia(totalDieta(dieta.comidas), targetDia)) break;
+    if (dentroCadeneroPlan(totalDieta(dieta.comidas), targetDia)) break;
     if (!pasoCerrarBrechaGrande(dieta.comidas, catalogoMap, targetDia)) break;
     enforceLimitesFinales(dieta.comidas, catalogoMap);
   }
 
   for (let pass = 0; pass < 20; pass++) {
     if (dentroTolerancia(totalDieta(dieta.comidas), targetDia)) break;
+    if (dentroCadeneroPlan(totalDieta(dieta.comidas), targetDia)) break;
     if (!pasoAfinarMacrosDieta(dieta.comidas, catalogoMap, targetDia, options)) break;
   }
 
@@ -1630,6 +1647,7 @@ function optimizarDietaDia(dieta, catalogoMap, targetDia, options = {}) {
   for (let pass = 0; pass < 18; pass++) {
     const total = totalDieta(dieta.comidas);
     if (dentroTolerancia(total, targetDia)) break;
+    if (dentroCadeneroPlan(total, targetDia)) break;
     const errCal = num(targetDia.calorias) - total.calorias;
     const errProt = num(targetDia.proteinas) - total.proteinas;
     const errCarb = num(targetDia.carbohidratos) - total.carbohidratos;
@@ -1662,6 +1680,7 @@ function optimizarDietaDia(dieta, catalogoMap, targetDia, options = {}) {
 
   for (let pass = 0; pass < 6; pass++) {
     const total = totalDieta(dieta.comidas);
+    if (dentroCadeneroPlan(total, targetDia)) break;
     const errCarb = num(targetDia.carbohidratos) - total.carbohidratos;
     const errCal = num(targetDia.calorias) - total.calorias;
     if (errCarb <= TOLERANCIA.carbohidratos) break;
@@ -1674,9 +1693,12 @@ function optimizarDietaDia(dieta, catalogoMap, targetDia, options = {}) {
 
   for (let i = 0; i < 6; i++) {
     const total = totalDieta(dieta.comidas);
+    if (dentroCadeneroPlan(total, targetDia)) break;
     if (num(total.calorias) <= num(targetDia.calorias) + 80) break;
     if (!escalaGlobalDieta(dieta.comidas, targetDia, catalogoMap)) break;
   }
+
+  } // fin !dentroCadeneroPlan (early-exit)
 
   } catch (optErr) {
     console.warn("[comboMacroOptimizer] optimizarDietaDia:", optErr.message);
