@@ -130,8 +130,13 @@ async function llamarGeminiConPartes(parts, { json = false } = {}) {
   throw lastErr || new Error('Gemini no disponible.');
 }
 
-function promptDietaImagen() {
-  return `Eres un nutricionista experto. Analiza esta captura de pantalla o foto de un plan de dieta (app, Excel, papel, WhatsApp, menú de coach).
+function promptDietaImagen(numImagenes = 1) {
+  const n = Math.max(1, Number(numImagenes) || 1);
+  const multi =
+    n > 1
+      ? `Recibes ${n} capturas del MISMO plan (pantallas/páginas consecutivas). Combínalas en UN solo JSON de dieta sin duplicar alimentos de la misma comida.`
+      : `Analiza esta captura de pantalla o foto de un plan de dieta (app, Excel, papel, WhatsApp, menú de coach).`;
+  return `Eres un nutricionista experto. ${multi}
 Tu tarea:
 - Sepáralo en comidas distintas (Desayuno, Comida 1, Comida 2, Comida, Cena, Snack, Colación, Post-entreno, etc.).
 - Extrae SOLO el NOMBRE LIMPIO del alimento (sin calorías ni macros pegados).
@@ -145,8 +150,13 @@ Responde SOLO JSON válido:
 {"comidas":[{"nombre":"Desayuno","alimentos":[{"nombre":"Avena","cantidad":40,"unidad":"g"}]}],"avisos":[]}`;
 }
 
-function promptRutinaImagen() {
-  return `Eres un entrenador élite. Analiza esta captura de pantalla o foto de una rutina de entrenamiento (app, Excel, papel, WhatsApp, pizarra).
+function promptRutinaImagen(numImagenes = 1) {
+  const n = Math.max(1, Number(numImagenes) || 1);
+  const multi =
+    n > 1
+      ? `Recibes ${n} capturas del MISMO plan (pantallas/páginas consecutivas). Combínalas en UNA sola rutina CSV (todos los días/ejercicios visibles en el conjunto).`
+      : `Analiza esta captura de pantalla o foto de una rutina de entrenamiento (app, Excel, papel, WhatsApp, pizarra).`;
+  return `Eres un entrenador élite. ${multi}
 Conviértelo SOLO a CSV con cabecera exacta (primera línea):
 dia,grupo,nombre,series,reps,rir
 
@@ -289,32 +299,32 @@ async function previewImportRutinaIa(texto, opts = {}) {
 }
 
 /**
- * Captura/foto de dieta → Gemini vision → JSON → preview.
- * @param {Buffer} buffer
+ * Captura/foto(s) de dieta → Gemini vision → JSON → preview.
+ * @param {Buffer|Buffer[]} input
  * @param {{ mimeType?: string }} opts
  */
-async function previewImportDietaDesdeImagen(buffer, opts = {}) {
-  if (!buffer?.length) {
+async function previewImportDietaDesdeImagen(input, opts = {}) {
+  const buffers = (Array.isArray(input) ? input : [input]).filter((b) => b?.length);
+  if (!buffers.length) {
     return { ok: false, error: 'Imagen vacía.' };
   }
-  if (buffer.length < 64) {
-    return { ok: false, error: 'La imagen es demasiado pequeña o está corrupta.' };
+  const partes = [{ text: promptDietaImagen(buffers.length) }];
+  for (const buffer of buffers) {
+    if (buffer.length < 64) {
+      return { ok: false, error: 'Una de las imágenes es demasiado pequeña o está corrupta.' };
+    }
+    const mimeDetectado = mimeImagenDesdeBuffer(buffer);
+    if (!mimeDetectado) {
+      return {
+        ok: false,
+        error: 'Algún archivo no es una imagen JPG, PNG o WebP válida.'
+      };
+    }
+    partes.push({
+      inline_data: { mime_type: mimeDetectado, data: Buffer.from(buffer).toString('base64') }
+    });
   }
-  const mimeDetectado = mimeImagenDesdeBuffer(buffer);
-  if (!mimeDetectado) {
-    return {
-      ok: false,
-      error: 'El archivo no es una imagen JPG, PNG o WebP válida.'
-    };
-  }
-  const base64 = Buffer.from(buffer).toString('base64');
-  const json = await llamarGeminiConPartes(
-    [
-      { text: promptDietaImagen() },
-      { inline_data: { mime_type: mimeDetectado, data: base64 } }
-    ],
-    { json: true }
-  );
+  const json = await llamarGeminiConPartes(partes, { json: true });
   const out = normalizarSalidaGemini(json, false);
   if (!out.ok) return out;
   return {
@@ -322,40 +332,45 @@ async function previewImportDietaDesdeImagen(buffer, opts = {}) {
     parser: 'imagen-ia',
     avisos: [
       ...(out.avisos || []),
-      'Captura de dieta interpretada con IA — revisa comidas y porciones.'
+      buffers.length > 1
+        ? `${buffers.length} capturas de dieta interpretadas con IA — revisa comidas y porciones.`
+        : 'Captura de dieta interpretada con IA — revisa comidas y porciones.'
     ]
   };
 }
 
 /**
- * Captura/foto de rutina → Gemini vision → CSV → preview.
- * @param {Buffer} buffer
+ * Captura/foto(s) de rutina → Gemini vision → CSV → preview.
+ * @param {Buffer|Buffer[]} input
  * @param {{ mimeType?: string }} opts
  */
-async function previewImportRutinaDesdeImagen(buffer, opts = {}) {
-  if (!buffer?.length) {
+async function previewImportRutinaDesdeImagen(input, opts = {}) {
+  const buffers = (Array.isArray(input) ? input : [input]).filter((b) => b?.length);
+  if (!buffers.length) {
     return { ok: false, error: 'Imagen vacía.' };
   }
-  if (buffer.length < 64) {
-    return { ok: false, error: 'La imagen es demasiado pequeña o está corrupta.' };
+  const partes = [{ text: promptRutinaImagen(buffers.length) }];
+  for (const buffer of buffers) {
+    if (buffer.length < 64) {
+      return { ok: false, error: 'Una de las imágenes es demasiado pequeña o está corrupta.' };
+    }
+    const mimeDetectado = mimeImagenDesdeBuffer(buffer);
+    if (!mimeDetectado) {
+      return {
+        ok: false,
+        error: 'Algún archivo no es una imagen JPG, PNG o WebP válida.'
+      };
+    }
+    partes.push({
+      inline_data: { mime_type: mimeDetectado, data: Buffer.from(buffer).toString('base64') }
+    });
   }
-  const mimeDetectado = mimeImagenDesdeBuffer(buffer);
-  if (!mimeDetectado) {
+  const csv = await llamarGeminiConPartes(partes, { json: false });
+  if (!csv || !/dia\s*,/i.test(csv.split('\n')[0] || '')) {
     return {
       ok: false,
-      error: 'El archivo no es una imagen JPG, PNG o WebP válida.'
+      error: 'La IA no leyó una rutina válida en la imagen. Prueba otra foto más nítida o CSV.'
     };
-  }
-  const base64 = Buffer.from(buffer).toString('base64');
-  const csv = await llamarGeminiConPartes(
-    [
-      { text: promptRutinaImagen() },
-      { inline_data: { mime_type: mimeDetectado, data: base64 } }
-    ],
-    { json: false }
-  );
-  if (!csv || !/dia\s*,/i.test(csv.split('\n')[0] || '')) {
-    return { ok: false, error: 'La IA no leyó una rutina válida en la imagen. Prueba otra foto más nítida o CSV.' };
   }
   const preview = previewImportPlan(csv, { tipo: 'rutina' });
   if (!preview.ok) {
@@ -367,7 +382,9 @@ async function previewImportRutinaDesdeImagen(buffer, opts = {}) {
     texto_csv: csv,
     avisos: [
       ...(preview.avisos || []),
-      'Captura interpretada con IA — revisa días, series y nombres.'
+      buffers.length > 1
+        ? `${buffers.length} capturas interpretadas con IA — revisa días, series y nombres.`
+        : 'Captura interpretada con IA — revisa días, series y nombres.'
     ]
   };
 }

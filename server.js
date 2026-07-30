@@ -113,12 +113,13 @@ const uploadPdf = multer({
 });
 const uploadImagenPlan = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 8 * 1024 * 1024 },
+  limits: { fileSize: 8 * 1024 * 1024, files: 6 },
   fileFilter: (_req, file, cb) => {
     const ok = /^image\/(jpeg|jpg|png|webp)$/i.test(file.mimetype || "");
     cb(ok ? null : new Error("Solo JPG, PNG o WebP"), ok);
   }
 });
+const MAX_IMAGENES_IMPORT_PLAN = 6;
 
 const DEV_JWT_FALLBACK = "metodog-dev-cambiar-en-produccion";
 if (isProduction()) {
@@ -626,7 +627,7 @@ app.post("/api/planes/preview-import-ia", async (req, res) => {
 
 /** Captura/foto de dieta o rutina (modo libre + coaches) — misma cuota IA que preview-import-ia. */
 app.post("/api/planes/preview-import-imagen", (req, res) => {
-  uploadImagenPlan.single("imagen")(req, res, async (errMulter) => {
+  uploadImagenPlan.array("imagenes", MAX_IMAGENES_IMPORT_PLAN)(req, res, async (errMulter) => {
     if (errMulter) {
       return res.status(400).json({
         ok: false,
@@ -659,20 +660,21 @@ app.post("/api/planes/preview-import-imagen", (req, res) => {
       }
     }
 
-    if (!req.file?.buffer?.length) {
-      return res.status(400).json({ ok: false, error: "Sube una imagen en el campo «imagen»." });
+    const files = Array.isArray(req.files) ? req.files.filter((f) => f?.buffer?.length) : [];
+    if (!files.length) {
+      return res.status(400).json({
+        ok: false,
+        error: "Sube una o más imágenes en el campo «imagenes» (máx. 6)."
+      });
     }
     const tipo = req.body?.tipo === "dieta" ? "dieta" : "rutina";
+    const buffers = files.map((f) => f.buffer);
 
     try {
       const resultado =
         tipo === "dieta"
-          ? await previewImportDietaDesdeImagen(req.file.buffer, {
-              mimeType: req.file.mimetype
-            })
-          : await previewImportRutinaDesdeImagen(req.file.buffer, {
-              mimeType: req.file.mimetype
-            });
+          ? await previewImportDietaDesdeImagen(buffers)
+          : await previewImportRutinaDesdeImagen(buffers);
       if (!resultado.ok) return res.status(400).json(resultado);
       let cuotaOut = { ilimitado: true, restantes: null };
       if (!acceso.ilimitado) {
