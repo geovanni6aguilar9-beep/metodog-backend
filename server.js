@@ -2841,7 +2841,12 @@ app.post("/api/solicitar-recuperacion", async (req, res) => {
     }
 
     const codigo = Math.floor(100000 + Math.random() * 900000).toString();
-    await db.execute({ sql: `INSERT INTO recuperacion (email, codigo) VALUES (?, ?) ON CONFLICT(email) DO UPDATE SET codigo = excluded.codigo`, args: [emailLimpio, codigo] });
+    /** Refrescar fecha en cada solicitud (si no, ON CONFLICT deja fecha vieja → “caducado” al instante). */
+    await db.execute({
+      sql: `INSERT INTO recuperacion (email, codigo, fecha) VALUES (?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(email) DO UPDATE SET codigo = excluded.codigo, fecha = CURRENT_TIMESTAMP`,
+      args: [emailLimpio, codigo]
+    });
 
     const { data, error } = await resend.emails.send({
       from: remiteResend(),
@@ -2863,13 +2868,35 @@ app.post("/api/solicitar-recuperacion", async (req, res) => {
 
 app.post("/api/cambiar-password", async (req, res) => {
   const { email, codigo, nuevaPassword } = req.body;
-  const emailLimpio = email.toLowerCase().trim();
+  const emailLimpio = String(email || "").toLowerCase().trim();
+  const codigoLimpio = String(codigo || "").trim();
   try {
-    const rec = await db.execute({ sql: "SELECT * FROM recuperacion WHERE email = ? AND codigo = ?", args: [emailLimpio, codigo] });
+    const rec = await db.execute({
+      sql: "SELECT * FROM recuperacion WHERE email = ? AND codigo = ?",
+      args: [emailLimpio, codigoLimpio]
+    });
     if (rec.rows.length === 0) return res.status(400).json({ error: "Código incorrecto o caducado" });
-    const creado = new Date(rec.rows[0].fecha).getTime();
+
+    const rawFecha = rec.rows[0].fecha;
+    let creado = NaN;
+    if (typeof rawFecha === "number") {
+      creado = rawFecha < 1e12 ? rawFecha * 1000 : rawFecha;
+    } else if (rawFecha != null) {
+      const s = String(rawFecha).trim();
+      /** SQLite CURRENT_TIMESTAMP = UTC sin zona → forzar Z para no interpretar como local. */
+      if (/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}/.test(s) && !/[zZ]|[+-]\d{2}:?\d{2}$/.test(s)) {
+        creado = new Date(s.replace(" ", "T") + "Z").getTime();
+      } else {
+        creado = new Date(s).getTime();
+      }
+    }
     if (Number.isNaN(creado) || Date.now() - creado > 15 * 60 * 1000) {
+      console.warn("[recuperacion] caducado", { email: emailLimpio, rawFecha, creado, now: Date.now() });
       return res.status(400).json({ error: "Código caducado. Solicita uno nuevo." });
+    }
+
+    if (!nuevaPassword || String(nuevaPassword).length < 4) {
+      return res.status(400).json({ error: "La nueva contraseña es demasiado corta." });
     }
 
     const hash = bcrypt.hashSync(nuevaPassword, 10);
