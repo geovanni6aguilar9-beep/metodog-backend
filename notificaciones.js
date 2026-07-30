@@ -172,8 +172,9 @@ async function cancelarSolicitudesPendientesCliente(db, clienteId, exceptId = nu
 async function enviarEmailCoachSolicitud(resend, coach, clienteNombre, clienteEmail) {
   if (!resend || !coach?.email) return;
   try {
+    const { remiteResend } = require("./emailFrom");
     await resend.emails.send({
-      from: "MétodoG Notificaciones <onboarding@resend.dev>",
+      from: remiteResend(),
       to: coach.email,
       subject: "📩 Nueva solicitud de vinculación en MétodoG",
       html: `<p>Hola <b>${coach.nombre || "Coach"}</b>,</p>

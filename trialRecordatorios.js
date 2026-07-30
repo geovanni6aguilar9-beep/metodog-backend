@@ -95,8 +95,9 @@ async function yaNotificado(db, usuarioId, diasUmbral) {
 async function enviarEmailCoachTrial(resend, coach, msg) {
   if (!resend || !coach?.email) return false;
   try {
+    const { remiteResend } = require("./emailFrom");
     await resend.emails.send({
-      from: "MétodoG Coach <onboarding@resend.dev>",
+      from: remiteResend(),
       to: coach.email,
       subject: msg.emailSubject,
       html: msg.emailHtml

@@ -216,6 +216,7 @@ const db = wrapTursoClient(crearClienteDB());
 
 // 💌 CONFIGURACIÓN DEL CARTERO RESEND
 const resend = new Resend(process.env.RESEND_API_KEY);
+const { remiteResend } = require("./emailFrom");
 
 async function inicializarBD() {
   try {
@@ -2843,7 +2844,7 @@ app.post("/api/solicitar-recuperacion", async (req, res) => {
     await db.execute({ sql: `INSERT INTO recuperacion (email, codigo) VALUES (?, ?) ON CONFLICT(email) DO UPDATE SET codigo = excluded.codigo`, args: [emailLimpio, codigo] });
 
     const { data, error } = await resend.emails.send({
-      from: 'MétodoG Soporte <onboarding@resend.dev>',
+      from: remiteResend(),
       to: emailLimpio,
       subject: "🛡️ Recuperación de Contraseña - MétodoG",
       html: `<h3>Hola ${user.rows[0].nombre},</h3><p>Tu código secreto para cambiar tu contraseña es: <b>${codigo}</b></p><p>Si no solicitaste este cambio, ignora este correo.</p>`
