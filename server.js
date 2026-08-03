@@ -86,6 +86,12 @@ const {
   aplicarSustitutoEnDatosDieta,
   mapearAlimentoDesdeBiblioteca
 } = require("./dietaSustituir");
+const {
+  ensureTablaFotosProgreso,
+  listarFotosProgreso,
+  crearFotoProgreso,
+  borrarFotoProgreso
+} = require("./fotosProgreso");
 const { importarAlimentosCsv, previewImportacionCsv, PLANTILLA_CSV } = require("./importarAlimentos");
 const {
   generarRecetaComida,
@@ -140,7 +146,7 @@ app.post(
 );
 
 app.use(cors(buildCorsOptions()));
-app.use(express.json());
+app.use(express.json({ limit: "800kb" }));
 
 /** Público — ANTES del JWT (UptimeRobot usa HEAD) */
 function responderPing(req, res) {
@@ -413,6 +419,7 @@ async function inicializarBD() {
     );
 
     await ensureTablaCuotaComboIa(db);
+    await ensureTablaFotosProgreso(db);
 
     await seedAlimentosMetodog(db);
     console.log("✅ Base de datos conectada (suscripciones atleta/coach + tiers).");
@@ -2385,6 +2392,52 @@ app.get("/api/clientes/:id/resumen", async (req, res) => {
       historial: histRes.rows || [] 
     });
   } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+/** Fotos de progreso corporal (frente / lado / espalda). */
+app.get("/api/clientes/:id/fotos-progreso", async (req, res) => {
+  if (!(await assertAccesoUsuario(db, req, res, req.params.id))) return;
+  try {
+    const usuarioId = parseInt(req.params.id, 10);
+    const fotos = await listarFotosProgreso(db, usuarioId);
+    res.json({ fotos });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/clientes/:id/fotos-progreso", async (req, res) => {
+  if (!(await assertAccesoUsuarioEdicion(db, req, res, req.params.id))) return;
+  try {
+    const usuarioId = parseInt(req.params.id, 10);
+    const { imagen, vista, nota, fecha } = req.body || {};
+    const out = await crearFotoProgreso(db, {
+      usuarioId,
+      vista,
+      nota,
+      fecha,
+      imagen,
+      createdBy: parseInt(req.user.id, 10)
+    });
+    if (!out.ok) return res.status(out.status || 400).json({ error: out.error });
+    res.status(201).json({ foto: out.foto });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete("/api/clientes/:id/fotos-progreso/:fotoId", async (req, res) => {
+  if (!(await assertAccesoUsuarioEdicion(db, req, res, req.params.id))) return;
+  try {
+    const usuarioId = parseInt(req.params.id, 10);
+    const fotoId = parseInt(req.params.fotoId, 10);
+    if (!fotoId) return res.status(400).json({ error: "ID de foto inválido" });
+    const out = await borrarFotoProgreso(db, { usuarioId, fotoId });
+    if (!out.ok) return res.status(out.status || 404).json({ error: out.error });
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.get("/api/comunidad/:id", async (req, res) => {
