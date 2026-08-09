@@ -38,7 +38,7 @@ const PLAN_NUTRICION_VOLUMEN = {
   comida_3: [
     { nombre: "Yogur Griego Natural s/azúcar", cantidad: 150, unidad: "g", kcal: 109, prot: 10.6, carb: 10.2, grasas: 2.5, sodio: 0 },
     { nombre: "Manzana", cantidad: 80, unidad: "g", kcal: 42, prot: 1.6, carb: 11.2, grasas: 0, sodio: 0 },
-    { nombre: "Almendras", cantidad: 20, unidad: "g", kcal: 115, prot: 4.3, carb: 10.1, grasas: 3.9, sodio: 0 },
+    { nombre: "Almendras", cantidad: 20, unidad: "g", kcal: 116, prot: 4.3, carb: 4.3, grasas: 10, sodio: 0 },
     { nombre: "Melón", cantidad: 200, unidad: "g", kcal: 68, prot: 0, carb: 16.4, grasas: 0, sodio: 0 }
   ],
   comida_4: [

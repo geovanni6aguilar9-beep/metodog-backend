@@ -56,7 +56,7 @@ const ALIMENTOS_METODOG = [
   // —— Grasas ——
   { nombre: "Aguacate", grupo: "Grasas", grupo_equivalencia: "grasa", porcion_base: 50, unidad: "g", calorias: 80, proteinas: 1, carbohidratos: 4, grasas: 7.5, sodio: 7 },
   { nombre: "Aceite de Oliva", grupo: "Grasas", grupo_equivalencia: "grasa", porcion_base: 1, unidad: "cucharada", calorias: 119, proteinas: 0, carbohidratos: 0, grasas: 13.5, sodio: 0 },
-  { nombre: "Almendras", grupo: "Grasas", grupo_equivalencia: "grasa", porcion_base: 30, unidad: "g", calorias: 173, proteinas: 6, carbohidratos: 6, grasas: 15, sodio: 0 },
+  { nombre: "Almendras", grupo: "Grasas", grupo_equivalencia: "grasa", porcion_base: 30, unidad: "g", calorias: 174, proteinas: 6.4, carbohidratos: 6.5, grasas: 15, sodio: 0 },
   { nombre: "Nueces", grupo: "Grasas", grupo_equivalencia: "grasa", porcion_base: 30, unidad: "g", calorias: 209.9, proteinas: 4.6, carbohidratos: 4, grasas: 19.5, sodio: 1 },
   { nombre: "Cacahuates", grupo: "Grasas", grupo_equivalencia: "grasa", porcion_base: 30, unidad: "g", calorias: 187, proteinas: 7, carbohidratos: 6, grasas: 15, sodio: 2 },
   { nombre: "Crema de Cacahuate Natural", grupo: "Grasas", grupo_equivalencia: "grasa", porcion_base: 1, unidad: "cucharada", calorias: 88, proteinas: 4, carbohidratos: 3, grasas: 7.5, sodio: 3 },

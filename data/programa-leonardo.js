@@ -33,7 +33,7 @@ const PLAN_NUTRICION = {
   comida_3: [
     { nombre: "Yogur Griego Natural s/azúcar", cantidad: 150, unidad: "g", kcal: 109, prot: 10.6, carb: 10.2, grasas: 2.5 },
     { nombre: "Manzana", cantidad: 100, unidad: "g", kcal: 52, prot: 2, carb: 14, grasas: 0 },
-    { nombre: "Almendras", cantidad: 30, unidad: "g", kcal: 173, prot: 6.4, carb: 15.2, grasas: 5.9 },
+    { nombre: "Almendras", cantidad: 30, unidad: "g", kcal: 174, prot: 6.4, carb: 6.5, grasas: 15 },
     { nombre: "Melón", cantidad: 200, unidad: "g", kcal: 68, prot: 0, carb: 16.4, grasas: 0 }
   ],
   comida_4: [
