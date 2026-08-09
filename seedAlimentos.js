@@ -102,6 +102,17 @@ async function seedAlimentosMetodog(db) {
     args: ["Tostada Salmas"]
   });
 
+  // Dedupe histórico: pastas de legumbre solo en Cereales (carbohidrato_complejo)
+  for (const nombre of ["Pasta de Lenteja Cocida", "Pasta de Garbanzo Cocida"]) {
+    await db.execute({
+      sql: `UPDATE alimentos
+            SET grupo = 'Cereales',
+                grupo_equivalencia = 'carbohidrato_complejo'
+            WHERE coach_id IS NULL AND LOWER(nombre) = LOWER(?)`,
+      args: [nombre]
+    });
+  }
+
   // Aceites mal etiquetados como "1 g" con macros de cucharada (global + coach)
   await db.execute({
     sql: `UPDATE alimentos
