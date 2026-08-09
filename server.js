@@ -1897,6 +1897,7 @@ async function eliminarUsuarioCompleto(db, userId) {
     ["dietas", "usuario_id"],
     ["mediciones", "usuario_id"],
     ["historial_fuerza", "usuario_id"],
+    ["sesiones_entrenamiento", "usuario_id"],
     ["perfiles_clientes", "usuario_id"],
     ["perfiles_coach_publicos", "usuario_id"],
     ["suscripciones_coach", "usuario_id"],
