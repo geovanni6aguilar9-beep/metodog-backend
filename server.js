@@ -381,6 +381,23 @@ async function inicializarBD() {
     )`);
     await db.execute(`CREATE INDEX IF NOT EXISTS idx_historial_fuerza_user_ej ON historial_fuerza(usuario_id, ejercicio)`);
 
+    await db.execute(`CREATE TABLE IF NOT EXISTS sesiones_entrenamiento (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      usuario_id INTEGER NOT NULL,
+      dia_rutina TEXT,
+      duracion_seg INTEGER NOT NULL DEFAULT 0,
+      volumen_kg REAL NOT NULL DEFAULT 0,
+      series_completadas INTEGER NOT NULL DEFAULT 0,
+      fecha DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY(usuario_id) REFERENCES usuarios(id)
+    )`);
+    await db.execute(
+      `CREATE INDEX IF NOT EXISTS idx_sesiones_ent_fecha ON sesiones_entrenamiento(fecha)`
+    );
+    await db.execute(
+      `CREATE INDEX IF NOT EXISTS idx_sesiones_ent_user ON sesiones_entrenamiento(usuario_id, fecha)`
+    );
+
     await db.execute(`CREATE TABLE IF NOT EXISTS notas_ejercicio_coach (
       coach_id INTEGER NOT NULL,
       nombre_ejercicio TEXT NOT NULL,
@@ -1600,6 +1617,64 @@ app.post("/api/fuerza/desmarcar", async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+/** Cierra sesión ENTRENAR: duración + volumen (auditoría / Superadmin). */
+app.post("/api/fuerza/sesion", async (req, res) => {
+  const {
+    usuario_id,
+    dia_rutina,
+    duracion_seg,
+    volumen_kg,
+    series_completadas
+  } = req.body || {};
+  if (!(await assertAccesoUsuarioEdicion(db, req, res, usuario_id))) return;
+
+  const duracion = Math.max(0, parseInt(duracion_seg, 10) || 0);
+  const volumen = Math.max(0, parseFloat(volumen_kg) || 0);
+  const series = Math.max(0, parseInt(series_completadas, 10) || 0);
+  const dia = dia_rutina != null ? String(dia_rutina).trim() || null : null;
+
+  if (duracion < 60 || series < 1) {
+    return res.status(400).json({
+      error: "Sesión demasiado corta o sin series (mín. 60s y 1 serie)"
+    });
+  }
+
+  try {
+    const dup = await db.execute({
+      sql: `SELECT id FROM sesiones_entrenamiento
+            WHERE usuario_id = ?
+              AND COALESCE(dia_rutina, '') = COALESCE(?, '')
+              AND date(fecha) = date('now')
+            ORDER BY id DESC LIMIT 1`,
+      args: [usuario_id, dia]
+    });
+
+    if (dup.rows?.length) {
+      const id = Number(dup.rows[0].id);
+      const upd = await db.execute({
+        sql: `UPDATE sesiones_entrenamiento
+              SET duracion_seg = ?, volumen_kg = ?, series_completadas = ?, fecha = CURRENT_TIMESTAMP
+              WHERE id = ?`,
+        args: [duracion, volumen, series, id]
+      });
+      if (!upd.rowsAffected) {
+        return res.status(500).json({ error: "No se pudo actualizar la sesión" });
+      }
+      return res.json({ mensaje: "Ok", id, actualizado: true });
+    }
+
+    const result = await db.execute({
+      sql: `INSERT INTO sesiones_entrenamiento
+            (usuario_id, dia_rutina, duracion_seg, volumen_kg, series_completadas)
+            VALUES (?, ?, ?, ?, ?)`,
+      args: [usuario_id, dia, duracion, volumen, series]
+    });
+    res.json({ mensaje: "Ok", id: Number(result.lastInsertRowid), actualizado: false });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.delete("/api/fuerza/hoy/:usuario_id", async (req, res) => {
   const usuarioId = req.params.usuario_id;
   if (!(await assertAccesoUsuarioEdicion(db, req, res, usuarioId))) return;
@@ -1857,6 +1932,81 @@ async function eliminarUsuarioCompleto(db, userId) {
   const del = await db.execute({ sql: "DELETE FROM usuarios WHERE id = ?", args: [userId] });
   return (del.rowsAffected ?? 0) > 0;
 }
+
+/** Stats de duración de sesiones ENTRENAR — solo SUPERADMIN. */
+app.get("/api/admin/sesiones-stats", async (req, res) => {
+  if (!assertSuperAdmin(req, res)) return;
+
+  const dias = Math.min(Math.max(parseInt(req.query.dias, 10) || 30, 1), 365);
+
+  try {
+    const agg = await db.execute({
+      sql: `SELECT
+              COUNT(*) AS sesiones,
+              COUNT(DISTINCT usuario_id) AS usuarios_activos,
+              AVG(duracion_seg) AS duracion_promedio_seg,
+              AVG(volumen_kg) AS volumen_promedio_kg,
+              AVG(series_completadas) AS series_promedio
+            FROM sesiones_entrenamiento
+            WHERE fecha >= datetime('now', ?)`,
+      args: [`-${dias} days`]
+    });
+    const a = agg.rows?.[0] || {};
+
+    const duraciones = await db.execute({
+      sql: `SELECT duracion_seg FROM sesiones_entrenamiento
+            WHERE fecha >= datetime('now', ?)
+            ORDER BY duracion_seg ASC`,
+      args: [`-${dias} days`]
+    });
+    const listaDur = (duraciones.rows || [])
+      .map((r) => Number(r.duracion_seg) || 0)
+      .filter((n) => n > 0);
+
+    const percentil = (arr, p) => {
+      if (!arr.length) return 0;
+      const idx = Math.min(arr.length - 1, Math.max(0, Math.ceil(arr.length * p) - 1));
+      return arr[idx];
+    };
+
+    const recientes = await db.execute({
+      sql: `SELECT s.id, s.usuario_id, s.dia_rutina, s.duracion_seg, s.volumen_kg,
+                   s.series_completadas, s.fecha, u.nombre, u.email, u.rol
+            FROM sesiones_entrenamiento s
+            JOIN usuarios u ON u.id = s.usuario_id
+            WHERE s.fecha >= datetime('now', ?)
+            ORDER BY s.fecha DESC
+            LIMIT 40`,
+      args: [`-${dias} days`]
+    });
+
+    res.json({
+      ventana_dias: dias,
+      sesiones: Number(a.sesiones) || 0,
+      usuarios_activos: Number(a.usuarios_activos) || 0,
+      duracion_promedio_seg: Math.round(Number(a.duracion_promedio_seg) || 0),
+      duracion_mediana_seg: Math.round(percentil(listaDur, 0.5)),
+      duracion_p90_seg: Math.round(percentil(listaDur, 0.9)),
+      volumen_promedio_kg: Math.round(Number(a.volumen_promedio_kg) || 0),
+      series_promedio: Math.round((Number(a.series_promedio) || 0) * 10) / 10,
+      recientes: (recientes.rows || []).map((r) => ({
+        id: Number(r.id),
+        usuario_id: Number(r.usuario_id),
+        nombre: r.nombre,
+        email: r.email,
+        rol: r.rol,
+        dia_rutina: r.dia_rutina || null,
+        duracion_seg: Number(r.duracion_seg) || 0,
+        volumen_kg: Math.round(Number(r.volumen_kg) || 0),
+        series_completadas: Number(r.series_completadas) || 0,
+        fecha: r.fecha
+      }))
+    });
+  } catch (err) {
+    console.error("Error admin sesiones-stats:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
 
 app.get("/api/admin/usuarios", async (req, res) => {
   if (!assertSuperAdmin(req, res)) return;
