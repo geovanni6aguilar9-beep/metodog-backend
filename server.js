@@ -14,6 +14,8 @@ const {
   assertAccesoUsuarioEdicion,
   assertCoachSuscripcionActiva,
   assertCoachOAdmin,
+  assertBibliotecaPersonal,
+  resolverAccesoBibliotecaPersonal,
   assertSuperAdmin,
   assertComunidadSelf
 } = require("./auth");
@@ -92,7 +94,13 @@ const {
   crearFotoProgreso,
   borrarFotoProgreso
 } = require("./fotosProgreso");
-const { importarAlimentosCsv, previewImportacionCsv, PLANTILLA_CSV } = require("./importarAlimentos");
+const {
+  importarAlimentosCsv,
+  previewImportacionCsv,
+  PLANTILLA_CSV,
+  limpiarNombresInvalidosCoach,
+  esNombreAlimentoValido
+} = require("./importarAlimentos");
 const {
   generarRecetaComida,
   generarDietaDiaCompleta,
@@ -505,17 +513,18 @@ function validarStripeEnProduccion() {
 validarStripeEnProduccion();
 
 // 🚀 RUTAS GENERALES DE LA APP
+/** Catálogo MétodoG (global) + biblioteca personal si coach / Full Week libre. */
 app.get("/api/alimentos", async (req, res) => {
   try {
-    const user = req.user;
-    const esCoachOAdmin =
-      user && (user.rol === "COACH" || user.rol === "SUPERADMIN");
     let sql = "SELECT * FROM alimentos WHERE coach_id IS NULL";
     const args = [];
-    if (esCoachOAdmin) {
-      const coachId = parseInt(user.id, 10);
-      sql = "SELECT * FROM alimentos WHERE coach_id IS NULL OR coach_id = ?";
-      args.push(coachId);
+    if (req.user) {
+      const acceso = await resolverAccesoBibliotecaPersonal(db, req.user);
+      if (acceso.ok) {
+        await limpiarNombresInvalidosCoach(db, acceso.ownerId);
+        sql = "SELECT * FROM alimentos WHERE coach_id IS NULL OR coach_id = ?";
+        args.push(acceso.ownerId);
+      }
     }
     sql += " ORDER BY grupo, nombre ASC";
     const result = await db.execute({ sql, args });
@@ -524,7 +533,7 @@ app.get("/api/alimentos", async (req, res) => {
 });
 
 app.get("/api/alimentos/plantilla-csv", async (req, res) => {
-  if (!(await assertCoachOAdmin(db, req, res))) return;
+  if ((await assertBibliotecaPersonal(db, req, res)) == null) return;
   res.setHeader("Content-Type", "text/csv; charset=utf-8");
   res.setHeader(
     "Content-Disposition",
@@ -534,7 +543,7 @@ app.get("/api/alimentos/plantilla-csv", async (req, res) => {
 });
 
 app.post("/api/alimentos/preview-import-csv", async (req, res) => {
-  if (!(await assertCoachOAdmin(db, req, res))) return;
+  if ((await assertBibliotecaPersonal(db, req, res)) == null) return;
   const { csv, mapeo } = req.body || {};
   if (!csv || typeof csv !== "string") {
     return res.status(400).json({ error: "Envía el contenido del archivo en el campo «csv»." });
@@ -743,18 +752,20 @@ app.post("/api/planes/importar-pdf", uploadPdf.single("pdf"), async (req, res) =
 });
 
 app.post("/api/alimentos/importar-csv", async (req, res) => {
-  if (!(await assertCoachOAdmin(db, req, res))) return;
+  const ownerId = await assertBibliotecaPersonal(db, req, res);
+  if (ownerId == null) return;
   if (!(await assertCoachSuscripcionActiva(db, req, res))) return;
   const { csv, alcance, mapeo } = req.body || {};
+  if (alcance === "global") {
+    return res.status(403).json({
+      error: "La biblioteca MétodoG no se puede modificar. Importa a tu biblioteca personal."
+    });
+  }
   if (!csv || typeof csv !== "string") {
     return res.status(400).json({ error: "Envía el contenido del archivo en el campo «csv»." });
   }
-  const coachId =
-    req.user.rol === "SUPERADMIN" && alcance === "global"
-      ? null
-      : parseInt(req.user.id, 10);
   try {
-    const resultado = await importarAlimentosCsv(db, coachId, csv, mapeo);
+    const resultado = await importarAlimentosCsv(db, ownerId, csv, mapeo);
     if (!resultado.ok) {
       return res.status(400).json(resultado);
     }
@@ -762,6 +773,171 @@ app.post("/api/alimentos/importar-csv", async (req, res) => {
   } catch (err) {
     console.error("importar-csv:", err.message);
     res.status(500).json({ error: err.message || "No se pudo importar el archivo." });
+  }
+});
+
+function normalizarPayloadAlimento(body) {
+  const nombre = String(body?.nombre || "").trim();
+  if (nombre.length < 2) {
+    return { error: "El nombre debe tener al menos 2 caracteres." };
+  }
+  if (!esNombreAlimentoValido(nombre)) {
+    return { error: "Nombre de alimento inválido." };
+  }
+  return {
+    nombre,
+    grupo: String(body?.grupo || "Otros").trim() || "Otros",
+    grupo_equivalencia: String(body?.grupo_equivalencia || "sin_sustituto").trim() || "sin_sustituto",
+    porcion_base: parseFloat(body?.porcion_base) || 1,
+    unidad: String(body?.unidad || "g").trim() || "g",
+    calorias: parseFloat(body?.calorias) || 0,
+    proteinas: parseFloat(body?.proteinas) || 0,
+    carbohidratos: parseFloat(body?.carbohidratos) || 0,
+    grasas: parseFloat(body?.grasas) || 0,
+    sodio: parseFloat(body?.sodio) || 0
+  };
+}
+
+/** Alta en biblioteca personal (nunca global MétodoG). */
+app.post("/api/alimentos", async (req, res) => {
+  const ownerId = await assertBibliotecaPersonal(db, req, res);
+  if (ownerId == null) return;
+  if (!(await assertCoachSuscripcionActiva(db, req, res))) return;
+  const payload = normalizarPayloadAlimento(req.body);
+  if (payload.error) return res.status(400).json({ error: payload.error });
+  try {
+    const result = await db.execute({
+      sql: `INSERT INTO alimentos (
+        nombre, grupo, grupo_equivalencia, porcion_base, unidad,
+        calorias, proteinas, carbohidratos, grasas, sodio, coach_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      args: [
+        payload.nombre,
+        payload.grupo,
+        payload.grupo_equivalencia,
+        payload.porcion_base,
+        payload.unidad,
+        payload.calorias,
+        payload.proteinas,
+        payload.carbohidratos,
+        payload.grasas,
+        payload.sodio,
+        ownerId
+      ]
+    });
+    const newId = Number(result.lastInsertRowid);
+    if (!newId) {
+      return res.status(500).json({ error: "No se pudo crear el alimento." });
+    }
+    const created = await db.execute({
+      sql: "SELECT * FROM alimentos WHERE id = ? AND coach_id = ?",
+      args: [newId, ownerId]
+    });
+    if (!created.rows[0]) {
+      return res.status(500).json({ error: "Alimento creado pero no legible." });
+    }
+    res.status(201).json(created.rows[0]);
+  } catch (err) {
+    console.error("POST /api/alimentos:", err.message);
+    res.status(500).json({ error: err.message || "No se pudo crear." });
+  }
+});
+
+/** Editar solo ítems de la biblioteca personal del caller. Global = 403. */
+app.put("/api/alimentos/:id", async (req, res) => {
+  const ownerId = await assertBibliotecaPersonal(db, req, res);
+  if (ownerId == null) return;
+  if (!(await assertCoachSuscripcionActiva(db, req, res))) return;
+  const id = parseInt(req.params.id, 10);
+  if (!id || Number.isNaN(id)) {
+    return res.status(400).json({ error: "ID inválido." });
+  }
+  const payload = normalizarPayloadAlimento(req.body);
+  if (payload.error) return res.status(400).json({ error: payload.error });
+  try {
+    const cur = await db.execute({
+      sql: "SELECT id, coach_id FROM alimentos WHERE id = ?",
+      args: [id]
+    });
+    const row = cur.rows[0];
+    if (!row) return res.status(404).json({ error: "Alimento no encontrado." });
+    if (row.coach_id == null || row.coach_id === "") {
+      return res.status(403).json({
+        error: "La biblioteca MétodoG no se puede modificar."
+      });
+    }
+    if (Number(row.coach_id) !== Number(ownerId)) {
+      return res.status(403).json({ error: "Solo puedes editar tu biblioteca personal." });
+    }
+    const upd = await db.execute({
+      sql: `UPDATE alimentos SET
+        nombre = ?, grupo = ?, grupo_equivalencia = ?, porcion_base = ?, unidad = ?,
+        calorias = ?, proteinas = ?, carbohidratos = ?, grasas = ?, sodio = ?
+        WHERE id = ? AND coach_id = ?`,
+      args: [
+        payload.nombre,
+        payload.grupo,
+        payload.grupo_equivalencia,
+        payload.porcion_base,
+        payload.unidad,
+        payload.calorias,
+        payload.proteinas,
+        payload.carbohidratos,
+        payload.grasas,
+        payload.sodio,
+        id,
+        ownerId
+      ]
+    });
+    if (!upd.rowsAffected) {
+      return res.status(500).json({ error: "No se actualizó el alimento." });
+    }
+    const fresh = await db.execute({
+      sql: "SELECT * FROM alimentos WHERE id = ? AND coach_id = ?",
+      args: [id, ownerId]
+    });
+    res.json(fresh.rows[0]);
+  } catch (err) {
+    console.error("PUT /api/alimentos/:id:", err.message);
+    res.status(500).json({ error: err.message || "No se pudo guardar." });
+  }
+});
+
+/** Borrar solo ítems propios. Global = 403. */
+app.delete("/api/alimentos/:id", async (req, res) => {
+  const ownerId = await assertBibliotecaPersonal(db, req, res);
+  if (ownerId == null) return;
+  if (!(await assertCoachSuscripcionActiva(db, req, res))) return;
+  const id = parseInt(req.params.id, 10);
+  if (!id || Number.isNaN(id)) {
+    return res.status(400).json({ error: "ID inválido." });
+  }
+  try {
+    const cur = await db.execute({
+      sql: "SELECT id, coach_id FROM alimentos WHERE id = ?",
+      args: [id]
+    });
+    const row = cur.rows[0];
+    if (!row) return res.status(404).json({ error: "Alimento no encontrado." });
+    if (row.coach_id == null || row.coach_id === "") {
+      return res.status(403).json({
+        error: "La biblioteca MétodoG no se puede modificar."
+      });
+    }
+    if (Number(row.coach_id) !== Number(ownerId)) {
+      return res.status(403).json({ error: "Solo puedes borrar tu biblioteca personal." });
+    }
+    const del = await db.execute({
+      sql: "DELETE FROM alimentos WHERE id = ? AND coach_id = ?",
+      args: [id, ownerId]
+    });
+    if (!del.rowsAffected) {
+      return res.status(500).json({ error: "No se borró el alimento." });
+    }
+    res.json({ ok: true, id });
+  } catch (err) {
+    console.error("DELETE /api/alimentos/:id:", err.message);
+    res.status(500).json({ error: err.message || "No se pudo borrar." });
   }
 });
 

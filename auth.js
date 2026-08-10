@@ -168,6 +168,86 @@ async function assertCoachOAdmin(db, req, res) {
   return false;
 }
 
+/**
+ * Biblioteca personal (independiente de MétodoG):
+ * - COACH / SUPERADMIN → owner = su id
+ * - CLIENTE Full Week sin coach (carril A PRO) → owner = su id
+ * - Free / Carril B (con coach) → no
+ * La biblioteca global (coach_id IS NULL) nunca se escribe por API de usuario.
+ */
+async function resolverAccesoBibliotecaPersonal(db, user) {
+  if (!user) {
+    return { ok: false, status: 401, error: "Sesión requerida" };
+  }
+  const id = parseInt(user.id, 10);
+  if (!id || Number.isNaN(id)) {
+    return { ok: false, status: 403, error: "Sesión inválida" };
+  }
+
+  let rol = user.rol;
+  let coachId = null;
+  let paquete = 0;
+  try {
+    const r = await db.execute({
+      sql: "SELECT rol, coach_id, paquete_rutina_6_dias FROM usuarios WHERE id = ?",
+      args: [id]
+    });
+    const row = r.rows[0];
+    if (!row) {
+      return { ok: false, status: 403, error: "Usuario no encontrado" };
+    }
+    rol = row.rol || rol;
+    coachId =
+      row.coach_id != null && row.coach_id !== "" ? Number(row.coach_id) : null;
+    if (coachId === 0) coachId = null;
+    paquete = Number(row.paquete_rutina_6_dias) || 0;
+  } catch (_) {
+    if (rol === "COACH" || rol === "SUPERADMIN") {
+      return { ok: true, ownerId: id };
+    }
+    return { ok: false, status: 500, error: "No se pudo verificar acceso a biblioteca" };
+  }
+
+  if (rol === "COACH" || rol === "SUPERADMIN") {
+    return { ok: true, ownerId: id };
+  }
+
+  if (rol === "CLIENTE") {
+    if (coachId) {
+      return {
+        ok: false,
+        status: 403,
+        motivo: "carril_b",
+        error: "Con coach, la biblioteca personal la gestiona tu entrenador."
+      };
+    }
+    if (!paquete) {
+      return {
+        ok: false,
+        status: 403,
+        motivo: "sin_pro",
+        error: "Activa Full Week PRO para tu biblioteca personal."
+      };
+    }
+    return { ok: true, ownerId: id };
+  }
+
+  return { ok: false, status: 403, error: "Sin acceso a biblioteca personal" };
+}
+
+/** Escribe res 4xx si no hay acceso. Devuelve ownerId o null. */
+async function assertBibliotecaPersonal(db, req, res) {
+  const acceso = await resolverAccesoBibliotecaPersonal(db, req.user);
+  if (!acceso.ok) {
+    res.status(acceso.status || 403).json({
+      error: acceso.error || "Sin acceso",
+      motivo: acceso.motivo
+    });
+    return null;
+  }
+  return acceso.ownerId;
+}
+
 function assertSuperAdmin(req, res) {
   if (req.user.rol === "SUPERADMIN") return true;
   res.status(403).json({ error: "Solo SUPERADMIN puede usar esta función" });
@@ -193,6 +273,8 @@ module.exports = {
   assertAccesoUsuarioEdicion,
   assertCoachSuscripcionActiva,
   assertCoachOAdmin,
+  assertBibliotecaPersonal,
+  resolverAccesoBibliotecaPersonal,
   assertSuperAdmin,
   assertComunidadSelf,
   isPublicApiRoute

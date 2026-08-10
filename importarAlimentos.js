@@ -1,6 +1,7 @@
 /**
- * Importación CSV/Excel de biblioteca de alimentos por coach.
- * coachId numérico → solo biblioteca de ese coach; null → global (solo SUPERADMIN).
+ * Importación CSV/Excel de biblioteca personal.
+ * coachId numérico obligatorio → biblioteca del coach / Full Week (owner id).
+ * coachId null → rechazado (biblioteca MétodoG es solo lectura; solo seed).
  */
 
 const MAX_FILAS = 500;
@@ -590,12 +591,17 @@ async function enriquecerConBibliotecaGlobal(db, item) {
 }
 
 async function upsertAlimento(db, coachId, item) {
-  const coachClause = coachId == null ? "IS NULL" : "= ?";
-  const argsBuscar = coachId == null ? [item.nombre] : [coachId, item.nombre];
+  if (coachId == null) {
+    throw new Error("La biblioteca MétodoG es de solo lectura.");
+  }
+  const ownerId = parseInt(coachId, 10);
+  if (!ownerId || Number.isNaN(ownerId)) {
+    throw new Error("owner de biblioteca inválido.");
+  }
 
   const existente = await db.execute({
-    sql: `SELECT id FROM alimentos WHERE coach_id ${coachClause} AND LOWER(nombre) = LOWER(?)`,
-    args: argsBuscar
+    sql: `SELECT id FROM alimentos WHERE coach_id = ? AND LOWER(nombre) = LOWER(?)`,
+    args: [ownerId, item.nombre]
   });
 
   const campos = [
@@ -615,22 +621,18 @@ async function upsertAlimento(db, coachId, item) {
     await db.execute({
       sql: `UPDATE alimentos SET grupo = ?, grupo_equivalencia = ?, porcion_base = ?, unidad = ?,
             calorias = ?, proteinas = ?, carbohidratos = ?, grasas = ?, sodio = ?
-            WHERE id = ?`,
-      args: [...campos, id]
+            WHERE id = ? AND coach_id = ?`,
+      args: [...campos, id, ownerId]
     });
     return "actualizado";
   }
 
-  const argsInsert = coachId == null
-    ? [item.nombre, ...campos]
-    : [item.nombre, ...campos, coachId];
-
   await db.execute({
     sql: `INSERT INTO alimentos (
       nombre, grupo, grupo_equivalencia, porcion_base, unidad,
-      calorias, proteinas, carbohidratos, grasas, sodio${coachId != null ? ", coach_id" : ""}
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?${coachId != null ? ", ?" : ""})`,
-    args: argsInsert
+      calorias, proteinas, carbohidratos, grasas, sodio, coach_id
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    args: [item.nombre, ...campos, ownerId]
   });
   return "nuevo";
 }
@@ -652,6 +654,13 @@ async function limpiarNombresInvalidosCoach(db, coachId) {
 }
 
 async function importarAlimentosCsv(db, coachId, csvText, mapeoManual = null) {
+  if (coachId == null) {
+    return {
+      ok: false,
+      error: "La biblioteca MétodoG no se puede modificar. Importa a tu biblioteca personal."
+    };
+  }
+
   const parsed = parsearCsvTexto(csvText, mapeoManual);
   if (parsed.error && !parsed.filas) {
     return { ok: false, error: parsed.error, errores: parsed.errores || [] };
@@ -670,9 +679,7 @@ async function importarAlimentosCsv(db, coachId, csvText, mapeoManual = null) {
   const limpiados = await limpiarNombresInvalidosCoach(db, coachId);
 
   const alcanceMsg =
-    coachId == null
-      ? "Biblioteca global MétodoG actualizada."
-      : "Guardado en tu biblioteca personal (solo tú la ves al armar dietas).";
+    "Guardado en tu biblioteca personal (MétodoG no se toca).";
 
   const omitidas = parsed.omitidas || 0;
   const omitMsg = omitidas > 0
