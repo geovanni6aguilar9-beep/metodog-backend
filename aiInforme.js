@@ -142,4 +142,106 @@ NUNCA sugieras ejercicios nuevos fuera del plan. Texto para móvil.`;
   }
 }
 
-module.exports = { generarOpinionInformeMensual };
+function normalizarVeredictoMedidas(obj) {
+  if (!obj || typeof obj !== 'object') return null;
+  const titulo = String(obj.titulo || obj.titulo_corto || obj.hero || '').trim().slice(0, 48);
+  const resumen = String(obj.resumen || obj.opinion || '').trim().slice(0, 220);
+  const tonoRaw = String(obj.tono || 'ok').toLowerCase();
+  const tono = ['ok', 'warn', 'bad', 'neutral'].includes(tonoRaw) ? tonoRaw : 'ok';
+  const arr = (v) =>
+    (Array.isArray(v) ? v : [])
+      .map((s) => String(s).trim())
+      .filter(Boolean)
+      .slice(0, 2);
+  const lo_bueno = arr(obj.lo_bueno || obj.bueno);
+  const cuidado = arr(obj.cuidado || obj.alerta);
+  const que_hacer = arr(obj.que_hacer || obj.siguiente_paso || obj.acciones);
+  if (!titulo && !resumen) return null;
+  return {
+    titulo: titulo || 'Así va tu composición',
+    tono,
+    resumen: resumen || 'Revisa los números debajo.',
+    lo_bueno,
+    cuidado,
+    que_hacer
+  };
+}
+
+/**
+ * Veredicto de medidas antropométricas en lenguaje humano (Cuerpo → Medidas).
+ */
+async function generarVeredictoMedidasIa(payload) {
+  const apiKey = (process.env.OPENAI_API_KEY || '').trim();
+  if (!apiKey) return { ok: false, motivo: 'sin_api_key' };
+
+  const model = (process.env.OPENAI_MODEL || 'gpt-4o-mini').trim();
+  const { deltas, actual, dia1, anterior, reglas_base: reglasBase } = payload || {};
+
+  const system = `Eres el coach clínico de MétodoG (México). Explicas cambios de peso, % grasa y perímetros a gente normal.
+Responde SOLO JSON válido (sin markdown):
+{
+  "titulo": "máximo 6 palabras, humano, sin jerga (ej. Vas ganando músculo)",
+  "tono": "ok|warn|bad|neutral",
+  "resumen": "1 o 2 frases cortas (≤180 caracteres). Habla como a un amigo. Sin términos raros.",
+  "lo_bueno": ["máx 2 bullets; cada uno ≤70 caracteres"],
+  "cuidado": ["máx 2 bullets; cada uno ≤70 caracteres; vacío si no hay alerta"],
+  "que_hacer": ["máx 2 acciones concretas; cada una ≤80 caracteres"]
+}
+Reglas:
+- Usa SOLO los deltas y números del JSON de usuario. NO inventes.
+- Si sube peso Y sube cintura/grasa: NO digas "ganancia magra". Di algo honesto (ej. "Subiste, pero también la cintura").
+- Si baja grasa o cintura con peso estable/baja: celebra con claridad.
+- Español México, espartano, móvil. Cero emojis.`;
+
+  const user = JSON.stringify({
+    ancla: actual || null,
+    toma_anterior: anterior || null,
+    dia_1: dia1 || null,
+    cambios: deltas || {},
+    pistas_locales: reglasBase || []
+  });
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 22000);
+
+  try {
+    const res = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      signal: controller.signal,
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`
+      },
+      body: JSON.stringify({
+        model,
+        temperature: 0.4,
+        max_tokens: 360,
+        response_format: { type: 'json_object' },
+        messages: [
+          { role: 'system', content: system },
+          { role: 'user', content: user }
+        ]
+      })
+    });
+
+    if (!res.ok) {
+      const errText = await res.text().catch(() => '');
+      console.warn('[aiInforme] medidas OpenAI HTTP', res.status, errText.slice(0, 200));
+      return { ok: false, motivo: 'openai_error' };
+    }
+
+    const data = await res.json();
+    const content = data?.choices?.[0]?.message?.content;
+    const parsed = normalizarVeredictoMedidas(parseJsonSeguro(content));
+    if (!parsed) return { ok: false, motivo: 'parse_error' };
+
+    return { ok: true, ia: true, ...parsed };
+  } catch (err) {
+    console.warn('[aiInforme] medidas', err?.message || err);
+    return { ok: false, motivo: 'request_failed' };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+module.exports = { generarOpinionInformeMensual, generarVeredictoMedidasIa };

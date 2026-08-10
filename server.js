@@ -55,11 +55,15 @@ const {
 } = require("./concesionesAdmin");
 const { buildMeso2Payload, PROGRAMA_MESO2 } = require("./data/programa-meso2-geovanni");
 const { buildCorsOptions, isProduction } = require("./corsConfig");
-const { generarOpinionInformeMensual } = require("./aiInforme");
+const { generarOpinionInformeMensual, generarVeredictoMedidasIa } = require("./aiInforme");
 const {
   fingerprintGrupos,
   leerInformeCache,
-  guardarInformeCache
+  guardarInformeCache,
+  fingerprintMedidasVeredicto,
+  ensureTablaVeredictosMedidasIa,
+  leerVeredictoMedidasCache,
+  guardarVeredictoMedidasCache
 } = require("./informeIaCache");
 const { buildResumenRutina } = require("./resumenRutinaInforme");
 const { contextoMesInforme } = require("./informeMesContext");
@@ -454,6 +458,7 @@ async function inicializarBD() {
     await ensureTablaCuotaComboIa(db);
     await ensureTablaFotosProgreso(db);
     await ensureTablaPlantillasRutinaCoach(db);
+    await ensureTablaVeredictosMedidasIa(db);
 
     await seedAlimentosMetodog(db);
     console.log("✅ Base de datos conectada (suscripciones atleta/coach + tiers).");
@@ -2103,6 +2108,48 @@ app.post("/api/rendimiento/informe-ia", async (req, res) => {
   }
 });
 
+app.post("/api/medidas/veredicto-ia", async (req, res) => {
+  const {
+    usuario_id,
+    actual,
+    dia1,
+    anterior,
+    deltas,
+    reglas_base
+  } = req.body || {};
+  if (!(await assertAccesoUsuarioEdicion(db, req, res, usuario_id))) return;
+
+  const payload = {
+    actual: actual || null,
+    dia1: dia1 || null,
+    anterior: anterior || null,
+    deltas: deltas || {},
+    reglas_base: reglas_base || []
+  };
+  const fp = fingerprintMedidasVeredicto(payload);
+  const regenerar = req.query.regenerar === "1" || req.query.regenerar === 1;
+
+  try {
+    await ensureTablaVeredictosMedidasIa(db);
+    if (!regenerar) {
+      const cache = await leerVeredictoMedidasCache(db, usuario_id, fp);
+      if (cache) {
+        return res.json({ ok: true, ia: true, cached: true, ...cache });
+      }
+    }
+
+    const resultado = await generarVeredictoMedidasIa(payload);
+    if (!resultado.ok) {
+      return res.json({ ok: false, motivo: resultado.motivo || "sin_ia" });
+    }
+
+    await guardarVeredictoMedidasCache(db, usuario_id, fp, resultado);
+    return res.json({ ...resultado, cached: false });
+  } catch (err) {
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
 app.post("/api/pagos/crear-checkout-atleta", async (req, res) => {
   return crearCheckoutAtleta(req, res, db);
 });
@@ -2162,6 +2209,7 @@ async function eliminarUsuarioCompleto(db, userId) {
     ["suscripciones_coach", "usuario_id"],
     ["suscripciones_atleta", "usuario_id"],
     ["informes_anatomia_ia", "usuario_id"],
+    ["veredictos_medidas_ia", "usuario_id"],
     ["notificaciones", "usuario_id"]
   ];
   for (const [tabla, col] of tablasUsuario) {
