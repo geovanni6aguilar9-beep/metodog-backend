@@ -95,6 +95,14 @@ const {
   borrarFotoProgreso
 } = require("./fotosProgreso");
 const {
+  ensureTablaPlantillasRutinaCoach,
+  listarPlantillasRutinaCoach,
+  obtenerPlantillaRutinaCoach,
+  crearPlantillaRutinaCoach,
+  renombrarPlantillaRutinaCoach,
+  borrarPlantillaRutinaCoach
+} = require("./plantillasRutinaCoach");
+const {
   importarAlimentosCsv,
   previewImportacionCsv,
   PLANTILLA_CSV,
@@ -445,6 +453,7 @@ async function inicializarBD() {
 
     await ensureTablaCuotaComboIa(db);
     await ensureTablaFotosProgreso(db);
+    await ensureTablaPlantillasRutinaCoach(db);
 
     await seedAlimentosMetodog(db);
     console.log("✅ Base de datos conectada (suscripciones atleta/coach + tiers).");
@@ -1469,6 +1478,80 @@ app.put("/api/coach/notas-ejercicio", async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+/** Plantillas de rutina del coach (semana + notas) — solo COACH/SUPERADMIN. */
+app.get("/api/coach/plantillas-rutina", async (req, res) => {
+  if (!(await assertCoachOAdmin(db, req, res))) return;
+  try {
+    const plantillas = await listarPlantillasRutinaCoach(db, parseInt(req.user.id, 10));
+    res.json({ plantillas });
+  } catch (err) {
+    console.error("GET plantillas-rutina:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/api/coach/plantillas-rutina/:id", async (req, res) => {
+  if (!(await assertCoachOAdmin(db, req, res))) return;
+  const id = parseInt(req.params.id, 10);
+  if (!id) return res.status(400).json({ error: "ID inválido." });
+  try {
+    const plantilla = await obtenerPlantillaRutinaCoach(db, parseInt(req.user.id, 10), id);
+    if (!plantilla) return res.status(404).json({ error: "Plantilla no encontrada." });
+    res.json({ plantilla });
+  } catch (err) {
+    console.error("GET plantillas-rutina/:id:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/coach/plantillas-rutina", async (req, res) => {
+  if (!(await assertCoachOAdmin(db, req, res))) return;
+  if (!(await assertCoachSuscripcionActiva(db, req, res))) return;
+  try {
+    const result = await crearPlantillaRutinaCoach(db, parseInt(req.user.id, 10), req.body || {});
+    if (!result.ok) return res.status(result.status || 400).json({ error: result.error });
+    res.status(201).json({ ok: true, plantilla: result.plantilla });
+  } catch (err) {
+    console.error("POST plantillas-rutina:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put("/api/coach/plantillas-rutina/:id", async (req, res) => {
+  if (!(await assertCoachOAdmin(db, req, res))) return;
+  if (!(await assertCoachSuscripcionActiva(db, req, res))) return;
+  const id = parseInt(req.params.id, 10);
+  if (!id) return res.status(400).json({ error: "ID inválido." });
+  try {
+    const result = await renombrarPlantillaRutinaCoach(
+      db,
+      parseInt(req.user.id, 10),
+      id,
+      req.body?.nombre
+    );
+    if (!result.ok) return res.status(result.status || 400).json({ error: result.error });
+    res.json({ ok: true, plantilla: result.plantilla });
+  } catch (err) {
+    console.error("PUT plantillas-rutina/:id:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete("/api/coach/plantillas-rutina/:id", async (req, res) => {
+  if (!(await assertCoachOAdmin(db, req, res))) return;
+  if (!(await assertCoachSuscripcionActiva(db, req, res))) return;
+  const id = parseInt(req.params.id, 10);
+  if (!id) return res.status(400).json({ error: "ID inválido." });
+  try {
+    const result = await borrarPlantillaRutinaCoach(db, parseInt(req.user.id, 10), id);
+    if (!result.ok) return res.status(result.status || 400).json({ error: result.error });
+    res.json({ ok: true, id: result.id });
+  } catch (err) {
+    console.error("DELETE plantillas-rutina/:id:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.post("/api/dietas/guardar", async (req, res) => {
   const { usuario_id, datos_dieta, macros_totales, notas_dieta } = req.body;
   if (!(await assertAccesoUsuarioEdicion(db, req, res, usuario_id))) return;
@@ -2099,6 +2182,10 @@ async function eliminarUsuarioCompleto(db, userId) {
   });
   await db.execute({
     sql: "DELETE FROM notas_ejercicio_coach WHERE coach_id = ?",
+    args: [userId]
+  });
+  await db.execute({
+    sql: "DELETE FROM plantillas_rutina_coach WHERE coach_id = ?",
     args: [userId]
   });
   await db.execute({
