@@ -157,6 +157,34 @@ if (isProduction()) {
   }
 }
 
+/** Emails fundador → rol SUPERADMIN (registro + auto-promoción en login). */
+const SUPERADMIN_EMAILS = new Set([
+  "geovanni6aguilar9@gmail.com",
+  "aguilar6geovanni9@gmail.com"
+]);
+
+function esEmailSuperAdmin(email) {
+  return SUPERADMIN_EMAILS.has(String(email || "").toLowerCase().trim());
+}
+
+/**
+ * Si el correo está en allowlist y aún no es SUPERADMIN, lo promociona en Turso.
+ * @returns {Promise<object>} fila usuario actualizada
+ */
+async function asegurarRolSuperAdminPorEmail(dbConn, userRow) {
+  if (!userRow || !esEmailSuperAdmin(userRow.email)) return userRow;
+  if (userRow.rol === "SUPERADMIN") return userRow;
+  const codigo =
+    userRow.codigo_invitacion && String(userRow.codigo_invitacion).trim()
+      ? userRow.codigo_invitacion
+      : Math.random().toString(36).substring(2, 8).toUpperCase();
+  await dbConn.execute({
+    sql: "UPDATE usuarios SET rol = 'SUPERADMIN', codigo_invitacion = ?, coach_id = NULL WHERE id = ?",
+    args: [codigo, userRow.id]
+  });
+  return { ...userRow, rol: "SUPERADMIN", codigo_invitacion: codigo, coach_id: null };
+}
+
 const app = express();
 
 app.post(
@@ -3234,7 +3262,7 @@ app.post("/api/registro", async (req, res) => {
   const { nombre, email, password, codigoIngresado } = req.body;
   const hash = bcrypt.hashSync(password, 10);
   const emailLimpio = email.toLowerCase().trim();
-  const rol = (emailLimpio === 'geovanni6aguilar9@gmail.com') ? 'SUPERADMIN' : 'CLIENTE';
+  const rol = esEmailSuperAdmin(emailLimpio) ? 'SUPERADMIN' : 'CLIENTE';
   const query = `INSERT INTO usuarios (nombre, email, password, rol, codigo_invitacion, coach_id) VALUES (?, ?, ?, ?, ?, ?)`;
   
   try {
@@ -3285,8 +3313,9 @@ app.post("/api/login", async (req, res) => {
   try {
     const userRes = await db.execute({ sql: `SELECT * FROM usuarios WHERE email = ?`, args: [email.toLowerCase().trim()] });
     if (userRes.rows.length === 0) return res.status(401).json({ error: "Correo o contraseña incorrectos" });
-    const user = userRes.rows[0];
+    let user = userRes.rows[0];
     if (!bcrypt.compareSync(password, user.password)) return res.status(401).json({ error: "Correo o contraseña incorrectos" });
+    user = await asegurarRolSuperAdminPorEmail(db, user);
     let usuario = sanitizeUsuario(user);
     usuario = await enrichUsuarioConSuscripcion(db, usuario);
     usuario = await enrichUsuarioVinculo(db, usuario);
@@ -3302,7 +3331,9 @@ app.get("/api/auth/me", async (req, res) => {
   try {
     const userRes = await db.execute({ sql: "SELECT * FROM usuarios WHERE id = ?", args: [req.user.id] });
     if (userRes.rows.length === 0) return res.status(404).json({ error: "Usuario no encontrado" });
-    let usuario = sanitizeUsuario(userRes.rows[0]);
+    let row = userRes.rows[0];
+    row = await asegurarRolSuperAdminPorEmail(db, row);
+    let usuario = sanitizeUsuario(row);
     usuario = await enrichUsuarioConSuscripcion(db, usuario);
     usuario = await enrichUsuarioVinculo(db, usuario);
     const payload = { usuario };
