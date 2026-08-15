@@ -446,6 +446,21 @@ async function inicializarBD() {
       `CREATE INDEX IF NOT EXISTS idx_sesiones_ent_user ON sesiones_entrenamiento(usuario_id, fecha)`
     );
 
+    /** 1 fila por usuario/día = “abrió la app” (login o ping con sesión). */
+    await db.execute(`CREATE TABLE IF NOT EXISTS accesos_app (
+      usuario_id INTEGER NOT NULL,
+      dia TEXT NOT NULL,
+      fuente TEXT NOT NULL DEFAULT 'ping',
+      primera_vez DATETIME DEFAULT CURRENT_TIMESTAMP,
+      ultima_vez DATETIME DEFAULT CURRENT_TIMESTAMP,
+      hits INTEGER NOT NULL DEFAULT 1,
+      PRIMARY KEY (usuario_id, dia),
+      FOREIGN KEY(usuario_id) REFERENCES usuarios(id)
+    )`);
+    await db.execute(
+      `CREATE INDEX IF NOT EXISTS idx_accesos_app_dia ON accesos_app(dia)`
+    );
+
     await db.execute(`CREATE TABLE IF NOT EXISTS notas_ejercicio_coach (
       coach_id INTEGER NOT NULL,
       nombre_ejercicio TEXT NOT NULL,
@@ -2232,6 +2247,7 @@ async function eliminarUsuarioCompleto(db, userId) {
     ["mediciones", "usuario_id"],
     ["historial_fuerza", "usuario_id"],
     ["sesiones_entrenamiento", "usuario_id"],
+    ["accesos_app", "usuario_id"],
     ["perfiles_clientes", "usuario_id"],
     ["perfiles_coach_publicos", "usuario_id"],
     ["suscripciones_coach", "usuario_id"],
@@ -2272,6 +2288,115 @@ async function eliminarUsuarioCompleto(db, userId) {
   const del = await db.execute({ sql: "DELETE FROM usuarios WHERE id = ?", args: [userId] });
   return (del.rowsAffected ?? 0) > 0;
 }
+
+/** Registra acceso diario (login o ping). Auth requerida. */
+async function upsertAccesoApp(dbConn, usuarioId, fuenteRaw) {
+  const uid = parseInt(usuarioId, 10);
+  if (!Number.isFinite(uid) || uid <= 0) return { ok: false };
+  const fuente =
+    fuenteRaw === "login" || fuenteRaw === "registro" || fuenteRaw === "ping"
+      ? fuenteRaw
+      : "ping";
+  const diaRes = await dbConn.execute({
+    sql: `SELECT date('now') AS dia`,
+    args: []
+  });
+  const dia = String(diaRes.rows?.[0]?.dia || "").slice(0, 10);
+  if (!dia) return { ok: false };
+
+  const existing = await dbConn.execute({
+    sql: `SELECT hits FROM accesos_app WHERE usuario_id = ? AND dia = ?`,
+    args: [uid, dia]
+  });
+  if (existing.rows?.length) {
+    await dbConn.execute({
+      sql: `UPDATE accesos_app
+            SET ultima_vez = CURRENT_TIMESTAMP,
+                hits = hits + 1,
+                fuente = CASE WHEN fuente = 'ping' AND ? IN ('login','registro') THEN ? ELSE fuente END
+            WHERE usuario_id = ? AND dia = ?`,
+      args: [fuente, fuente, uid, dia]
+    });
+    return { ok: true, dia, nuevo: false };
+  }
+  await dbConn.execute({
+    sql: `INSERT INTO accesos_app (usuario_id, dia, fuente, primera_vez, ultima_vez, hits)
+          VALUES (?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 1)`,
+    args: [uid, dia, fuente]
+  });
+  return { ok: true, dia, nuevo: true };
+}
+
+app.post("/api/accesos/ping", async (req, res) => {
+  try {
+    const fuente = req.body?.fuente || "ping";
+    const out = await upsertAccesoApp(db, req.user.id, fuente);
+    if (!out.ok) return res.status(400).json({ error: "No se pudo registrar acceso" });
+    res.json({ ok: true, dia: out.dia, nuevo: !!out.nuevo });
+  } catch (err) {
+    console.error("accesos/ping:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/** Quién abrió la app (DAU) — solo SUPERADMIN. */
+app.get("/api/admin/accesos-stats", async (req, res) => {
+  if (!assertSuperAdmin(req, res)) return;
+
+  const dias = Math.min(Math.max(parseInt(req.query.dias, 10) || 7, 1), 365);
+
+  try {
+    const agg = await db.execute({
+      sql: `SELECT
+              COUNT(*) AS dias_usuario,
+              COUNT(DISTINCT usuario_id) AS usuarios_unicos,
+              SUM(hits) AS hits_totales
+            FROM accesos_app
+            WHERE dia >= date('now', ?)`,
+      args: [`-${dias - 1} days`]
+    });
+    const a = agg.rows?.[0] || {};
+
+    const hoy = await db.execute({
+      sql: `SELECT COUNT(DISTINCT usuario_id) AS usuarios_hoy
+            FROM accesos_app WHERE dia = date('now')`,
+      args: []
+    });
+
+    const recientes = await db.execute({
+      sql: `SELECT a.usuario_id, a.dia, a.fuente, a.primera_vez, a.ultima_vez, a.hits,
+                   u.nombre, u.email, u.rol
+            FROM accesos_app a
+            JOIN usuarios u ON u.id = a.usuario_id
+            WHERE a.dia >= date('now', ?)
+            ORDER BY a.ultima_vez DESC
+            LIMIT 80`,
+      args: [`-${dias - 1} days`]
+    });
+
+    res.json({
+      ventana_dias: dias,
+      usuarios_unicos: Number(a.usuarios_unicos) || 0,
+      usuarios_hoy: Number(hoy.rows?.[0]?.usuarios_hoy) || 0,
+      dias_usuario: Number(a.dias_usuario) || 0,
+      hits_totales: Number(a.hits_totales) || 0,
+      recientes: (recientes.rows || []).map((r) => ({
+        usuario_id: Number(r.usuario_id),
+        nombre: r.nombre,
+        email: r.email,
+        rol: r.rol,
+        dia: r.dia,
+        fuente: r.fuente,
+        primera_vez: r.primera_vez,
+        ultima_vez: r.ultima_vez,
+        hits: Number(r.hits) || 0
+      }))
+    });
+  } catch (err) {
+    console.error("Error admin accesos-stats:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
 
 /** Stats de duración de sesiones ENTRENAR — solo SUPERADMIN. */
 app.get("/api/admin/sesiones-stats", async (req, res) => {
@@ -3320,6 +3445,11 @@ app.post("/api/login", async (req, res) => {
     usuario = await enrichUsuarioConSuscripcion(db, usuario);
     usuario = await enrichUsuarioVinculo(db, usuario);
     const token = signToken(usuario);
+    try {
+      await upsertAccesoApp(db, usuario.id, "login");
+    } catch (e) {
+      console.warn("login acceso:", e.message);
+    }
     res.json({ usuario, token });
   } catch (err) {
     console.error("login:", err.message);
