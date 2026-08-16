@@ -2646,6 +2646,50 @@ app.delete("/api/usuarios/me", async (req, res) => {
   }
 });
 
+/** Cambio de contraseña con sesión activa (Ajustes → Cuenta). */
+app.post("/api/usuarios/me/password", async (req, res) => {
+  const userId = parseInt(req.user.id, 10);
+  if (!userId || Number.isNaN(userId)) return res.status(400).json({ error: "Usuario inválido" });
+
+  const passwordActual = String(req.body?.passwordActual || "");
+  const nuevaPassword = String(req.body?.nuevaPassword || "");
+  if (!passwordActual || !nuevaPassword) {
+    return res.status(400).json({ error: "Contraseña actual y nueva son obligatorias" });
+  }
+  if (nuevaPassword.length < 4) {
+    return res.status(400).json({ error: "La nueva contraseña es demasiado corta" });
+  }
+  if (passwordActual === nuevaPassword) {
+    return res.status(400).json({ error: "La nueva contraseña debe ser distinta" });
+  }
+
+  try {
+    const row = await db.execute({
+      sql: "SELECT id, password FROM usuarios WHERE id = ?",
+      args: [userId]
+    });
+    if (row.rows.length === 0) return res.status(404).json({ error: "Usuario no encontrado" });
+
+    if (!bcrypt.compareSync(passwordActual, row.rows[0].password)) {
+      /* 400 (no 401): 401 en apiClient cierra sesión */
+      return res.status(400).json({ error: "Contraseña actual incorrecta" });
+    }
+
+    const hash = bcrypt.hashSync(nuevaPassword, 10);
+    const result = await db.execute({
+      sql: "UPDATE usuarios SET password = ? WHERE id = ?",
+      args: [hash, userId]
+    });
+    if ((result.rowsAffected ?? 0) === 0) {
+      return res.status(500).json({ error: "No se pudo actualizar la contraseña" });
+    }
+    res.json({ mensaje: "Contraseña actualizada" });
+  } catch (err) {
+    console.error("Error cambiar password sesión:", err.message);
+    res.status(500).json({ error: "No se pudo actualizar la contraseña" });
+  }
+});
+
 app.put("/api/usuarios/paquete-6-dias", async (req, res) => {
   if (isProduction() && req.user.rol !== "SUPERADMIN") {
     return res.status(403).json({
