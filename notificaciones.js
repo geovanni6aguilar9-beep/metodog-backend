@@ -115,8 +115,12 @@ async function enrichUsuarioVinculo(db, usuario) {
   return usuario;
 }
 
-/** Coach (o superadmin) guardó plan de un alumno → notificación in-app al cliente. */
-async function notificarClientePlanActualizado(db, req, clienteId, tipo) {
+/** Coach (o superadmin) guardó plan de un alumno → notificación in-app al cliente.
+ *  @param {{ silencioso?: boolean }} [opts] — autosave: no notifica. Siempre dedupe si ya hay una no leída del mismo tipo.
+ */
+async function notificarClientePlanActualizado(db, req, clienteId, tipo, opts = {}) {
+  if (opts.silencioso) return;
+
   const targetId = parseInt(clienteId, 10);
   const actorId = parseInt(req.user?.id, 10);
   if (!targetId || targetId === actorId) return;
@@ -130,6 +134,15 @@ async function notificarClientePlanActualizado(db, req, clienteId, tipo) {
   const cliente = clienteRes.rows[0];
 
   if (req.user.rol === "COACH" && Number(cliente.coach_id) !== actorId) return;
+
+  /** Ya hay aviso no leído del mismo tipo → no spamear (autosaves / varios Guardar). */
+  const unread = await db.execute({
+    sql: `SELECT id FROM notificaciones
+          WHERE usuario_id = ? AND tipo = ? AND leida = 0
+          LIMIT 1`,
+    args: [targetId, tipo]
+  });
+  if (unread.rows.length > 0) return;
 
   const coachRes = await db.execute({
     sql: "SELECT nombre FROM usuarios WHERE id = ?",

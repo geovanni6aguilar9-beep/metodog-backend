@@ -1601,7 +1601,7 @@ app.delete("/api/coach/plantillas-rutina/:id", async (req, res) => {
 });
 
 app.post("/api/dietas/guardar", async (req, res) => {
-  const { usuario_id, datos_dieta, macros_totales, notas_dieta } = req.body;
+  const { usuario_id, datos_dieta, macros_totales, notas_dieta, notificar } = req.body;
   if (!(await assertAccesoUsuarioEdicion(db, req, res, usuario_id))) return;
 
   // Blindaje A: CLIENTE con coach no puede reescribir su dieta por este endpoint.
@@ -1636,7 +1636,9 @@ app.post("/api/dietas/guardar", async (req, res) => {
       sql: `INSERT INTO dietas (usuario_id, datos_dieta, macros_totales, notas_dieta) VALUES (?, ?, ?, ?) ON CONFLICT(usuario_id) DO UPDATE SET datos_dieta = excluded.datos_dieta, macros_totales = excluded.macros_totales, notas_dieta = excluded.notas_dieta`,
       args: [usuario_id, JSON.stringify(datos_dieta), JSON.stringify(macros_totales), notas_dieta ?? ""]
     });
-    await notificarClientePlanActualizado(db, req, usuario_id, "plan_dieta");
+    await notificarClientePlanActualizado(db, req, usuario_id, "plan_dieta", {
+      silencioso: notificar === false
+    });
     res.json({ mensaje: "Dieta asignada" });
   } catch (err) {
     console.error("dietas/guardar:", err.message);
@@ -1811,14 +1813,16 @@ app.get("/api/dietas/:usuario_id", async (req, res) => {
 const generarCodigo = () => Math.random().toString(36).substring(2, 8).toUpperCase();
 
 app.post("/api/rutinas/guardar", async (req, res) => {
-  const { usuario_id, datos_rutina, notas_generales } = req.body;
+  const { usuario_id, datos_rutina, notas_generales, notificar } = req.body;
   if (!(await assertAccesoUsuarioEdicion(db, req, res, usuario_id))) return;
   try {
     await db.execute({
       sql: `INSERT INTO rutinas (usuario_id, datos_rutina, notas_generales) VALUES (?, ?, ?) ON CONFLICT(usuario_id) DO UPDATE SET datos_rutina = excluded.datos_rutina, notas_generales = excluded.notas_generales`,
       args: [usuario_id, JSON.stringify(datos_rutina), JSON.stringify(notas_generales)]
     });
-    await notificarClientePlanActualizado(db, req, usuario_id, "plan_rutina");
+    await notificarClientePlanActualizado(db, req, usuario_id, "plan_rutina", {
+      silencioso: notificar === false
+    });
     res.json({ mensaje: "Ok" });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
