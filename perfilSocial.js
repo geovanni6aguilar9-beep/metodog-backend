@@ -8,6 +8,7 @@ const { crearNotificacion } = require("./notificaciones");
 const { deduplicarFilasHistorialFuerza } = require("./fuerzaHistorial");
 
 const MAX_FOTO_CHARS = 520_000;
+const MAX_VITRINA = 6;
 const MODOS = new Set(["cerrado", "codigo", "alias"]);
 const ALIAS_RE = /^[a-z0-9_]{3,20}$/;
 
@@ -55,6 +56,24 @@ async function ensureTablasPerfilSocial(db) {
     FOREIGN KEY(blocker_id) REFERENCES usuarios(id),
     FOREIGN KEY(blocked_id) REFERENCES usuarios(id)
   )`);
+
+  try {
+    await db.execute(
+      "ALTER TABLE perfiles_sociales ADD COLUMN mostrar_vitrina INTEGER DEFAULT 0"
+    );
+  } catch (_) { /* ya existe */ }
+
+  await db.execute(`CREATE TABLE IF NOT EXISTS social_vitrina (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    usuario_id INTEGER NOT NULL,
+    imagen TEXT NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(usuario_id) REFERENCES usuarios(id)
+  )`);
+  await db.execute(
+    `CREATE INDEX IF NOT EXISTS idx_social_vitrina_user
+     ON social_vitrina(usuario_id, id DESC)`
+  );
 }
 
 function toNum(v) {
@@ -154,7 +173,7 @@ async function generarCodigoUnico(db) {
 
 async function asegurarPerfil(db, userId, nombre) {
   const existing = await db.execute({
-    sql: `SELECT usuario_id, alias, codigo, foto, modo_entrada, mostrar_foto, mostrar_prs
+    sql: `SELECT usuario_id, alias, codigo, foto, modo_entrada, mostrar_foto, mostrar_prs, mostrar_vitrina
           FROM perfiles_sociales WHERE usuario_id = ?`,
     args: [userId]
   });
@@ -164,12 +183,12 @@ async function asegurarPerfil(db, userId, nombre) {
   const codigo = await generarCodigoUnico(db);
   await db.execute({
     sql: `INSERT INTO perfiles_sociales
-          (usuario_id, alias, codigo, modo_entrada, mostrar_foto, mostrar_prs, updated_at)
-          VALUES (?, ?, ?, 'cerrado', 1, 1, datetime('now'))`,
+          (usuario_id, alias, codigo, modo_entrada, mostrar_foto, mostrar_prs, mostrar_vitrina, updated_at)
+          VALUES (?, ?, ?, 'cerrado', 1, 1, 0, datetime('now'))`,
     args: [userId, alias, codigo]
   });
   const fresh = await db.execute({
-    sql: `SELECT usuario_id, alias, codigo, foto, modo_entrada, mostrar_foto, mostrar_prs
+    sql: `SELECT usuario_id, alias, codigo, foto, modo_entrada, mostrar_foto, mostrar_prs, mostrar_vitrina
           FROM perfiles_sociales WHERE usuario_id = ?`,
     args: [userId]
   });
@@ -196,6 +215,19 @@ async function amistadAceptada(db, a, b) {
     args: [a, b, b, a]
   });
   return !!r.rows?.[0];
+}
+
+async function listarVitrina(db, userId) {
+  const r = await db.execute({
+    sql: `SELECT id, imagen, created_at FROM social_vitrina
+          WHERE usuario_id = ? ORDER BY id DESC LIMIT ?`,
+    args: [userId, MAX_VITRINA]
+  });
+  return (r.rows || []).map((row) => ({
+    id: toNum(row.id),
+    imagen: row.imagen,
+    created_at: row.created_at
+  }));
 }
 
 async function resumenFuerzaPublicable(db, userId) {
@@ -238,7 +270,7 @@ async function resumenFuerzaPublicable(db, userId) {
   };
 }
 
-function filaAPerfilPropio(row, { menor, resumen }) {
+function filaAPerfilPropio(row, { menor, resumen, vitrina }) {
   return {
     usuario_id: toNum(row.usuario_id),
     alias: row.alias,
@@ -247,9 +279,11 @@ function filaAPerfilPropio(row, { menor, resumen }) {
     modo_entrada: MODOS.has(row.modo_entrada) ? row.modo_entrada : "cerrado",
     mostrar_foto: Number(row.mostrar_foto) === 1,
     mostrar_prs: Number(row.mostrar_prs) === 1,
+    mostrar_vitrina: Number(row.mostrar_vitrina) === 1,
     menor: !!menor,
     social_activa: !menor,
-    resumen: resumen || { sesiones: 0, series: 0, mejores: [] }
+    resumen: resumen || { sesiones: 0, series: 0, mejores: [] },
+    vitrina: vitrina || []
   };
 }
 
@@ -260,7 +294,8 @@ async function obtenerYo(db, user, nombre) {
   const menor = await esMenorOSinEdad(db, user.id);
   const row = await asegurarPerfil(db, user.id, nombre || user.nombre);
   const resumen = menor ? { sesiones: 0, series: 0, mejores: [] } : await resumenFuerzaPublicable(db, user.id);
-  return { ok: true, perfil: filaAPerfilPropio(row, { menor, resumen }) };
+  const vitrina = menor ? [] : await listarVitrina(db, user.id);
+  return { ok: true, perfil: filaAPerfilPropio(row, { menor, resumen, vitrina }) };
 }
 
 async function guardarYo(db, user, body) {
@@ -303,6 +338,10 @@ async function guardarYo(db, user, body) {
   if (body.mostrar_prs != null) {
     patch.push("mostrar_prs = ?");
     args.push(body.mostrar_prs ? 1 : 0);
+  }
+  if (body.mostrar_vitrina != null) {
+    patch.push("mostrar_vitrina = ?");
+    args.push(body.mostrar_vitrina ? 1 : 0);
   }
 
   if (!patch.length) {
@@ -349,6 +388,49 @@ async function borrarFoto(db, user) {
     sql: `UPDATE perfiles_sociales SET foto = NULL, updated_at = datetime('now') WHERE usuario_id = ?`,
     args: [user.id]
   });
+  return obtenerYo(db, user, user.nombre);
+}
+
+async function agregarVitrina(db, user, imagen) {
+  if (!(await rolEsCliente(db, user.id))) {
+    return { ok: false, status: 403, error: "El perfil social es para atletas." };
+  }
+  if (await esMenorOSinEdad(db, user.id)) {
+    return { ok: false, status: 403, error: "El perfil social está cerrado hasta los 18 años." };
+  }
+  const v = validarFoto(imagen);
+  if (!v.ok) return { ok: false, status: 400, error: v.error };
+  await asegurarPerfil(db, user.id, user.nombre);
+  const cnt = await db.execute({
+    sql: "SELECT COUNT(*) AS n FROM social_vitrina WHERE usuario_id = ?",
+    args: [user.id]
+  });
+  if (Number(cnt.rows?.[0]?.n || 0) >= MAX_VITRINA) {
+    return { ok: false, status: 400, error: `Máximo ${MAX_VITRINA} fotos en la vitrina.` };
+  }
+  const ins = await db.execute({
+    sql: "INSERT INTO social_vitrina (usuario_id, imagen) VALUES (?, ?)",
+    args: [user.id, v.imagen]
+  });
+  if (!(ins.rowsAffected > 0)) {
+    return { ok: false, status: 500, error: "No se pudo subir." };
+  }
+  return obtenerYo(db, user, user.nombre);
+}
+
+async function borrarVitrina(db, user, fotoId) {
+  const id = toNum(fotoId);
+  if (!id) return { ok: false, status: 400, error: "Foto inválida." };
+  if (!(await rolEsCliente(db, user.id))) {
+    return { ok: false, status: 403, error: "El perfil social es para atletas." };
+  }
+  const del = await db.execute({
+    sql: "DELETE FROM social_vitrina WHERE id = ? AND usuario_id = ?",
+    args: [id, user.id]
+  });
+  if (!(del.rowsAffected > 0)) {
+    return { ok: false, status: 404, error: "No se encontró esa foto." };
+  }
   return obtenerYo(db, user, user.nombre);
 }
 
@@ -635,7 +717,7 @@ async function tarjetaPublica(db, viewer, targetId) {
   }
 
   const r = await db.execute({
-    sql: `SELECT usuario_id, alias, foto, mostrar_foto, mostrar_prs
+    sql: `SELECT usuario_id, alias, foto, mostrar_foto, mostrar_prs, mostrar_vitrina
           FROM perfiles_sociales WHERE usuario_id = ?`,
     args: [tid]
   });
@@ -645,9 +727,11 @@ async function tarjetaPublica(db, viewer, targetId) {
   const propio = tid === viewer.id;
   const verFoto = propio || Number(row.mostrar_foto) === 1;
   const verPrs = propio || Number(row.mostrar_prs) === 1;
+  const verVitrina = propio || Number(row.mostrar_vitrina) === 1;
   const resumen = verPrs
     ? await resumenFuerzaPublicable(db, tid)
     : { sesiones: 0, series: 0, mejores: [] };
+  const vitrina = verVitrina ? await listarVitrina(db, tid) : [];
 
   return {
     ok: true,
@@ -656,12 +740,18 @@ async function tarjetaPublica(db, viewer, targetId) {
       alias: row.alias,
       foto: verFoto ? (row.foto || null) : null,
       mostrar_prs: verPrs,
-      resumen
+      mostrar_vitrina: verVitrina,
+      resumen,
+      vitrina
     }
   };
 }
 
 async function borrarDatosSocialesUsuario(db, userId) {
+  await db.execute({
+    sql: "DELETE FROM social_vitrina WHERE usuario_id = ?",
+    args: [userId]
+  });
   await db.execute({
     sql: "DELETE FROM social_solicitudes WHERE de_id = ? OR para_id = ?",
     args: [userId, userId]
@@ -682,6 +772,8 @@ module.exports = {
   guardarYo,
   guardarFoto,
   borrarFoto,
+  agregarVitrina,
+  borrarVitrina,
   listarEnlaces,
   solicitar,
   responderSolicitud,

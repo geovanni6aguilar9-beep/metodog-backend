@@ -112,6 +112,8 @@ const {
   guardarYo: guardarPerfilSocialYo,
   guardarFoto: guardarFotoPerfilSocial,
   borrarFoto: borrarFotoPerfilSocial,
+  agregarVitrina,
+  borrarVitrina,
   listarEnlaces: listarEnlacesSocial,
   solicitar: solicitarPerfilSocial,
   responderSolicitud: responderSolicitudSocial,
@@ -1659,6 +1661,26 @@ app.delete("/api/social/yo/foto", async (req, res) => {
     return responderPerfilSocial(res, result);
   } catch (err) {
     console.error("DELETE social/yo/foto:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/social/vitrina", async (req, res) => {
+  try {
+    const result = await agregarVitrina(db, req.user, req.body?.foto);
+    return responderPerfilSocial(res, result);
+  } catch (err) {
+    console.error("POST social/vitrina:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete("/api/social/vitrina/:id", async (req, res) => {
+  try {
+    const result = await borrarVitrina(db, req.user, req.params.id);
+    return responderPerfilSocial(res, result);
+  } catch (err) {
+    console.error("DELETE social/vitrina:", err.message);
     res.status(500).json({ error: err.message });
   }
 });
