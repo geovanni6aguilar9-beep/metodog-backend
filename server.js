@@ -120,6 +120,7 @@ const {
   quitarCompanero,
   bloquearUsuario: bloquearUsuarioSocial,
   desbloquearUsuario: desbloquearUsuarioSocial,
+  rankingCirculo,
   tarjetaPublica: tarjetaPerfilSocial,
   borrarDatosSocialesUsuario
 } = require("./perfilSocial");
@@ -1751,6 +1752,16 @@ app.post("/api/social/enlace/:id/desbloquear", async (req, res) => {
     return responderPerfilSocial(res, result);
   } catch (err) {
     console.error("POST social/desbloquear:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/api/social/ranking", async (req, res) => {
+  try {
+    const result = await rankingCirculo(db, req.user);
+    return responderPerfilSocial(res, result);
+  } catch (err) {
+    console.error("GET social/ranking:", err.message);
     res.status(500).json({ error: err.message });
   }
 });

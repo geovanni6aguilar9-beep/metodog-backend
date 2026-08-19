@@ -62,6 +62,11 @@ async function ensureTablasPerfilSocial(db) {
       "ALTER TABLE perfiles_sociales ADD COLUMN mostrar_vitrina INTEGER DEFAULT 0"
     );
   } catch (_) { /* ya existe */ }
+  try {
+    await db.execute(
+      "ALTER TABLE perfiles_sociales ADD COLUMN mostrar_ranking INTEGER DEFAULT 0"
+    );
+  } catch (_) { /* ya existe */ }
 
   await db.execute(`CREATE TABLE IF NOT EXISTS social_vitrina (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -173,7 +178,7 @@ async function generarCodigoUnico(db) {
 
 async function asegurarPerfil(db, userId, nombre) {
   const existing = await db.execute({
-    sql: `SELECT usuario_id, alias, codigo, foto, modo_entrada, mostrar_foto, mostrar_prs, mostrar_vitrina
+    sql: `SELECT usuario_id, alias, codigo, foto, modo_entrada, mostrar_foto, mostrar_prs, mostrar_vitrina, mostrar_ranking
           FROM perfiles_sociales WHERE usuario_id = ?`,
     args: [userId]
   });
@@ -183,12 +188,12 @@ async function asegurarPerfil(db, userId, nombre) {
   const codigo = await generarCodigoUnico(db);
   await db.execute({
     sql: `INSERT INTO perfiles_sociales
-          (usuario_id, alias, codigo, modo_entrada, mostrar_foto, mostrar_prs, mostrar_vitrina, updated_at)
-          VALUES (?, ?, ?, 'cerrado', 1, 1, 0, datetime('now'))`,
+          (usuario_id, alias, codigo, modo_entrada, mostrar_foto, mostrar_prs, mostrar_vitrina, mostrar_ranking, updated_at)
+          VALUES (?, ?, ?, 'cerrado', 1, 1, 0, 0, datetime('now'))`,
     args: [userId, alias, codigo]
   });
   const fresh = await db.execute({
-    sql: `SELECT usuario_id, alias, codigo, foto, modo_entrada, mostrar_foto, mostrar_prs, mostrar_vitrina
+    sql: `SELECT usuario_id, alias, codigo, foto, modo_entrada, mostrar_foto, mostrar_prs, mostrar_vitrina, mostrar_ranking
           FROM perfiles_sociales WHERE usuario_id = ?`,
     args: [userId]
   });
@@ -280,6 +285,7 @@ function filaAPerfilPropio(row, { menor, resumen, vitrina }) {
     mostrar_foto: Number(row.mostrar_foto) === 1,
     mostrar_prs: Number(row.mostrar_prs) === 1,
     mostrar_vitrina: Number(row.mostrar_vitrina) === 1,
+    mostrar_ranking: Number(row.mostrar_ranking) === 1,
     menor: !!menor,
     social_activa: !menor,
     resumen: resumen || { sesiones: 0, series: 0, mejores: [] },
@@ -342,6 +348,10 @@ async function guardarYo(db, user, body) {
   if (body.mostrar_vitrina != null) {
     patch.push("mostrar_vitrina = ?");
     args.push(body.mostrar_vitrina ? 1 : 0);
+  }
+  if (body.mostrar_ranking != null) {
+    patch.push("mostrar_ranking = ?");
+    args.push(body.mostrar_ranking ? 1 : 0);
   }
 
   if (!patch.length) {
@@ -700,6 +710,192 @@ async function desbloquearUsuario(db, user, otherId) {
   return { ok: true };
 }
 
+const RANK_NIVELES = ["Principiante", "Novato", "Intermedio", "Avanzado", "Élite"];
+const RANK_LIFTS = {
+  bench: {
+    titulo: "Press de banca",
+    aliases: ["press de banca", "press banca", "bench press", "bench", "banca plana", "banca plano"],
+    male: [0.5, 0.75, 1.0, 1.25, 1.5],
+    female: [0.25, 0.5, 0.65, 0.85, 1.0]
+  },
+  squat: {
+    titulo: "Sentadilla",
+    aliases: ["sentadilla", "hack squat", "sentadilla hack"],
+    male: [0.75, 1.0, 1.25, 1.5, 1.75],
+    female: [0.5, 0.75, 1.0, 1.25, 1.5]
+  },
+  deadlift: {
+    titulo: "Peso muerto",
+    aliases: ["peso muerto", "deadlift", "rdl", "rumano"],
+    male: [1.0, 1.25, 1.5, 1.75, 2.0],
+    female: [0.75, 1.0, 1.25, 1.5, 1.75]
+  },
+  ohp: {
+    titulo: "Press militar",
+    aliases: ["press militar", "press de hombro", "press hombro"],
+    male: [0.35, 0.55, 0.75, 0.95, 1.15],
+    female: [0.2, 0.35, 0.5, 0.65, 0.8]
+  }
+};
+
+function normEj(nombre) {
+  return String(nombre || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function claveLift(nombre) {
+  const n = normEj(nombre);
+  if (!n) return null;
+  let best = null;
+  let len = 0;
+  for (const [clave, cfg] of Object.entries(RANK_LIFTS)) {
+    for (const alias of cfg.aliases) {
+      const a = normEj(alias);
+      if (n.includes(a) && a.length > len) {
+        best = clave;
+        len = a.length;
+      }
+    }
+  }
+  return best;
+}
+
+function e1rm(peso, reps) {
+  const p = Number(peso);
+  const r = parseInt(reps, 10) || 0;
+  if (!(p > 0)) return 0;
+  if (r <= 1) return p;
+  return Math.round(p * (1 + r / 30) * 10) / 10;
+}
+
+function nivelPorRatio(clave, e1, pesoCorporal, genero) {
+  if (!(e1 > 0) || !(pesoCorporal > 0)) return null;
+  const cfg = RANK_LIFTS[clave];
+  const umbrales = cfg[genero === "F" ? "female" : "male"];
+  const ratio = e1 / pesoCorporal;
+  let idx = 0;
+  for (let i = 0; i < umbrales.length; i++) {
+    if (ratio >= umbrales[i]) idx = i;
+  }
+  return RANK_NIVELES[idx];
+}
+
+async function contextoCorporal(db, userId) {
+  const p = await db.execute({
+    sql: "SELECT peso_kg, genero FROM perfiles_clientes WHERE usuario_id = ?",
+    args: [userId]
+  });
+  let peso = Number(p.rows?.[0]?.peso_kg);
+  let genero = String(p.rows?.[0]?.genero || "M").toUpperCase() === "F" ? "F" : "M";
+  const m = await db.execute({
+    sql: "SELECT peso FROM mediciones WHERE usuario_id = ? ORDER BY fecha DESC, id DESC LIMIT 1",
+    args: [userId]
+  });
+  const pm = Number(m.rows?.[0]?.peso);
+  if (pm > 0) peso = pm;
+  return { peso: peso > 0 ? peso : null, genero };
+}
+
+async function mejoresPorLift(db, userId) {
+  const result = await db.execute({
+    sql: `SELECT ejercicio, peso, reps FROM historial_fuerza WHERE usuario_id = ? LIMIT 1000`,
+    args: [userId]
+  });
+  const best = {};
+  for (const row of result.rows || []) {
+    const clave = claveLift(row.ejercicio);
+    if (!clave) continue;
+    const est = e1rm(row.peso, row.reps);
+    if (!(est > 0)) continue;
+    const prev = best[clave];
+    if (!prev || est > prev.e1rm) {
+      best[clave] = {
+        peso: Math.round(Number(row.peso) * 10) / 10,
+        reps: parseInt(row.reps, 10) || null,
+        e1rm: est
+      };
+    }
+  }
+  return best;
+}
+
+async function rankingCirculo(db, user) {
+  if (!(await rolEsCliente(db, user.id))) {
+    return { ok: false, status: 403, error: "El ranking es para atletas." };
+  }
+  if (await esMenorOSinEdad(db, user.id)) {
+    return { ok: false, status: 403, error: "El perfil social está cerrado hasta los 18 años." };
+  }
+  await asegurarPerfil(db, user.id, user.nombre);
+
+  const amigos = await db.execute({
+    sql: `SELECT CASE WHEN de_id = ? THEN para_id ELSE de_id END AS uid
+          FROM social_solicitudes
+          WHERE estado = 'aceptada' AND (de_id = ? OR para_id = ?)`,
+    args: [user.id, user.id, user.id]
+  });
+  const ids = [user.id, ...(amigos.rows || []).map((r) => toNum(r.uid)).filter(Boolean)];
+  const uniq = [...new Set(ids)];
+  const placeholders = uniq.map(() => "?").join(",");
+
+  const gente = await db.execute({
+    sql: `SELECT p.usuario_id, p.alias, p.foto, p.mostrar_foto, p.mostrar_ranking
+          FROM perfiles_sociales p
+          JOIN perfiles_clientes c ON c.usuario_id = p.usuario_id
+          WHERE p.usuario_id IN (${placeholders})
+            AND p.mostrar_ranking = 1
+            AND c.edad >= 18`,
+    args: uniq
+  });
+
+  const yoRow = await db.execute({
+    sql: "SELECT mostrar_ranking FROM perfiles_sociales WHERE usuario_id = ?",
+    args: [user.id]
+  });
+  const yoEntro = Number(yoRow.rows?.[0]?.mostrar_ranking) === 1;
+
+  const tablas = Object.entries(RANK_LIFTS).map(([clave, cfg]) => ({
+    clave,
+    titulo: cfg.titulo,
+    filas: []
+  }));
+
+  for (const persona of gente.rows || []) {
+    const uid = toNum(persona.usuario_id);
+    const corporal = await contextoCorporal(db, uid);
+    const lifts = await mejoresPorLift(db, uid);
+    const soyYo = uid === user.id;
+    const foto = soyYo || Number(persona.mostrar_foto) === 1 ? (persona.foto || null) : null;
+    for (const tabla of tablas) {
+      const lift = lifts[tabla.clave];
+      if (!lift) continue;
+      tabla.filas.push({
+        user_id: uid,
+        alias: persona.alias,
+        soy_yo: soyYo,
+        foto,
+        peso: lift.peso,
+        reps: lift.reps,
+        e1rm: lift.e1rm,
+        nivel: nivelPorRatio(tabla.clave, lift.e1rm, corporal.peso, corporal.genero)
+      });
+    }
+  }
+
+  for (const tabla of tablas) {
+    tabla.filas.sort((a, b) => b.e1rm - a.e1rm);
+    tabla.filas.forEach((f, i) => {
+      f.puesto = i + 1;
+    });
+  }
+
+  return { ok: true, yo_entro: yoEntro, tablas };
+}
+
 async function tarjetaPublica(db, viewer, targetId) {
   const tid = toNum(targetId);
   if (!tid) return { ok: false, status: 400, error: "Usuario inválido." };
@@ -780,6 +976,7 @@ module.exports = {
   quitarCompanero,
   bloquearUsuario,
   desbloquearUsuario,
+  rankingCirculo,
   tarjetaPublica,
   borrarDatosSocialesUsuario
 };
