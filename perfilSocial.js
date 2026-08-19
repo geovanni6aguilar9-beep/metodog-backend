@@ -9,6 +9,9 @@ const { deduplicarFilasHistorialFuerza } = require("./fuerzaHistorial");
 
 const MAX_FOTO_CHARS = 520_000;
 const MAX_VITRINA = 6;
+const MAX_MSG_CHARS = 400;
+const MAX_HILO = 80;
+const MAX_MSGS_HORA = 40;
 const MODOS = new Set(["cerrado", "codigo", "alias"]);
 const ALIAS_RE = /^[a-z0-9_]{3,20}$/;
 
@@ -78,6 +81,25 @@ async function ensureTablasPerfilSocial(db) {
   await db.execute(
     `CREATE INDEX IF NOT EXISTS idx_social_vitrina_user
      ON social_vitrina(usuario_id, id DESC)`
+  );
+
+  await db.execute(`CREATE TABLE IF NOT EXISTS social_mensajes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    de_id INTEGER NOT NULL,
+    para_id INTEGER NOT NULL,
+    texto TEXT NOT NULL,
+    leido INTEGER NOT NULL DEFAULT 0,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(de_id) REFERENCES usuarios(id),
+    FOREIGN KEY(para_id) REFERENCES usuarios(id)
+  )`);
+  await db.execute(
+    `CREATE INDEX IF NOT EXISTS idx_social_mensajes_par
+     ON social_mensajes(de_id, para_id, id DESC)`
+  );
+  await db.execute(
+    `CREATE INDEX IF NOT EXISTS idx_social_mensajes_inbox
+     ON social_mensajes(para_id, leido, id DESC)`
   );
 }
 
@@ -682,6 +704,7 @@ async function quitarCompanero(db, user, otherId) {
   if (!(del.rowsAffected > 0)) {
     return { ok: false, status: 404, error: "No había vínculo." };
   }
+  await borrarMensajesEntre(db, user.id, oid);
   return { ok: true };
 }
 
@@ -693,6 +716,7 @@ async function bloquearUsuario(db, user, otherId) {
           WHERE (de_id = ? AND para_id = ?) OR (de_id = ? AND para_id = ?)`,
     args: [user.id, oid, oid, user.id]
   });
+  await borrarMensajesEntre(db, user.id, oid);
   await db.execute({
     sql: `INSERT OR IGNORE INTO social_bloqueos (blocker_id, blocked_id) VALUES (?, ?)`,
     args: [user.id, oid]
@@ -943,7 +967,188 @@ async function tarjetaPublica(db, viewer, targetId) {
   };
 }
 
+async function borrarMensajesEntre(db, a, b) {
+  await db.execute({
+    sql: `DELETE FROM social_mensajes
+          WHERE (de_id = ? AND para_id = ?) OR (de_id = ? AND para_id = ?)`,
+    args: [a, b, b, a]
+  });
+}
+
+async function gateChat(db, user, otherId) {
+  const oid = toNum(otherId);
+  if (!oid || oid === user.id) {
+    return { ok: false, status: 400, error: "Usuario inválido." };
+  }
+  if (!(await rolEsCliente(db, user.id)) || !(await rolEsCliente(db, oid))) {
+    return { ok: false, status: 403, error: "Los mensajes son entre atletas." };
+  }
+  if (await esMenorOSinEdad(db, user.id) || await esMenorOSinEdad(db, oid)) {
+    return { ok: false, status: 403, error: "Cerrado hasta los 18 años." };
+  }
+  if (await hayBloqueo(db, user.id, oid)) {
+    return { ok: false, status: 403, error: "No puedes escribirle." };
+  }
+  if (!(await amistadAceptada(db, user.id, oid))) {
+    return { ok: false, status: 403, error: "Solo entre compañeros aceptados." };
+  }
+  return { ok: true, oid };
+}
+
+function limpiarTextoMensaje(raw) {
+  const s = String(raw || "")
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!s) return { ok: false, error: "Escribe un mensaje." };
+  if (s.length > MAX_MSG_CHARS) {
+    return { ok: false, error: `Máximo ${MAX_MSG_CHARS} caracteres.` };
+  }
+  return { ok: true, texto: s };
+}
+
+async function aliasDe(db, userId) {
+  const r = await db.execute({
+    sql: "SELECT alias FROM perfiles_sociales WHERE usuario_id = ?",
+    args: [userId]
+  });
+  return r.rows?.[0]?.alias || "Atleta";
+}
+
+async function listarChats(db, user) {
+  if (!(await rolEsCliente(db, user.id))) {
+    return { ok: false, status: 403, error: "Los mensajes son para atletas." };
+  }
+  if (await esMenorOSinEdad(db, user.id)) {
+    return { ok: true, chats: [] };
+  }
+  await asegurarPerfil(db, user.id, user.nombre);
+
+  const last = await db.execute({
+    sql: `SELECT m.id, m.de_id, m.para_id, m.texto, m.created_at, m.leido
+          FROM social_mensajes m
+          INNER JOIN (
+            SELECT MAX(id) AS max_id
+            FROM social_mensajes
+            WHERE de_id = ? OR para_id = ?
+            GROUP BY CASE WHEN de_id = ? THEN para_id ELSE de_id END
+          ) t ON t.max_id = m.id
+          ORDER BY m.id DESC
+          LIMIT 40`,
+    args: [user.id, user.id, user.id]
+  });
+
+  const unread = await db.execute({
+    sql: `SELECT de_id, COUNT(*) AS n
+          FROM social_mensajes
+          WHERE para_id = ? AND leido = 0
+          GROUP BY de_id`,
+    args: [user.id]
+  });
+  const unreadMap = new Map(
+    (unread.rows || []).map((r) => [toNum(r.de_id), Number(r.n) || 0])
+  );
+
+  const chats = [];
+  for (const row of last.rows || []) {
+    const peerId = toNum(row.de_id) === user.id ? toNum(row.para_id) : toNum(row.de_id);
+    if (!peerId) continue;
+    if (await hayBloqueo(db, user.id, peerId)) continue;
+    chats.push({
+      user_id: peerId,
+      alias: await aliasDe(db, peerId),
+      ultimo: String(row.texto || "").slice(0, 80),
+      created_at: row.created_at,
+      mio: toNum(row.de_id) === user.id,
+      no_leidos: unreadMap.get(peerId) || 0
+    });
+  }
+  return { ok: true, chats };
+}
+
+async function listarHilo(db, user, otherId) {
+  const gate = await gateChat(db, user, otherId);
+  if (!gate.ok) return gate;
+  const oid = gate.oid;
+
+  await db.execute({
+    sql: `UPDATE social_mensajes SET leido = 1
+          WHERE para_id = ? AND de_id = ? AND leido = 0`,
+    args: [user.id, oid]
+  });
+
+  const r = await db.execute({
+    sql: `SELECT id, de_id, texto, created_at
+          FROM social_mensajes
+          WHERE (de_id = ? AND para_id = ?) OR (de_id = ? AND para_id = ?)
+          ORDER BY id DESC
+          LIMIT ?`,
+    args: [user.id, oid, oid, user.id, MAX_HILO]
+  });
+
+  const mensajes = (r.rows || [])
+    .slice()
+    .reverse()
+    .map((row) => ({
+      id: toNum(row.id),
+      de_id: toNum(row.de_id),
+      texto: row.texto,
+      created_at: row.created_at,
+      mio: toNum(row.de_id) === user.id
+    }));
+
+  return {
+    ok: true,
+    peer: { user_id: oid, alias: await aliasDe(db, oid) },
+    mensajes
+  };
+}
+
+async function enviarMensaje(db, user, otherId, textoRaw) {
+  const gate = await gateChat(db, user, otherId);
+  if (!gate.ok) return gate;
+  const limpio = limpiarTextoMensaje(textoRaw);
+  if (!limpio.ok) return { ok: false, status: 400, error: limpio.error };
+
+  const hora = await db.execute({
+    sql: `SELECT COUNT(*) AS n FROM social_mensajes
+          WHERE de_id = ? AND created_at >= datetime('now', '-1 hour')`,
+    args: [user.id]
+  });
+  if (Number(hora.rows?.[0]?.n || 0) >= MAX_MSGS_HORA) {
+    return { ok: false, status: 429, error: "Demasiados mensajes. Espera un rato." };
+  }
+
+  const ins = await db.execute({
+    sql: `INSERT INTO social_mensajes (de_id, para_id, texto) VALUES (?, ?, ?)`,
+    args: [user.id, gate.oid, limpio.texto]
+  });
+  if (!(ins.rowsAffected > 0)) {
+    return { ok: false, status: 500, error: "No se pudo enviar." };
+  }
+
+  const miAlias = await aliasDe(db, user.id);
+  try {
+    await crearNotificacion(db, {
+      usuarioId: gate.oid,
+      tipo: "social_mensaje",
+      titulo: `Mensaje de @${miAlias}`,
+      cuerpo: limpio.texto.slice(0, 80),
+      refTipo: "social_mensaje",
+      refId: user.id
+    });
+  } catch (err) {
+    console.warn("notif social_mensaje:", err.message);
+  }
+
+  return listarHilo(db, user, gate.oid);
+}
+
 async function borrarDatosSocialesUsuario(db, userId) {
+  await db.execute({
+    sql: "DELETE FROM social_mensajes WHERE de_id = ? OR para_id = ?",
+    args: [userId, userId]
+  });
   await db.execute({
     sql: "DELETE FROM social_vitrina WHERE usuario_id = ?",
     args: [userId]
@@ -978,5 +1183,8 @@ module.exports = {
   desbloquearUsuario,
   rankingCirculo,
   tarjetaPublica,
+  listarChats,
+  listarHilo,
+  enviarMensaje,
   borrarDatosSocialesUsuario
 };

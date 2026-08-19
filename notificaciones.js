@@ -388,6 +388,8 @@ async function listarNotificaciones(db, userId, { filtro, limite = 50 }) {
     sql += " AND tipo IN ('plan_rutina', 'plan_dieta')";
   } else if (filtro === "vinculo") {
     sql += " AND tipo IN ('vinculo_aceptado', 'vinculo_rechazado')";
+  } else if (filtro === "social_solicitud") {
+    sql += " AND tipo IN ('social_solicitud', 'social_aceptada', 'social_mensaje')";
   } else if (filtro && filtro !== "all" && filtro !== "todas") {
     sql += " AND tipo = ?";
     args.push(filtro);

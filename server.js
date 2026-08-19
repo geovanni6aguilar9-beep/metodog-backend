@@ -122,6 +122,9 @@ const {
   desbloquearUsuario: desbloquearUsuarioSocial,
   rankingCirculo,
   tarjetaPublica: tarjetaPerfilSocial,
+  listarChats: listarChatsSocial,
+  listarHilo: listarHiloSocial,
+  enviarMensaje: enviarMensajeSocial,
   borrarDatosSocialesUsuario
 } = require("./perfilSocial");
 const {
@@ -1772,6 +1775,36 @@ app.get("/api/social/tarjeta/:id", async (req, res) => {
     return responderPerfilSocial(res, result);
   } catch (err) {
     console.error("GET social/tarjeta:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/api/social/chats", async (req, res) => {
+  try {
+    const result = await listarChatsSocial(db, req.user);
+    return responderPerfilSocial(res, result);
+  } catch (err) {
+    console.error("GET social/chats:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/api/social/chat/:id", async (req, res) => {
+  try {
+    const result = await listarHiloSocial(db, req.user, req.params.id);
+    return responderPerfilSocial(res, result);
+  } catch (err) {
+    console.error("GET social/chat:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/social/chat/:id", async (req, res) => {
+  try {
+    const result = await enviarMensajeSocial(db, req.user, req.params.id, req.body?.texto);
+    return responderPerfilSocial(res, result);
+  } catch (err) {
+    console.error("POST social/chat:", err.message);
     res.status(500).json({ error: err.message });
   }
 });
