@@ -107,6 +107,21 @@ const {
   borrarPlantillaRutinaCoach
 } = require("./plantillasRutinaCoach");
 const {
+  ensureTablasPerfilSocial,
+  obtenerYo: obtenerPerfilSocialYo,
+  guardarYo: guardarPerfilSocialYo,
+  guardarFoto: guardarFotoPerfilSocial,
+  borrarFoto: borrarFotoPerfilSocial,
+  listarEnlaces: listarEnlacesSocial,
+  solicitar: solicitarPerfilSocial,
+  responderSolicitud: responderSolicitudSocial,
+  quitarCompanero,
+  bloquearUsuario: bloquearUsuarioSocial,
+  desbloquearUsuario: desbloquearUsuarioSocial,
+  tarjetaPublica: tarjetaPerfilSocial,
+  borrarDatosSocialesUsuario
+} = require("./perfilSocial");
+const {
   importarAlimentosCsv,
   previewImportacionCsv,
   PLANTILLA_CSV,
@@ -501,6 +516,7 @@ async function inicializarBD() {
     await ensureTablaCuotaComboIa(db);
     await ensureTablaFotosProgreso(db);
     await ensureTablaPlantillasRutinaCoach(db);
+    await ensureTablasPerfilSocial(db);
     await ensureTablaVeredictosMedidasIa(db);
 
     await seedAlimentosMetodog(db);
@@ -1600,6 +1616,133 @@ app.delete("/api/coach/plantillas-rutina/:id", async (req, res) => {
   }
 });
 
+function responderPerfilSocial(res, result, extra = {}) {
+  if (!result?.ok) {
+    return res.status(result?.status || 400).json({ error: result?.error || "No se pudo completar." });
+  }
+  return res.json({ ok: true, ...result, ...extra, error: undefined, status: undefined });
+}
+
+app.get("/api/social/yo", async (req, res) => {
+  try {
+    const result = await obtenerPerfilSocialYo(db, req.user, req.user.nombre);
+    return responderPerfilSocial(res, result);
+  } catch (err) {
+    console.error("GET social/yo:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put("/api/social/yo", async (req, res) => {
+  try {
+    const result = await guardarPerfilSocialYo(db, req.user, req.body || {});
+    return responderPerfilSocial(res, result);
+  } catch (err) {
+    console.error("PUT social/yo:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/social/yo/foto", async (req, res) => {
+  try {
+    const result = await guardarFotoPerfilSocial(db, req.user, req.body?.foto);
+    return responderPerfilSocial(res, result);
+  } catch (err) {
+    console.error("POST social/yo/foto:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete("/api/social/yo/foto", async (req, res) => {
+  try {
+    const result = await borrarFotoPerfilSocial(db, req.user);
+    return responderPerfilSocial(res, result);
+  } catch (err) {
+    console.error("DELETE social/yo/foto:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/api/social/enlaces", async (req, res) => {
+  try {
+    const result = await listarEnlacesSocial(db, req.user.id);
+    return responderPerfilSocial(res, result);
+  } catch (err) {
+    console.error("GET social/enlaces:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/social/solicitar", async (req, res) => {
+  try {
+    const result = await solicitarPerfilSocial(db, req.user, req.body || {});
+    return responderPerfilSocial(res, result);
+  } catch (err) {
+    console.error("POST social/solicitar:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/social/solicitud/:id/aceptar", async (req, res) => {
+  try {
+    const result = await responderSolicitudSocial(db, req.user, req.params.id, true);
+    return responderPerfilSocial(res, result);
+  } catch (err) {
+    console.error("POST social/aceptar:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/social/solicitud/:id/rechazar", async (req, res) => {
+  try {
+    const result = await responderSolicitudSocial(db, req.user, req.params.id, false);
+    return responderPerfilSocial(res, result);
+  } catch (err) {
+    console.error("POST social/rechazar:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/social/enlace/:id/quitar", async (req, res) => {
+  try {
+    const result = await quitarCompanero(db, req.user, req.params.id);
+    return responderPerfilSocial(res, result);
+  } catch (err) {
+    console.error("POST social/quitar:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/social/enlace/:id/bloquear", async (req, res) => {
+  try {
+    const result = await bloquearUsuarioSocial(db, req.user, req.params.id);
+    return responderPerfilSocial(res, result);
+  } catch (err) {
+    console.error("POST social/bloquear:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/social/enlace/:id/desbloquear", async (req, res) => {
+  try {
+    const result = await desbloquearUsuarioSocial(db, req.user, req.params.id);
+    return responderPerfilSocial(res, result);
+  } catch (err) {
+    console.error("POST social/desbloquear:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/api/social/tarjeta/:id", async (req, res) => {
+  try {
+    const result = await tarjetaPerfilSocial(db, req.user, req.params.id);
+    return responderPerfilSocial(res, result);
+  } catch (err) {
+    console.error("GET social/tarjeta:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.post("/api/dietas/guardar", async (req, res) => {
   const { usuario_id, datos_dieta, macros_totales, notas_dieta, notificar } = req.body;
   if (!(await assertAccesoUsuarioEdicion(db, req, res, usuario_id))) return;
@@ -2284,6 +2427,7 @@ async function eliminarUsuarioCompleto(db, userId) {
     sql: "DELETE FROM plantillas_rutina_coach WHERE coach_id = ?",
     args: [userId]
   });
+  await borrarDatosSocialesUsuario(db, userId);
   await db.execute({
     sql: "DELETE FROM recuperacion WHERE email = (SELECT email FROM usuarios WHERE id = ?)",
     args: [userId]
