@@ -8,13 +8,15 @@ const { crearNotificacion } = require("./notificaciones");
 const { deduplicarFilasHistorialFuerza } = require("./fuerzaHistorial");
 
 const MAX_FOTO_CHARS = 520_000;
-const MAX_VITRINA = 6;
+const MAX_VITRINA = 24;
 const MAX_MSG_CHARS = 400;
 const MAX_HILO = 80;
 const MAX_MSGS_HORA = 40;
 const MAX_POST_CHARS = 280;
 const MAX_POSTS_HORA = 15;
 const MAX_FEED = 40;
+const MAX_MURO = 50;
+const MAX_BUSCAR = 12;
 const MODOS = new Set(["cerrado", "codigo", "alias"]);
 const ALIAS_RE = /^[a-z0-9_]{3,20}$/;
 
@@ -78,6 +80,16 @@ async function ensureTablasPerfilSocial(db) {
       "ALTER TABLE perfiles_sociales ADD COLUMN mostrar_feed INTEGER DEFAULT 0"
     );
   } catch (_) { /* ya existe */ }
+  try {
+    await db.execute(
+      "ALTER TABLE perfiles_sociales ADD COLUMN mostrar_cuerpo INTEGER DEFAULT 0"
+    );
+  } catch (_) { /* ya existe */ }
+  try {
+    await db.execute(
+      "ALTER TABLE perfiles_sociales ADD COLUMN mostrar_muro INTEGER DEFAULT 0"
+    );
+  } catch (_) { /* ya existe */ }
 
   await db.execute(`CREATE TABLE IF NOT EXISTS social_vitrina (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -126,6 +138,11 @@ async function ensureTablasPerfilSocial(db) {
     `CREATE INDEX IF NOT EXISTS idx_social_posts_user
      ON social_posts(usuario_id, id DESC)`
   );
+  try {
+    await db.execute(
+      "ALTER TABLE social_posts ADD COLUMN publico INTEGER NOT NULL DEFAULT 0"
+    );
+  } catch (_) { /* ya existe */ }
 }
 
 function toNum(v) {
@@ -225,8 +242,7 @@ async function generarCodigoUnico(db) {
 
 async function asegurarPerfil(db, userId, nombre) {
   const existing = await db.execute({
-    sql: `SELECT usuario_id, alias, codigo, foto, modo_entrada, mostrar_foto, mostrar_prs, mostrar_vitrina, mostrar_ranking
-          FROM perfiles_sociales WHERE usuario_id = ?`,
+    sql: `SELECT * FROM perfiles_sociales WHERE usuario_id = ?`,
     args: [userId]
   });
   if (existing.rows?.[0]) return existing.rows[0];
@@ -240,8 +256,7 @@ async function asegurarPerfil(db, userId, nombre) {
     args: [userId, alias, codigo]
   });
   const fresh = await db.execute({
-    sql: `SELECT usuario_id, alias, codigo, foto, modo_entrada, mostrar_foto, mostrar_prs, mostrar_vitrina, mostrar_ranking
-          FROM perfiles_sociales WHERE usuario_id = ?`,
+    sql: `SELECT * FROM perfiles_sociales WHERE usuario_id = ?`,
     args: [userId]
   });
   return fresh.rows[0];
@@ -322,7 +337,94 @@ async function resumenFuerzaPublicable(db, userId) {
   };
 }
 
-function filaAPerfilPropio(row, { menor, resumen, vitrina }) {
+function parseExtra(raw) {
+  if (!raw) return null;
+  try {
+    return typeof raw === "string" ? JSON.parse(raw) : raw;
+  } catch {
+    return null;
+  }
+}
+
+function numOrNull(v) {
+  const n = Number(v);
+  return Number.isFinite(n) ? Math.round(n * 10) / 10 : null;
+}
+
+function snapshotMedicion(row) {
+  if (!row) return null;
+  const extra = parseExtra(row.datos_extra) || {};
+  const res = extra._resultado || {};
+  const pliegues = ["pecho", "abdominal", "muslo", "triceps", "suprailiaco", "axilar", "subescapular"];
+  let sumaPliegues = numOrNull(res.sumaPliegues);
+  if (sumaPliegues == null) {
+    let s = 0;
+    let n = 0;
+    for (const k of pliegues) {
+      const v = Number(extra[k]);
+      if (Number.isFinite(v) && v > 0) {
+        s += v;
+        n += 1;
+      }
+    }
+    if (n > 0) sumaPliegues = Math.round(s * 10) / 10;
+  }
+  const peri = (clave) => numOrNull(extra[clave]);
+  return {
+    fecha: String(row.fecha || "").slice(0, 10) || null,
+    peso: numOrNull(row.peso),
+    grasa: numOrNull(row.grasa != null ? row.grasa : res.grasa),
+    masa_magra: numOrNull(res.masaMagra),
+    suma_pliegues: sumaPliegues,
+    brazo: peri("c_brazo") ?? peri("c_brazo_flex"),
+    cintura: peri("c_cintura") ?? peri("c_abdomen"),
+    pierna: peri("c_pierna")
+  };
+}
+
+function deltaCampo(a, b) {
+  if (a == null || b == null) return null;
+  return Math.round((b - a) * 10) / 10;
+}
+
+async function progresoCorporal(db, userId) {
+  const r = await db.execute({
+    sql: `SELECT peso, grasa, datos_extra, fecha
+          FROM mediciones WHERE usuario_id = ?
+          ORDER BY fecha ASC, id ASC`,
+    args: [userId]
+  });
+  const rows = r.rows || [];
+  if (!rows.length) {
+    return {
+      disponible: false,
+      mediciones: 0,
+      inicio: null,
+      hoy: null,
+      deltas: null
+    };
+  }
+  const inicio = snapshotMedicion(rows[0]);
+  const hoy = snapshotMedicion(rows[rows.length - 1]);
+  const deltas = {
+    peso: deltaCampo(inicio.peso, hoy.peso),
+    grasa: deltaCampo(inicio.grasa, hoy.grasa),
+    masa_magra: deltaCampo(inicio.masa_magra, hoy.masa_magra),
+    suma_pliegues: deltaCampo(inicio.suma_pliegues, hoy.suma_pliegues),
+    brazo: deltaCampo(inicio.brazo, hoy.brazo),
+    cintura: deltaCampo(inicio.cintura, hoy.cintura),
+    pierna: deltaCampo(inicio.pierna, hoy.pierna)
+  };
+  return {
+    disponible: true,
+    mediciones: rows.length,
+    inicio,
+    hoy,
+    deltas
+  };
+}
+
+function filaAPerfilPropio(row, { menor, resumen, vitrina, progreso }) {
   return {
     usuario_id: toNum(row.usuario_id),
     alias: row.alias,
@@ -334,9 +436,12 @@ function filaAPerfilPropio(row, { menor, resumen, vitrina }) {
     mostrar_vitrina: Number(row.mostrar_vitrina) === 1,
     mostrar_ranking: Number(row.mostrar_ranking) === 1,
     mostrar_feed: Number(row.mostrar_feed) === 1,
+    mostrar_cuerpo: Number(row.mostrar_cuerpo) === 1,
+    mostrar_muro: Number(row.mostrar_muro) === 1,
     menor: !!menor,
     social_activa: !menor,
     resumen: resumen || { sesiones: 0, series: 0, mejores: [] },
+    progreso: progreso || { disponible: false, mediciones: 0, inicio: null, hoy: null, deltas: null },
     vitrina: vitrina || []
   };
 }
@@ -349,7 +454,8 @@ async function obtenerYo(db, user, nombre) {
   const row = await asegurarPerfil(db, user.id, nombre || user.nombre);
   const resumen = menor ? { sesiones: 0, series: 0, mejores: [] } : await resumenFuerzaPublicable(db, user.id);
   const vitrina = menor ? [] : await listarVitrina(db, user.id);
-  return { ok: true, perfil: filaAPerfilPropio(row, { menor, resumen, vitrina }) };
+  const progreso = menor ? { disponible: false, mediciones: 0, inicio: null, hoy: null, deltas: null } : await progresoCorporal(db, user.id);
+  return { ok: true, perfil: filaAPerfilPropio(row, { menor, resumen, vitrina, progreso }) };
 }
 
 async function guardarYo(db, user, body) {
@@ -404,6 +510,14 @@ async function guardarYo(db, user, body) {
   if (body.mostrar_feed != null) {
     patch.push("mostrar_feed = ?");
     args.push(body.mostrar_feed ? 1 : 0);
+  }
+  if (body.mostrar_cuerpo != null) {
+    patch.push("mostrar_cuerpo = ?");
+    args.push(body.mostrar_cuerpo ? 1 : 0);
+  }
+  if (body.mostrar_muro != null) {
+    patch.push("mostrar_muro = ?");
+    args.push(body.mostrar_muro ? 1 : 0);
   }
 
   if (!patch.length) {
@@ -967,8 +1081,7 @@ async function tarjetaPublica(db, viewer, targetId) {
   }
 
   const r = await db.execute({
-    sql: `SELECT usuario_id, alias, foto, mostrar_foto, mostrar_prs, mostrar_vitrina
-          FROM perfiles_sociales WHERE usuario_id = ?`,
+    sql: `SELECT * FROM perfiles_sociales WHERE usuario_id = ?`,
     args: [tid]
   });
   const row = r.rows?.[0];
@@ -978,10 +1091,14 @@ async function tarjetaPublica(db, viewer, targetId) {
   const verFoto = propio || Number(row.mostrar_foto) === 1;
   const verPrs = propio || Number(row.mostrar_prs) === 1;
   const verVitrina = propio || Number(row.mostrar_vitrina) === 1;
+  const verCuerpo = propio || Number(row.mostrar_cuerpo) === 1;
   const resumen = verPrs
     ? await resumenFuerzaPublicable(db, tid)
     : { sesiones: 0, series: 0, mejores: [] };
   const vitrina = verVitrina ? await listarVitrina(db, tid) : [];
+  const progreso = verCuerpo
+    ? await progresoCorporal(db, tid)
+    : { disponible: false, mediciones: 0, inicio: null, hoy: null, deltas: null };
 
   return {
     ok: true,
@@ -991,7 +1108,9 @@ async function tarjetaPublica(db, viewer, targetId) {
       foto: verFoto ? (row.foto || null) : null,
       mostrar_prs: verPrs,
       mostrar_vitrina: verVitrina,
+      mostrar_cuerpo: verCuerpo,
       resumen,
+      progreso,
       vitrina
     }
   };
@@ -1247,15 +1366,25 @@ async function crearPost(db, user, body) {
   }
   await asegurarPerfil(db, user.id, user.nombre);
 
+  const esPublico = !!body?.publico;
   const flag = await db.execute({
-    sql: "SELECT mostrar_feed FROM perfiles_sociales WHERE usuario_id = ?",
+    sql: "SELECT mostrar_feed, mostrar_muro FROM perfiles_sociales WHERE usuario_id = ?",
     args: [user.id]
   });
-  if (Number(flag.rows?.[0]?.mostrar_feed) !== 1) {
+  const rowFlag = flag.rows?.[0] || {};
+  if (esPublico) {
+    if (Number(rowFlag.mostrar_muro) !== 1) {
+      return {
+        ok: false,
+        status: 403,
+        error: "Activa «Publicar en el muro» en Privacidad."
+      };
+    }
+  } else if (Number(rowFlag.mostrar_feed) !== 1) {
     return {
       ok: false,
       status: 403,
-      error: "Activa «Publicar en el feed» en Privacidad."
+      error: "Activa «Publicar en el círculo» en Privacidad."
     };
   }
 
@@ -1285,27 +1414,138 @@ async function crearPost(db, user, body) {
     return { ok: false, status: 429, error: "Demasiadas publicaciones. Espera un rato." };
   }
 
+  let cargas = null;
+  if (esPublico || body?.incluir_cargas) {
+    const resumen = await resumenFuerzaPublicable(db, user.id);
+    cargas = (resumen.mejores || []).slice(0, 3);
+  }
+
+  const textoFinal =
+    cargas && cargas.length
+      ? `${texto ? `${texto} · ` : ""}${cargas
+          .map((m) => `${m.ejercicio} ${m.peso}kg`)
+          .join(" · ")}`.slice(0, MAX_POST_CHARS)
+      : texto || null;
+
   const ins = await db.execute({
-    sql: `INSERT INTO social_posts (usuario_id, texto, imagen) VALUES (?, ?, ?)`,
-    args: [user.id, texto || null, imagen]
+    sql: `INSERT INTO social_posts (usuario_id, texto, imagen, publico) VALUES (?, ?, ?, ?)`,
+    args: [user.id, textoFinal, imagen, esPublico ? 1 : 0]
   });
   if (!(ins.rowsAffected > 0)) {
     return { ok: false, status: 500, error: "No se pudo publicar." };
   }
+  if (esPublico) return listarMuro(db, user);
   return listarFeed(db, user);
 }
 
 async function borrarPost(db, user, postId) {
   const id = toNum(postId);
   if (!id) return { ok: false, status: 400, error: "Publicación inválida." };
-  const del = await db.execute({
+  const prev = await db.execute({
+    sql: "SELECT publico FROM social_posts WHERE id = ? AND usuario_id = ?",
+    args: [id, user.id]
+  });
+  if (!prev.rows?.length) {
+    return { ok: false, status: 404, error: "No se encontró esa publicación." };
+  }
+  const eraPublico = Number(prev.rows[0].publico) === 1;
+  await db.execute({
     sql: "DELETE FROM social_posts WHERE id = ? AND usuario_id = ?",
     args: [id, user.id]
   });
-  if (!(del.rowsAffected > 0)) {
-    return { ok: false, status: 404, error: "No se encontró esa publicación." };
-  }
+  if (eraPublico) return listarMuro(db, user);
   return listarFeed(db, user);
+}
+
+async function listarMuro(db, user) {
+  if (!(await rolEsCliente(db, user.id))) {
+    return { ok: false, status: 403, error: "El muro es para atletas." };
+  }
+  if (await esMenorOSinEdad(db, user.id)) {
+    return { ok: true, posts: [], yo_publico: false };
+  }
+  await asegurarPerfil(db, user.id, user.nombre);
+
+  const r = await db.execute({
+    sql: `SELECT p.id, p.usuario_id, p.texto, p.imagen, p.created_at, p.publico,
+                 s.alias, s.foto, s.mostrar_foto, s.mostrar_muro
+          FROM social_posts p
+          JOIN perfiles_sociales s ON s.usuario_id = p.usuario_id
+          JOIN perfiles_clientes c ON c.usuario_id = p.usuario_id
+          WHERE p.publico = 1
+            AND s.mostrar_muro = 1
+            AND c.edad >= 18
+          ORDER BY p.id DESC
+          LIMIT ?`,
+    args: [MAX_MURO]
+  });
+
+  const yo = await db.execute({
+    sql: "SELECT mostrar_muro FROM perfiles_sociales WHERE usuario_id = ?",
+    args: [user.id]
+  });
+  const yoPublico = Number(yo.rows?.[0]?.mostrar_muro) === 1;
+
+  const posts = [];
+  for (const row of r.rows || []) {
+    const uid = toNum(row.usuario_id);
+    if (uid !== user.id && (await hayBloqueo(db, user.id, uid))) continue;
+    const soyYo = uid === user.id;
+    const verFoto = soyYo || Number(row.mostrar_foto) === 1;
+    posts.push({
+      id: toNum(row.id),
+      user_id: uid,
+      alias: row.alias,
+      foto: verFoto ? (row.foto || null) : null,
+      texto: row.texto || null,
+      imagen: row.imagen || null,
+      created_at: row.created_at,
+      publico: true,
+      soy_yo: soyYo
+    });
+  }
+  return { ok: true, yo_publico: yoPublico, posts };
+}
+
+async function buscarPersonas(db, user, qRaw) {
+  if (!(await rolEsCliente(db, user.id))) {
+    return { ok: false, status: 403, error: "Solo atletas." };
+  }
+  if (await esMenorOSinEdad(db, user.id)) {
+    return { ok: true, resultados: [] };
+  }
+  await asegurarPerfil(db, user.id, user.nombre);
+
+  const q = slugAlias(String(qRaw || "").replace(/^@/, ""), "");
+  if (q.length < 2) {
+    return { ok: false, status: 400, error: "Escribe al menos 2 caracteres." };
+  }
+
+  const r = await db.execute({
+    sql: `SELECT s.usuario_id, s.alias, s.foto, s.mostrar_foto, s.modo_entrada
+          FROM perfiles_sociales s
+          JOIN perfiles_clientes c ON c.usuario_id = s.usuario_id
+          WHERE s.modo_entrada = 'alias'
+            AND s.alias LIKE ?
+            AND s.usuario_id != ?
+            AND c.edad >= 18
+          ORDER BY s.alias ASC
+          LIMIT ?`,
+    args: [`${q}%`, user.id, MAX_BUSCAR]
+  });
+
+  const resultados = [];
+  for (const row of r.rows || []) {
+    const uid = toNum(row.usuario_id);
+    if (await hayBloqueo(db, user.id, uid)) continue;
+    const verFoto = Number(row.mostrar_foto) === 1;
+    resultados.push({
+      user_id: uid,
+      alias: row.alias,
+      foto: verFoto ? (row.foto || null) : null
+    });
+  }
+  return { ok: true, resultados };
 }
 
 async function borrarDatosSocialesUsuario(db, userId) {
@@ -1357,5 +1597,7 @@ module.exports = {
   listarFeed,
   crearPost,
   borrarPost,
+  listarMuro,
+  buscarPersonas,
   borrarDatosSocialesUsuario
 };

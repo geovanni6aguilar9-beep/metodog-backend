@@ -128,6 +128,8 @@ const {
   listarFeed: listarFeedSocial,
   crearPost: crearPostSocial,
   borrarPost: borrarPostSocial,
+  listarMuro: listarMuroSocial,
+  buscarPersonas: buscarPersonasSocial,
   borrarDatosSocialesUsuario
 } = require("./perfilSocial");
 const {
@@ -1838,6 +1840,26 @@ app.delete("/api/social/feed/:id", async (req, res) => {
     return responderPerfilSocial(res, result);
   } catch (err) {
     console.error("DELETE social/feed:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/api/social/muro", async (req, res) => {
+  try {
+    const result = await listarMuroSocial(db, req.user);
+    return responderPerfilSocial(res, result);
+  } catch (err) {
+    console.error("GET social/muro:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/api/social/buscar", async (req, res) => {
+  try {
+    const result = await buscarPersonasSocial(db, req.user, req.query?.q);
+    return responderPerfilSocial(res, result);
+  } catch (err) {
+    console.error("GET social/buscar:", err.message);
     res.status(500).json({ error: err.message });
   }
 });
