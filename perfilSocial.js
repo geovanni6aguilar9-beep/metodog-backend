@@ -12,6 +12,9 @@ const MAX_VITRINA = 6;
 const MAX_MSG_CHARS = 400;
 const MAX_HILO = 80;
 const MAX_MSGS_HORA = 40;
+const MAX_POST_CHARS = 280;
+const MAX_POSTS_HORA = 15;
+const MAX_FEED = 40;
 const MODOS = new Set(["cerrado", "codigo", "alias"]);
 const ALIAS_RE = /^[a-z0-9_]{3,20}$/;
 
@@ -70,6 +73,11 @@ async function ensureTablasPerfilSocial(db) {
       "ALTER TABLE perfiles_sociales ADD COLUMN mostrar_ranking INTEGER DEFAULT 0"
     );
   } catch (_) { /* ya existe */ }
+  try {
+    await db.execute(
+      "ALTER TABLE perfiles_sociales ADD COLUMN mostrar_feed INTEGER DEFAULT 0"
+    );
+  } catch (_) { /* ya existe */ }
 
   await db.execute(`CREATE TABLE IF NOT EXISTS social_vitrina (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -100,6 +108,23 @@ async function ensureTablasPerfilSocial(db) {
   await db.execute(
     `CREATE INDEX IF NOT EXISTS idx_social_mensajes_inbox
      ON social_mensajes(para_id, leido, id DESC)`
+  );
+
+  await db.execute(`CREATE TABLE IF NOT EXISTS social_posts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    usuario_id INTEGER NOT NULL,
+    texto TEXT,
+    imagen TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(usuario_id) REFERENCES usuarios(id)
+  )`);
+  await db.execute(
+    `CREATE INDEX IF NOT EXISTS idx_social_posts_created
+     ON social_posts(id DESC)`
+  );
+  await db.execute(
+    `CREATE INDEX IF NOT EXISTS idx_social_posts_user
+     ON social_posts(usuario_id, id DESC)`
   );
 }
 
@@ -308,6 +333,7 @@ function filaAPerfilPropio(row, { menor, resumen, vitrina }) {
     mostrar_prs: Number(row.mostrar_prs) === 1,
     mostrar_vitrina: Number(row.mostrar_vitrina) === 1,
     mostrar_ranking: Number(row.mostrar_ranking) === 1,
+    mostrar_feed: Number(row.mostrar_feed) === 1,
     menor: !!menor,
     social_activa: !menor,
     resumen: resumen || { sesiones: 0, series: 0, mejores: [] },
@@ -374,6 +400,10 @@ async function guardarYo(db, user, body) {
   if (body.mostrar_ranking != null) {
     patch.push("mostrar_ranking = ?");
     args.push(body.mostrar_ranking ? 1 : 0);
+  }
+  if (body.mostrar_feed != null) {
+    patch.push("mostrar_feed = ?");
+    args.push(body.mostrar_feed ? 1 : 0);
   }
 
   if (!patch.length) {
@@ -1144,7 +1174,145 @@ async function enviarMensaje(db, user, otherId, textoRaw) {
   return listarHilo(db, user, gate.oid);
 }
 
+async function idsCirculo(db, userId) {
+  const amigos = await db.execute({
+    sql: `SELECT CASE WHEN de_id = ? THEN para_id ELSE de_id END AS uid
+          FROM social_solicitudes
+          WHERE estado = 'aceptada' AND (de_id = ? OR para_id = ?)`,
+    args: [userId, userId, userId]
+  });
+  const ids = [userId, ...(amigos.rows || []).map((r) => toNum(r.uid)).filter(Boolean)];
+  return [...new Set(ids)];
+}
+
+async function listarFeed(db, user) {
+  if (!(await rolEsCliente(db, user.id))) {
+    return { ok: false, status: 403, error: "El feed es para atletas." };
+  }
+  if (await esMenorOSinEdad(db, user.id)) {
+    return { ok: true, posts: [], yo_publico: false };
+  }
+  await asegurarPerfil(db, user.id, user.nombre);
+
+  const uniq = await idsCirculo(db, user.id);
+  const placeholders = uniq.map(() => "?").join(",");
+
+  const r = await db.execute({
+    sql: `SELECT p.id, p.usuario_id, p.texto, p.imagen, p.created_at,
+                 s.alias, s.foto, s.mostrar_foto, s.mostrar_feed
+          FROM social_posts p
+          JOIN perfiles_sociales s ON s.usuario_id = p.usuario_id
+          JOIN perfiles_clientes c ON c.usuario_id = p.usuario_id
+          WHERE p.usuario_id IN (${placeholders})
+            AND c.edad >= 18
+            AND (p.usuario_id = ? OR s.mostrar_feed = 1)
+          ORDER BY p.id DESC
+          LIMIT ?`,
+    args: [...uniq, user.id, MAX_FEED]
+  });
+
+  const yo = await db.execute({
+    sql: "SELECT mostrar_feed FROM perfiles_sociales WHERE usuario_id = ?",
+    args: [user.id]
+  });
+  const yoPublico = Number(yo.rows?.[0]?.mostrar_feed) === 1;
+
+  const posts = [];
+  for (const row of r.rows || []) {
+    const uid = toNum(row.usuario_id);
+    if (uid !== user.id && (await hayBloqueo(db, user.id, uid))) continue;
+    const soyYo = uid === user.id;
+    const verFoto = soyYo || Number(row.mostrar_foto) === 1;
+    posts.push({
+      id: toNum(row.id),
+      user_id: uid,
+      alias: row.alias,
+      foto: verFoto ? (row.foto || null) : null,
+      texto: row.texto || null,
+      imagen: row.imagen || null,
+      created_at: row.created_at,
+      soy_yo: soyYo
+    });
+  }
+
+  return { ok: true, yo_publico: yoPublico, posts };
+}
+
+async function crearPost(db, user, body) {
+  if (!(await rolEsCliente(db, user.id))) {
+    return { ok: false, status: 403, error: "El feed es para atletas." };
+  }
+  if (await esMenorOSinEdad(db, user.id)) {
+    return { ok: false, status: 403, error: "Cerrado hasta los 18 años." };
+  }
+  await asegurarPerfil(db, user.id, user.nombre);
+
+  const flag = await db.execute({
+    sql: "SELECT mostrar_feed FROM perfiles_sociales WHERE usuario_id = ?",
+    args: [user.id]
+  });
+  if (Number(flag.rows?.[0]?.mostrar_feed) !== 1) {
+    return {
+      ok: false,
+      status: 403,
+      error: "Activa «Publicar en el feed» en Privacidad."
+    };
+  }
+
+  const texto = String(body?.texto || "")
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  let imagen = null;
+  if (body?.foto) {
+    const v = validarFoto(body.foto);
+    if (!v.ok) return { ok: false, status: 400, error: v.error };
+    imagen = v.imagen;
+  }
+  if (!texto && !imagen) {
+    return { ok: false, status: 400, error: "Escribe algo o sube una foto." };
+  }
+  if (texto.length > MAX_POST_CHARS) {
+    return { ok: false, status: 400, error: `Máximo ${MAX_POST_CHARS} caracteres.` };
+  }
+
+  const hora = await db.execute({
+    sql: `SELECT COUNT(*) AS n FROM social_posts
+          WHERE usuario_id = ? AND created_at >= datetime('now', '-1 hour')`,
+    args: [user.id]
+  });
+  if (Number(hora.rows?.[0]?.n || 0) >= MAX_POSTS_HORA) {
+    return { ok: false, status: 429, error: "Demasiadas publicaciones. Espera un rato." };
+  }
+
+  const ins = await db.execute({
+    sql: `INSERT INTO social_posts (usuario_id, texto, imagen) VALUES (?, ?, ?)`,
+    args: [user.id, texto || null, imagen]
+  });
+  if (!(ins.rowsAffected > 0)) {
+    return { ok: false, status: 500, error: "No se pudo publicar." };
+  }
+  return listarFeed(db, user);
+}
+
+async function borrarPost(db, user, postId) {
+  const id = toNum(postId);
+  if (!id) return { ok: false, status: 400, error: "Publicación inválida." };
+  const del = await db.execute({
+    sql: "DELETE FROM social_posts WHERE id = ? AND usuario_id = ?",
+    args: [id, user.id]
+  });
+  if (!(del.rowsAffected > 0)) {
+    return { ok: false, status: 404, error: "No se encontró esa publicación." };
+  }
+  return listarFeed(db, user);
+}
+
 async function borrarDatosSocialesUsuario(db, userId) {
+  await db.execute({
+    sql: "DELETE FROM social_posts WHERE usuario_id = ?",
+    args: [userId]
+  });
   await db.execute({
     sql: "DELETE FROM social_mensajes WHERE de_id = ? OR para_id = ?",
     args: [userId, userId]
@@ -1186,5 +1354,8 @@ module.exports = {
   listarChats,
   listarHilo,
   enviarMensaje,
+  listarFeed,
+  crearPost,
+  borrarPost,
   borrarDatosSocialesUsuario
 };

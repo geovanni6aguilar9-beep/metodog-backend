@@ -125,6 +125,9 @@ const {
   listarChats: listarChatsSocial,
   listarHilo: listarHiloSocial,
   enviarMensaje: enviarMensajeSocial,
+  listarFeed: listarFeedSocial,
+  crearPost: crearPostSocial,
+  borrarPost: borrarPostSocial,
   borrarDatosSocialesUsuario
 } = require("./perfilSocial");
 const {
@@ -1805,6 +1808,36 @@ app.post("/api/social/chat/:id", async (req, res) => {
     return responderPerfilSocial(res, result);
   } catch (err) {
     console.error("POST social/chat:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/api/social/feed", async (req, res) => {
+  try {
+    const result = await listarFeedSocial(db, req.user);
+    return responderPerfilSocial(res, result);
+  } catch (err) {
+    console.error("GET social/feed:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/social/feed", async (req, res) => {
+  try {
+    const result = await crearPostSocial(db, req.user, req.body || {});
+    return responderPerfilSocial(res, result);
+  } catch (err) {
+    console.error("POST social/feed:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete("/api/social/feed/:id", async (req, res) => {
+  try {
+    const result = await borrarPostSocial(db, req.user, req.params.id);
+    return responderPerfilSocial(res, result);
+  } catch (err) {
+    console.error("DELETE social/feed:", err.message);
     res.status(500).json({ error: err.message });
   }
 });
