@@ -130,6 +130,9 @@ const {
   borrarPost: borrarPostSocial,
   listarMuro: listarMuroSocial,
   buscarPersonas: buscarPersonasSocial,
+  toggleLikePost: toggleLikePostSocial,
+  comentarPost: comentarPostSocial,
+  borrarComentario: borrarComentarioSocial,
   borrarDatosSocialesUsuario
 } = require("./perfilSocial");
 const {
@@ -1860,6 +1863,36 @@ app.get("/api/social/buscar", async (req, res) => {
     return responderPerfilSocial(res, result);
   } catch (err) {
     console.error("GET social/buscar:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/social/muro/:id/like", async (req, res) => {
+  try {
+    const result = await toggleLikePostSocial(db, req.user, req.params.id);
+    return responderPerfilSocial(res, result);
+  } catch (err) {
+    console.error("POST social/muro/like:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/social/muro/:id/comentario", async (req, res) => {
+  try {
+    const result = await comentarPostSocial(db, req.user, req.params.id, req.body?.texto);
+    return responderPerfilSocial(res, result);
+  } catch (err) {
+    console.error("POST social/muro/comentario:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete("/api/social/comentario/:id", async (req, res) => {
+  try {
+    const result = await borrarComentarioSocial(db, req.user, req.params.id);
+    return responderPerfilSocial(res, result);
+  } catch (err) {
+    console.error("DELETE social/comentario:", err.message);
     res.status(500).json({ error: err.message });
   }
 });

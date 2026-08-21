@@ -143,6 +143,32 @@ async function ensureTablasPerfilSocial(db) {
       "ALTER TABLE social_posts ADD COLUMN publico INTEGER NOT NULL DEFAULT 0"
     );
   } catch (_) { /* ya existe */ }
+
+  await db.execute(`CREATE TABLE IF NOT EXISTS social_post_likes (
+    post_id INTEGER NOT NULL,
+    usuario_id INTEGER NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (post_id, usuario_id),
+    FOREIGN KEY(post_id) REFERENCES social_posts(id),
+    FOREIGN KEY(usuario_id) REFERENCES usuarios(id)
+  )`);
+  await db.execute(
+    `CREATE INDEX IF NOT EXISTS idx_social_likes_post ON social_post_likes(post_id)`
+  );
+
+  await db.execute(`CREATE TABLE IF NOT EXISTS social_post_comentarios (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    post_id INTEGER NOT NULL,
+    usuario_id INTEGER NOT NULL,
+    texto TEXT NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(post_id) REFERENCES social_posts(id),
+    FOREIGN KEY(usuario_id) REFERENCES usuarios(id)
+  )`);
+  await db.execute(
+    `CREATE INDEX IF NOT EXISTS idx_social_comentarios_post
+     ON social_post_comentarios(post_id, id DESC)`
+  );
 }
 
 function toNum(v) {
@@ -195,17 +221,26 @@ async function edadUsuario(db, userId) {
 }
 
 async function esMenorOSinEdad(db, userId) {
+  const rolR = await db.execute({
+    sql: "SELECT rol FROM usuarios WHERE id = ?",
+    args: [userId]
+  });
+  const rol = String(rolR.rows?.[0]?.rol || "").toUpperCase();
+  // Coach / admin: identidad social propia (no ficha de menor)
+  if (rol === "COACH" || rol === "SUPERADMIN") return false;
   const edad = await edadUsuario(db, userId);
   if (edad == null) return true;
   return edad < 18;
 }
 
+/** Quién puede usar la red social (atleta o coach con perfil propio). */
 async function rolEsCliente(db, userId) {
   const r = await db.execute({
     sql: "SELECT rol FROM usuarios WHERE id = ?",
     args: [userId]
   });
-  return String(r.rows?.[0]?.rol || "").toUpperCase() === "CLIENTE";
+  const rol = String(r.rows?.[0]?.rol || "").toUpperCase();
+  return rol === "CLIENTE" || rol === "COACH" || rol === "SUPERADMIN";
 }
 
 async function aliasLibre(db, alias, exceptUserId) {
@@ -1471,10 +1506,14 @@ async function listarMuro(db, user) {
                  s.alias, s.foto, s.mostrar_foto, s.mostrar_muro
           FROM social_posts p
           JOIN perfiles_sociales s ON s.usuario_id = p.usuario_id
-          JOIN perfiles_clientes c ON c.usuario_id = p.usuario_id
+          JOIN usuarios u ON u.id = p.usuario_id
+          LEFT JOIN perfiles_clientes c ON c.usuario_id = p.usuario_id
           WHERE p.publico = 1
             AND s.mostrar_muro = 1
-            AND c.edad >= 18
+            AND (
+              UPPER(u.rol) IN ('COACH', 'SUPERADMIN')
+              OR (c.edad IS NOT NULL AND c.edad >= 18)
+            )
           ORDER BY p.id DESC
           LIMIT ?`,
     args: [MAX_MURO]
@@ -1492,8 +1531,29 @@ async function listarMuro(db, user) {
     if (uid !== user.id && (await hayBloqueo(db, user.id, uid))) continue;
     const soyYo = uid === user.id;
     const verFoto = soyYo || Number(row.mostrar_foto) === 1;
+    const postId = toNum(row.id);
+    const likes = await db.execute({
+      sql: `SELECT COUNT(*) AS n FROM social_post_likes WHERE post_id = ?`,
+      args: [postId]
+    });
+    const yoLike = await db.execute({
+      sql: `SELECT 1 FROM social_post_likes WHERE post_id = ? AND usuario_id = ? LIMIT 1`,
+      args: [postId, user.id]
+    });
+    const coms = await db.execute({
+      sql: `SELECT COUNT(*) AS n FROM social_post_comentarios WHERE post_id = ?`,
+      args: [postId]
+    });
+    const preview = await db.execute({
+      sql: `SELECT c.id, c.texto, c.created_at, c.usuario_id, s.alias
+            FROM social_post_comentarios c
+            JOIN perfiles_sociales s ON s.usuario_id = c.usuario_id
+            WHERE c.post_id = ?
+            ORDER BY c.id DESC LIMIT 2`,
+      args: [postId]
+    });
     posts.push({
-      id: toNum(row.id),
+      id: postId,
       user_id: uid,
       alias: row.alias,
       foto: verFoto ? (row.foto || null) : null,
@@ -1501,7 +1561,20 @@ async function listarMuro(db, user) {
       imagen: row.imagen || null,
       created_at: row.created_at,
       publico: true,
-      soy_yo: soyYo
+      soy_yo: soyYo,
+      likes: Number(likes.rows?.[0]?.n || 0),
+      yo_like: !!(yoLike.rows || []).length,
+      comentarios_n: Number(coms.rows?.[0]?.n || 0),
+      comentarios: (preview.rows || [])
+        .slice()
+        .reverse()
+        .map((c) => ({
+          id: toNum(c.id),
+          alias: c.alias,
+          texto: c.texto,
+          created_at: c.created_at,
+          soy_yo: toNum(c.usuario_id) === user.id
+        }))
     });
   }
   return { ok: true, yo_publico: yoPublico, posts };
@@ -1524,11 +1597,15 @@ async function buscarPersonas(db, user, qRaw) {
   const r = await db.execute({
     sql: `SELECT s.usuario_id, s.alias, s.foto, s.mostrar_foto, s.modo_entrada
           FROM perfiles_sociales s
-          JOIN perfiles_clientes c ON c.usuario_id = s.usuario_id
+          JOIN usuarios u ON u.id = s.usuario_id
+          LEFT JOIN perfiles_clientes c ON c.usuario_id = s.usuario_id
           WHERE s.modo_entrada = 'alias'
             AND s.alias LIKE ?
             AND s.usuario_id != ?
-            AND c.edad >= 18
+            AND (
+              UPPER(u.rol) IN ('COACH', 'SUPERADMIN')
+              OR (c.edad IS NOT NULL AND c.edad >= 18)
+            )
           ORDER BY s.alias ASC
           LIMIT ?`,
     args: [`${q}%`, user.id, MAX_BUSCAR]
@@ -1548,7 +1625,125 @@ async function buscarPersonas(db, user, qRaw) {
   return { ok: true, resultados };
 }
 
+const MAX_COMENTARIO = 200;
+const MAX_COMS_HORA = 40;
+
+async function toggleLikePost(db, user, postIdRaw) {
+  if (!(await rolEsCliente(db, user.id))) {
+    return { ok: false, status: 403, error: "Solo red social." };
+  }
+  if (await esMenorOSinEdad(db, user.id)) {
+    return { ok: false, status: 403, error: "Cerrado hasta los 18 años." };
+  }
+  const postId = toNum(postIdRaw);
+  if (!postId) return { ok: false, status: 400, error: "Post inválido." };
+
+  const post = await db.execute({
+    sql: `SELECT id, usuario_id, publico FROM social_posts WHERE id = ?`,
+    args: [postId]
+  });
+  const row = post.rows?.[0];
+  if (!row || Number(row.publico) !== 1) {
+    return { ok: false, status: 404, error: "Publicación no encontrada." };
+  }
+  const autor = toNum(row.usuario_id);
+  if (autor !== user.id && (await hayBloqueo(db, user.id, autor))) {
+    return { ok: false, status: 403, error: "No disponible." };
+  }
+
+  const prev = await db.execute({
+    sql: `SELECT 1 FROM social_post_likes WHERE post_id = ? AND usuario_id = ? LIMIT 1`,
+    args: [postId, user.id]
+  });
+  if (prev.rows?.length) {
+    await db.execute({
+      sql: `DELETE FROM social_post_likes WHERE post_id = ? AND usuario_id = ?`,
+      args: [postId, user.id]
+    });
+  } else {
+    await db.execute({
+      sql: `INSERT INTO social_post_likes (post_id, usuario_id) VALUES (?, ?)`,
+      args: [postId, user.id]
+    });
+  }
+  return listarMuro(db, user);
+}
+
+async function comentarPost(db, user, postIdRaw, textoRaw) {
+  if (!(await rolEsCliente(db, user.id))) {
+    return { ok: false, status: 403, error: "Solo red social." };
+  }
+  if (await esMenorOSinEdad(db, user.id)) {
+    return { ok: false, status: 403, error: "Cerrado hasta los 18 años." };
+  }
+  const postId = toNum(postIdRaw);
+  if (!postId) return { ok: false, status: 400, error: "Post inválido." };
+
+  const texto = String(textoRaw || "")
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!texto) return { ok: false, status: 400, error: "Escribe un comentario." };
+  if (texto.length > MAX_COMENTARIO) {
+    return { ok: false, status: 400, error: `Máximo ${MAX_COMENTARIO} caracteres.` };
+  }
+
+  const post = await db.execute({
+    sql: `SELECT id, usuario_id, publico FROM social_posts WHERE id = ?`,
+    args: [postId]
+  });
+  const row = post.rows?.[0];
+  if (!row || Number(row.publico) !== 1) {
+    return { ok: false, status: 404, error: "Publicación no encontrada." };
+  }
+  const autor = toNum(row.usuario_id);
+  if (autor !== user.id && (await hayBloqueo(db, user.id, autor))) {
+    return { ok: false, status: 403, error: "No disponible." };
+  }
+
+  const hora = await db.execute({
+    sql: `SELECT COUNT(*) AS n FROM social_post_comentarios
+          WHERE usuario_id = ? AND created_at >= datetime('now', '-1 hour')`,
+    args: [user.id]
+  });
+  if (Number(hora.rows?.[0]?.n || 0) >= MAX_COMS_HORA) {
+    return { ok: false, status: 429, error: "Demasiados comentarios. Espera un rato." };
+  }
+
+  const ins = await db.execute({
+    sql: `INSERT INTO social_post_comentarios (post_id, usuario_id, texto) VALUES (?, ?, ?)`,
+    args: [postId, user.id, texto]
+  });
+  if (!(ins.rowsAffected > 0)) {
+    return { ok: false, status: 500, error: "No se pudo comentar." };
+  }
+  return listarMuro(db, user);
+}
+
+async function borrarComentario(db, user, comIdRaw) {
+  const id = toNum(comIdRaw);
+  if (!id) return { ok: false, status: 400, error: "Comentario inválido." };
+  const del = await db.execute({
+    sql: `DELETE FROM social_post_comentarios WHERE id = ? AND usuario_id = ?`,
+    args: [id, user.id]
+  });
+  if (!(del.rowsAffected > 0)) {
+    return { ok: false, status: 404, error: "No se encontró ese comentario." };
+  }
+  return listarMuro(db, user);
+}
+
 async function borrarDatosSocialesUsuario(db, userId) {
+  await db.execute({
+    sql: `DELETE FROM social_post_likes WHERE usuario_id = ? OR post_id IN
+          (SELECT id FROM social_posts WHERE usuario_id = ?)`,
+    args: [userId, userId]
+  });
+  await db.execute({
+    sql: `DELETE FROM social_post_comentarios WHERE usuario_id = ? OR post_id IN
+          (SELECT id FROM social_posts WHERE usuario_id = ?)`,
+    args: [userId, userId]
+  });
   await db.execute({
     sql: "DELETE FROM social_posts WHERE usuario_id = ?",
     args: [userId]
@@ -1599,5 +1794,8 @@ module.exports = {
   borrarPost,
   listarMuro,
   buscarPersonas,
+  toggleLikePost,
+  comentarPost,
+  borrarComentario,
   borrarDatosSocialesUsuario
 };
