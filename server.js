@@ -1897,6 +1897,32 @@ app.delete("/api/social/comentario/:id", async (req, res) => {
   }
 });
 
+function parseMacrosTotalesJson(raw) {
+  if (raw == null || raw === "") return null;
+  if (typeof raw === "object") return raw;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+/** Si el coach/atleta guarda plan sin adherenciaDia, no borrar el checklist del día. */
+function mergeMacrosPreservandoAdherencia(prevRaw, incoming) {
+  const prev = parseMacrosTotalesJson(prevRaw);
+  const base =
+    incoming && typeof incoming === "object" && !Array.isArray(incoming)
+      ? { ...incoming }
+      : {};
+  if (!base.adherenciaDia && prev?.adherenciaDia) {
+    base.adherenciaDia = prev.adherenciaDia;
+    if (base.consumido == null && prev.consumido != null) {
+      base.consumido = prev.consumido;
+    }
+  }
+  return base;
+}
+
 app.post("/api/dietas/guardar", async (req, res) => {
   const { usuario_id, datos_dieta, macros_totales, notas_dieta, notificar } = req.body;
   if (!(await assertAccesoUsuarioEdicion(db, req, res, usuario_id))) return;
@@ -1929,9 +1955,17 @@ app.post("/api/dietas/guardar", async (req, res) => {
   }
 
   try {
+    const prevRes = await db.execute({
+      sql: "SELECT macros_totales FROM dietas WHERE usuario_id = ?",
+      args: [usuario_id]
+    });
+    const macrosMerged = mergeMacrosPreservandoAdherencia(
+      prevRes.rows[0]?.macros_totales,
+      macros_totales
+    );
     await db.execute({
       sql: `INSERT INTO dietas (usuario_id, datos_dieta, macros_totales, notas_dieta) VALUES (?, ?, ?, ?) ON CONFLICT(usuario_id) DO UPDATE SET datos_dieta = excluded.datos_dieta, macros_totales = excluded.macros_totales, notas_dieta = excluded.notas_dieta`,
-      args: [usuario_id, JSON.stringify(datos_dieta), JSON.stringify(macros_totales), notas_dieta ?? ""]
+      args: [usuario_id, JSON.stringify(datos_dieta), JSON.stringify(macrosMerged), notas_dieta ?? ""]
     });
     await notificarClientePlanActualizado(db, req, usuario_id, "plan_dieta", {
       silencioso: notificar === false
@@ -1940,6 +1974,75 @@ app.post("/api/dietas/guardar", async (req, res) => {
   } catch (err) {
     console.error("dietas/guardar:", err.message);
     res.status(503).json({ error: mensajeErrorDb(err), codigo: "db_temporal" });
+  }
+});
+
+/**
+ * Checklist Fitia-light: solo adherenciaDia + consumido.
+ * No toca datos_dieta. Permitido al dueño (con o sin coach).
+ */
+app.post("/api/dietas/adherencia", async (req, res) => {
+  const { usuario_id, adherenciaDia, consumido } = req.body || {};
+  if (!req.user) return res.status(401).json({ error: "Sesión requerida" });
+
+  const tid = parseInt(usuario_id, 10);
+  const aid = parseInt(req.user.id, 10);
+  if (!tid || Number.isNaN(tid)) {
+    return res.status(400).json({ error: "usuario_id inválido", codigo: "adherencia_bad_request" });
+  }
+  if (tid !== aid) {
+    return res.status(403).json({
+      error: "Solo puedes registrar tu propia adherencia.",
+      codigo: "adherencia_solo_propia"
+    });
+  }
+  if (!adherenciaDia || typeof adherenciaDia !== "object" || Array.isArray(adherenciaDia)) {
+    return res.status(400).json({
+      error: "adherenciaDia requerido",
+      codigo: "adherencia_bad_request"
+    });
+  }
+  if (!adherenciaDia.fecha || typeof adherenciaDia.fecha !== "string") {
+    return res.status(400).json({
+      error: "adherenciaDia.fecha requerida (YYYY-MM-DD)",
+      codigo: "adherencia_bad_request"
+    });
+  }
+
+  try {
+    const dietaRes = await db.execute({
+      sql: "SELECT datos_dieta, macros_totales, notas_dieta FROM dietas WHERE usuario_id = ?",
+      args: [tid]
+    });
+    if (!dietaRes.rows.length) {
+      return res.status(404).json({
+        error: "Aún no tienes un plan de nutrición.",
+        codigo: "adherencia_sin_dieta"
+      });
+    }
+
+    const prev = parseMacrosTotalesJson(dietaRes.rows[0].macros_totales) || {};
+    const macrosNext = {
+      ...prev,
+      adherenciaDia,
+      ...(consumido != null ? { consumido } : {})
+    };
+
+    await db.execute({
+      sql: "UPDATE dietas SET macros_totales = ? WHERE usuario_id = ?",
+      args: [JSON.stringify(macrosNext), tid]
+    });
+
+    res.json({
+      mensaje: "Adherencia guardada",
+      macros_totales: macrosNext
+    });
+  } catch (err) {
+    console.error("dietas/adherencia:", err.message);
+    res.status(503).json({
+      error: mensajeErrorDb(err, "No se pudo guardar la adherencia."),
+      codigo: "db_temporal"
+    });
   }
 });
 
