@@ -320,6 +320,19 @@ async function inicializarBD() {
     await db.execute(`CREATE TABLE IF NOT EXISTS dietas (
       id INTEGER PRIMARY KEY AUTOINCREMENT, usuario_id INTEGER UNIQUE, datos_dieta TEXT, macros_totales TEXT, notas_dieta TEXT, ultima_actualizacion DATETIME DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(usuario_id) REFERENCES usuarios(id)
     )`);
+    await db.execute(`CREATE TABLE IF NOT EXISTS nutricion_adherencia_log (
+      usuario_id INTEGER NOT NULL,
+      fecha TEXT NOT NULL,
+      hechas INTEGER NOT NULL DEFAULT 0,
+      total INTEGER NOT NULL DEFAULT 0,
+      pct INTEGER NOT NULL DEFAULT 0,
+      consumido_kcal INTEGER NOT NULL DEFAULT 0,
+      meta_kcal INTEGER NOT NULL DEFAULT 0,
+      dia_completo INTEGER NOT NULL DEFAULT 0,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (usuario_id, fecha),
+      FOREIGN KEY(usuario_id) REFERENCES usuarios(id)
+    )`);
     await db.execute(`CREATE TABLE IF NOT EXISTS alimentos (
       id INTEGER PRIMARY KEY AUTOINCREMENT, nombre TEXT, grupo TEXT, porcion_base REAL, unidad TEXT, calorias REAL, proteinas REAL, carbohidratos REAL, grasas REAL, sodio REAL
     )`);
@@ -1623,8 +1636,78 @@ function resumenAdherenciaDieta(macrosRaw, datosRaw, fecha) {
     total,
     pct,
     consumido_kcal,
-    meta_kcal
+    meta_kcal,
+    dia_completo: total > 0 && hechas >= total ? 1 : 0
   };
+}
+
+function fechaMenosDias(fechaIso, dias) {
+  const d = new Date(`${fechaIso}T12:00:00`);
+  d.setDate(d.getDate() - dias);
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+async function upsertAdherenciaLog(db, usuarioId, fecha, payload) {
+  const hechas = Number(payload.hechas) || 0;
+  const total = Number(payload.total) || 0;
+  const pct = Number(payload.pct) || 0;
+  const consumido_kcal = Number(payload.consumido_kcal) || 0;
+  const meta_kcal = Number(payload.meta_kcal) || 0;
+  const dia_completo = total > 0 && hechas >= total ? 1 : 0;
+  await db.execute({
+    sql: `INSERT INTO nutricion_adherencia_log
+          (usuario_id, fecha, hechas, total, pct, consumido_kcal, meta_kcal, dia_completo, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+          ON CONFLICT(usuario_id, fecha) DO UPDATE SET
+            hechas = excluded.hechas,
+            total = excluded.total,
+            pct = excluded.pct,
+            consumido_kcal = excluded.consumido_kcal,
+            meta_kcal = excluded.meta_kcal,
+            dia_completo = excluded.dia_completo,
+            updated_at = datetime('now')`,
+    args: [usuarioId, fecha, hechas, total, pct, consumido_kcal, meta_kcal, dia_completo]
+  });
+}
+
+async function sincronizarAdherenciaHoyDesdeDieta(db, usuarioId, fecha) {
+  const dietaRes = await db.execute({
+    sql: "SELECT datos_dieta, macros_totales FROM dietas WHERE usuario_id = ?",
+    args: [usuarioId]
+  });
+  if (!dietaRes.rows.length) return null;
+  const row = dietaRes.rows[0];
+  const resumen = resumenAdherenciaDieta(row.macros_totales, row.datos_dieta, fecha);
+  if (resumen.sin_plan || resumen.hechas === 0) return resumen;
+  await upsertAdherenciaLog(db, usuarioId, fecha, resumen);
+  return resumen;
+}
+
+function calcularRachaDesdeHistorial(filas, hoyFecha) {
+  const map = new Map((filas || []).map((r) => [r.fecha, r]));
+  const hoy = map.get(hoyFecha);
+  let check = hoyFecha;
+  if (!hoy?.dia_completo) {
+    check = fechaMenosDias(hoyFecha, 1);
+  }
+  let racha = 0;
+  for (let i = 0; i < 400; i++) {
+    const row = map.get(check);
+    if (row?.dia_completo) {
+      racha++;
+      check = fechaMenosDias(check, 1);
+    } else break;
+  }
+  return racha;
+}
+
+function contarDiasCompletos(filas, desdeFecha, hastaFecha) {
+  return (filas || []).filter(
+    (r) => r.fecha >= desdeFecha && r.fecha <= hastaFecha && r.dia_completo
+  ).length;
 }
 
 /** Fase D — adherencia nutrición hoy por alumno (cartera del coach). */
@@ -1663,6 +1746,32 @@ app.get("/api/coach/adherencia-hoy", async (req, res) => {
         nombre: row.nombre,
         ...base
       };
+    });
+
+    for (const item of items) {
+      if (!item.sin_plan && item.hechas > 0) {
+        await upsertAdherenciaLog(db, item.usuario_id, fecha, item);
+      }
+    }
+
+    const desde7 = fechaMenosDias(fecha, 6);
+    const ids = items.map((i) => i.usuario_id).filter(Boolean);
+    const semMap = {};
+    if (ids.length) {
+      const placeholders = ids.map(() => "?").join(",");
+      const semRes = await db.execute({
+        sql: `SELECT usuario_id, COUNT(*) AS dias_ok FROM nutricion_adherencia_log
+              WHERE dia_completo = 1 AND fecha >= ? AND fecha <= ?
+              AND usuario_id IN (${placeholders})
+              GROUP BY usuario_id`,
+        args: [desde7, fecha, ...ids]
+      });
+      (semRes.rows || []).forEach((r) => {
+        semMap[r.usuario_id] = Number(r.dias_ok) || 0;
+      });
+    }
+    items.forEach((item) => {
+      item.dias_completos_7d = semMap[item.usuario_id] || 0;
     });
 
     res.json({ fecha, items });
@@ -2149,6 +2258,22 @@ app.post("/api/dietas/adherencia", async (req, res) => {
       args: [JSON.stringify(macrosNext), tid]
     });
 
+    const datosRaw = dietaRes.rows[0].datos_dieta;
+    const resumen = resumenAdherenciaDieta(
+      JSON.stringify(macrosNext),
+      datosRaw,
+      adherenciaDia.fecha
+    );
+    if (!resumen.sin_plan && resumen.total > 0) {
+      await upsertAdherenciaLog(db, tid, adherenciaDia.fecha, {
+        hechas: resumen.hechas,
+        total: resumen.total,
+        pct: Number(adherenciaDia.pct) || resumen.pct,
+        consumido_kcal: resumen.consumido_kcal,
+        meta_kcal: resumen.meta_kcal
+      });
+    }
+
     res.json({
       mensaje: "Adherencia guardada",
       macros_totales: macrosNext
@@ -2305,6 +2430,62 @@ app.post("/api/dietas/sustituir", async (req, res) => {
   } catch (err) {
     console.error("dietas/sustituir:", err.message);
     res.status(500).json({ error: err.message || "Error al sustituir." });
+  }
+});
+
+/** Fase E — historial adherencia + racha (atleta / coach lectura). */
+app.get("/api/dietas/adherencia-resumen/:usuario_id", async (req, res) => {
+  const uid = parseInt(req.params.usuario_id, 10);
+  if (!uid || Number.isNaN(uid)) {
+    return res.status(400).json({ error: "usuario_id inválido" });
+  }
+  if (!(await assertAccesoUsuario(db, req, res, uid))) return;
+
+  const fecha = fechaIsoValida(req.query.fecha);
+  let dias = parseInt(req.query.dias, 10);
+  if (!Number.isFinite(dias) || dias < 1) dias = 14;
+  dias = Math.min(30, dias);
+  const desde = fechaMenosDias(fecha, dias - 1);
+
+  try {
+    await sincronizarAdherenciaHoyDesdeDieta(db, uid, fecha);
+
+    const histRes = await db.execute({
+      sql: `SELECT fecha, hechas, total, pct, consumido_kcal, meta_kcal, dia_completo
+            FROM nutricion_adherencia_log
+            WHERE usuario_id = ? AND fecha >= ? AND fecha <= ?
+            ORDER BY fecha DESC`,
+      args: [uid, desde, fecha]
+    });
+    const historial = (histRes.rows || []).map((r) => ({
+      fecha: r.fecha,
+      hechas: Number(r.hechas) || 0,
+      total: Number(r.total) || 0,
+      pct: Number(r.pct) || 0,
+      consumido_kcal: Number(r.consumido_kcal) || 0,
+      meta_kcal: Number(r.meta_kcal) || 0,
+      dia_completo: !!r.dia_completo
+    }));
+
+    const desde7 = fechaMenosDias(fecha, 6);
+    const racha = calcularRachaDesdeHistorial(historial, fecha);
+    const dias_completos_7d = contarDiasCompletos(historial, desde7, fecha);
+    const dias_completos_periodo = contarDiasCompletos(historial, desde, fecha);
+
+    res.json({
+      fecha,
+      dias,
+      racha,
+      dias_completos_7d,
+      dias_completos_periodo,
+      historial
+    });
+  } catch (err) {
+    console.error("dietas/adherencia-resumen:", err.message);
+    res.status(503).json({
+      error: mensajeErrorDb(err, "No se pudo cargar el historial."),
+      codigo: "db_temporal"
+    });
   }
 });
 
