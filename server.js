@@ -1556,6 +1556,122 @@ app.put("/api/coach/notas-ejercicio", async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+function fechaIsoValida(fechaParam) {
+  if (fechaParam && /^\d{4}-\d{2}-\d{2}$/.test(String(fechaParam))) return String(fechaParam);
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+function parseJsonDieta(raw) {
+  if (raw == null || raw === "") return null;
+  if (typeof raw === "object") return raw;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+function comidasDesdeDatosDietaBackend(datos) {
+  const d = parseJsonDieta(datos);
+  if (!d) return [];
+  if (Array.isArray(d?.planDiario)) return d.planDiario;
+  if (Array.isArray(d) && d.some((x) => x?.alimentos || x?.nombre)) return d;
+  if (typeof d?.numComidas === "number" && d.numComidas > 0) {
+    return Array.from({ length: d.numComidas }, (_, i) => ({ id: i + 1 }));
+  }
+  return [];
+}
+
+function resumenAdherenciaDieta(macrosRaw, datosRaw, fecha) {
+  const macros = parseJsonDieta(macrosRaw) || {};
+  const comidas = comidasDesdeDatosDietaBackend(datosRaw);
+  const total = comidas.length;
+  if (!total) {
+    return {
+      sin_plan: true,
+      hechas: 0,
+      total: 0,
+      pct: 0,
+      consumido_kcal: 0,
+      meta_kcal: 0
+    };
+  }
+
+  const adh = macros.adherenciaDia;
+  let hechas = 0;
+  if (adh?.fecha === fecha) {
+    if (adh.porComida && typeof adh.porComida === "object") {
+      hechas = comidas.filter((c) => adh.porComida[String(c.id)] === "hecha").length;
+    } else if (typeof adh.hechas === "number") {
+      hechas = adh.hechas;
+    }
+  }
+
+  const cons = macros.consumido;
+  const consumido_kcal = Math.round(Number(cons?.kcal ?? cons?.cal ?? 0));
+  const obj = macros.objetivos || macros;
+  const meta_kcal = Math.round(Number(obj?.kcal ?? obj?.cal ?? 0));
+  const pct = Math.round((hechas / total) * 100);
+
+  return {
+    sin_plan: false,
+    hechas,
+    total,
+    pct,
+    consumido_kcal,
+    meta_kcal
+  };
+}
+
+/** Fase D — adherencia nutrición hoy por alumno (cartera del coach). */
+app.get("/api/coach/adherencia-hoy", async (req, res) => {
+  if (!(await assertCoachOAdmin(db, req, res))) return;
+  const fecha = fechaIsoValida(req.query.fecha);
+  const coachId = parseInt(req.user.id, 10);
+
+  try {
+    let rows = [];
+    if (req.user.rol === "SUPERADMIN") {
+      const r = await db.execute({
+        sql: `SELECT u.id AS usuario_id, u.nombre, d.datos_dieta, d.macros_totales
+              FROM usuarios u
+              LEFT JOIN dietas d ON d.usuario_id = u.id
+              WHERE u.rol = 'CLIENTE'
+              ORDER BY u.nombre ASC`
+      });
+      rows = r.rows || [];
+    } else {
+      const r = await db.execute({
+        sql: `SELECT u.id AS usuario_id, u.nombre, d.datos_dieta, d.macros_totales
+              FROM usuarios u
+              LEFT JOIN dietas d ON d.usuario_id = u.id
+              WHERE u.rol = 'CLIENTE' AND u.coach_id = ?
+              ORDER BY u.nombre ASC`,
+        args: [coachId]
+      });
+      rows = r.rows || [];
+    }
+
+    const items = rows.map((row) => {
+      const base = resumenAdherenciaDieta(row.macros_totales, row.datos_dieta, fecha);
+      return {
+        usuario_id: row.usuario_id,
+        nombre: row.nombre,
+        ...base
+      };
+    });
+
+    res.json({ fecha, items });
+  } catch (err) {
+    console.error("coach/adherencia-hoy:", err.message);
+    res.status(503).json({ error: mensajeErrorDb(err, "No se pudo cargar adherencia."), codigo: "db_temporal" });
+  }
+});
+
 /** Plantillas de rutina del coach (semana + notas) — solo COACH/SUPERADMIN. */
 app.get("/api/coach/plantillas-rutina", async (req, res) => {
   if (!(await assertCoachOAdmin(db, req, res))) return;
