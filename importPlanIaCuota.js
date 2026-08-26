@@ -1,9 +1,9 @@
-/** Cuota import PDF/plan con IA freemium — Turso (beta: 3 intentos). Carril import rutina.
+/** Cuota import PDF/plan con IA freemium — Turso (2 intentos). Carril import rutina.
  * Solo se descuenta al ÉXITO (Gemini OK). Fallos / red / multitarea no queman intentos.
  * Tabla v2: limpia quemas del bug reserva-al-iniciar.
  */
 
-const MAX_IMPORT_PLAN_IA_GRATIS = 3;
+const MAX_IMPORT_PLAN_IA_GRATIS = 2;
 const TABLA = "cuota_import_plan_ia_v2";
 
 async function ensureTablaCuotaImportPlanIa(db) {
@@ -34,6 +34,19 @@ async function leerFilaCuotaImportPlanIa(db, userId) {
       sql: `SELECT usuario_id, usados, max_gratis FROM ${TABLA} WHERE usuario_id = ?`,
       args: [uid]
     });
+  } else {
+    const maxActual = parseInt(r.rows[0]?.max_gratis, 10) || 0;
+    if (maxActual !== MAX_IMPORT_PLAN_IA_GRATIS) {
+      await db.execute({
+        sql: `UPDATE ${TABLA} SET max_gratis = ?, updated_at = datetime('now')
+              WHERE usuario_id = ?`,
+        args: [MAX_IMPORT_PLAN_IA_GRATIS, uid]
+      });
+      r = await db.execute({
+        sql: `SELECT usuario_id, usados, max_gratis FROM ${TABLA} WHERE usuario_id = ?`,
+        args: [uid]
+      });
+    }
   }
   return r.rows?.[0] || null;
 }

@@ -1,6 +1,6 @@
 /** Cuota Combo IA freemium — Turso (no localStorage). */
 
-const MAX_COMBOS_GRATIS = 3;
+const MAX_COMBOS_GRATIS = 2;
 
 async function ensureTablaCuotaComboIa(db) {
   await db.execute(`CREATE TABLE IF NOT EXISTS cuota_combo_ia (
@@ -30,6 +30,19 @@ async function leerFilaCuota(db, userId) {
       sql: "SELECT usuario_id, usados, max_gratis FROM cuota_combo_ia WHERE usuario_id = ?",
       args: [uid]
     });
+  } else {
+    const maxActual = parseInt(r.rows[0]?.max_gratis, 10) || 0;
+    if (maxActual !== MAX_COMBOS_GRATIS) {
+      await db.execute({
+        sql: `UPDATE cuota_combo_ia SET max_gratis = ?, updated_at = datetime('now')
+              WHERE usuario_id = ?`,
+        args: [MAX_COMBOS_GRATIS, uid]
+      });
+      r = await db.execute({
+        sql: "SELECT usuario_id, usados, max_gratis FROM cuota_combo_ia WHERE usuario_id = ?",
+        args: [uid]
+      });
+    }
   }
   return r.rows?.[0] || null;
 }

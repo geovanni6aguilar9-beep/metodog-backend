@@ -1,6 +1,6 @@
-/** Cuota «Armar día con IA» freemium — Turso (beta: 3 intentos). */
+/** Cuota «Armar día con IA» freemium — Turso (1 intento). */
 
-const MAX_DIETAS_GRATIS = 3;
+const MAX_DIETAS_GRATIS = 1;
 
 async function ensureTablaCuotaDietaIa(db) {
   await db.execute(`CREATE TABLE IF NOT EXISTS cuota_dieta_ia (
@@ -32,11 +32,11 @@ async function leerFilaCuotaDieta(db, userId) {
     });
   } else {
     const maxActual = parseInt(r.rows[0]?.max_gratis, 10) || 0;
-    if (maxActual < MAX_DIETAS_GRATIS) {
+    if (maxActual !== MAX_DIETAS_GRATIS) {
       await db.execute({
         sql: `UPDATE cuota_dieta_ia SET max_gratis = ?, updated_at = datetime('now')
-              WHERE usuario_id = ? AND max_gratis < ?`,
-        args: [MAX_DIETAS_GRATIS, uid, MAX_DIETAS_GRATIS]
+              WHERE usuario_id = ?`,
+        args: [MAX_DIETAS_GRATIS, uid]
       });
       r = await db.execute({
         sql: "SELECT usuario_id, usados, max_gratis FROM cuota_dieta_ia WHERE usuario_id = ?",

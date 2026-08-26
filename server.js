@@ -706,7 +706,7 @@ app.post("/api/planes/preview-import-ia", async (req, res) => {
       return res.status(403).json({
         ok: false,
         motivo: "sin_cuota",
-        error: "Ya usaste tus 3 importaciones IA de prueba. Activa Full Week PRO para continuar.",
+        error: `Ya usaste tus ${MAX_IMPORT_PLAN_IA_GRATIS} importaciones IA de prueba. Activa Full Week PRO para continuar.`,
         restantes: cupo.restantes ?? 0
       });
     }
@@ -740,7 +740,7 @@ app.post("/api/planes/preview-import-ia", async (req, res) => {
         return res.status(403).json({
           ok: false,
           motivo: "sin_cuota",
-          error: "Ya usaste tus 3 importaciones IA de prueba. Activa Full Week PRO para continuar.",
+          error: `Ya usaste tus ${MAX_IMPORT_PLAN_IA_GRATIS} importaciones IA de prueba. Activa Full Week PRO para continuar.`,
           restantes: cobro.restantes ?? 0
         });
       }
@@ -787,7 +787,7 @@ app.post("/api/planes/preview-import-imagen", (req, res) => {
         return res.status(403).json({
           ok: false,
           motivo: "sin_cuota",
-          error: "Ya usaste tus 3 importaciones IA de prueba. Activa Full Week PRO para continuar.",
+          error: `Ya usaste tus ${MAX_IMPORT_PLAN_IA_GRATIS} importaciones IA de prueba. Activa Full Week PRO para continuar.`,
           restantes: cupo.restantes ?? 0
         });
       }
@@ -816,7 +816,7 @@ app.post("/api/planes/preview-import-imagen", (req, res) => {
           return res.status(403).json({
             ok: false,
             motivo: "sin_cuota",
-            error: "Ya usaste tus 3 importaciones IA de prueba. Activa Full Week PRO para continuar.",
+            error: `Ya usaste tus ${MAX_IMPORT_PLAN_IA_GRATIS} importaciones IA de prueba. Activa Full Week PRO para continuar.`,
             restantes: cobro.restantes ?? 0
           });
         }
@@ -1089,7 +1089,7 @@ async function resolverAccesoComboIa(userId, rol) {
     return {
       ok: false,
       motivo: "sin_cuota",
-      error: "Ya usaste tus 3 combos de prueba. Activa Full Week PRO para continuar.",
+      error: `Ya usaste tus ${MAX_COMBOS_GRATIS} combos de prueba. Activa Full Week PRO para continuar.`,
       restantes: 0,
       max: cuota.max
     };
@@ -1144,7 +1144,7 @@ async function resolverAccesoImportPlanIa(userId, rol) {
     return {
       ok: false,
       motivo: "sin_cuota",
-      error: "Ya usaste tus 3 importaciones IA de prueba. Activa Full Week PRO para continuar.",
+      error: `Ya usaste tus ${MAX_IMPORT_PLAN_IA_GRATIS} importaciones IA de prueba. Activa Full Week PRO para continuar.`,
       restantes: 0,
       max: cuota.max
     };
@@ -1268,7 +1268,7 @@ app.post("/api/alimentos/receta-ia", async (req, res) => {
       return res.status(403).json({
         ok: false,
         motivo: "sin_cuota",
-        error: "Ya usaste tus 3 combos de prueba. Activa Full Week PRO para continuar.",
+        error: `Ya usaste tus ${MAX_COMBOS_GRATIS} combos de prueba. Activa Full Week PRO para continuar.`,
         restantes: reserva.restantes ?? 0
       });
     }
