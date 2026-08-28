@@ -1599,6 +1599,19 @@ function comidasDesdeDatosDietaBackend(datos) {
   return [];
 }
 
+function rutinaTieneContenido(datosRaw) {
+  if (!datosRaw) return false;
+  try {
+    const data = typeof datosRaw === "string" ? JSON.parse(datosRaw) : datosRaw;
+    if (!data || typeof data !== "object") return false;
+    return Object.values(data).some(
+      (day) => Array.isArray(day) && day.some((ej) => ej && (ej.nombre || ej.ejercicio || ej.id))
+    );
+  } catch {
+    return false;
+  }
+}
+
 function resumenAdherenciaDieta(macrosRaw, datosRaw, fecha) {
   const macros = parseJsonDieta(macrosRaw) || {};
   const comidas = comidasDesdeDatosDietaBackend(datosRaw);
@@ -1720,18 +1733,20 @@ app.get("/api/coach/adherencia-hoy", async (req, res) => {
     let rows = [];
     if (req.user.rol === "SUPERADMIN") {
       const r = await db.execute({
-        sql: `SELECT u.id AS usuario_id, u.nombre, d.datos_dieta, d.macros_totales
+        sql: `SELECT u.id AS usuario_id, u.nombre, d.datos_dieta, d.macros_totales, r.datos_rutina
               FROM usuarios u
               LEFT JOIN dietas d ON d.usuario_id = u.id
+              LEFT JOIN rutinas r ON r.usuario_id = u.id
               WHERE u.rol = 'CLIENTE'
               ORDER BY u.nombre ASC`
       });
       rows = r.rows || [];
     } else {
       const r = await db.execute({
-        sql: `SELECT u.id AS usuario_id, u.nombre, d.datos_dieta, d.macros_totales
+        sql: `SELECT u.id AS usuario_id, u.nombre, d.datos_dieta, d.macros_totales, r.datos_rutina
               FROM usuarios u
               LEFT JOIN dietas d ON d.usuario_id = u.id
+              LEFT JOIN rutinas r ON r.usuario_id = u.id
               WHERE u.rol = 'CLIENTE' AND u.coach_id = ?
               ORDER BY u.nombre ASC`,
         args: [coachId]
@@ -1744,6 +1759,8 @@ app.get("/api/coach/adherencia-hoy", async (req, res) => {
       return {
         usuario_id: row.usuario_id,
         nombre: row.nombre,
+        tiene_rutina: rutinaTieneContenido(row.datos_rutina),
+        tiene_dieta: !base.sin_plan,
         ...base
       };
     });
@@ -1757,6 +1774,7 @@ app.get("/api/coach/adherencia-hoy", async (req, res) => {
     const desde7 = fechaMenosDias(fecha, 6);
     const ids = items.map((i) => i.usuario_id).filter(Boolean);
     const semMap = {};
+    const entrenoMap = {};
     if (ids.length) {
       const placeholders = ids.map(() => "?").join(",");
       const semRes = await db.execute({
@@ -1769,9 +1787,21 @@ app.get("/api/coach/adherencia-hoy", async (req, res) => {
       (semRes.rows || []).forEach((r) => {
         semMap[r.usuario_id] = Number(r.dias_ok) || 0;
       });
+      const entRes = await db.execute({
+        sql: `SELECT usuario_id, COUNT(DISTINCT date(fecha)) AS dias_entreno
+              FROM sesiones_entrenamiento
+              WHERE date(fecha) >= date(?) AND date(fecha) <= date(?)
+              AND usuario_id IN (${placeholders})
+              GROUP BY usuario_id`,
+        args: [desde7, fecha, ...ids]
+      });
+      (entRes.rows || []).forEach((r) => {
+        entrenoMap[r.usuario_id] = Number(r.dias_entreno) || 0;
+      });
     }
     items.forEach((item) => {
       item.dias_completos_7d = semMap[item.usuario_id] || 0;
+      item.entreno_7d = entrenoMap[item.usuario_id] || 0;
     });
 
     res.json({ fecha, items });
