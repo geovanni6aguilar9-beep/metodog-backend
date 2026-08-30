@@ -148,6 +148,7 @@ const ALIMENTOS_METODOG = [
   { nombre: "Ensalada Mixta", grupo: "Verduras", grupo_equivalencia: "verdura", porcion_base: 150, unidad: "g", calorias: 44.5, proteinas: 2, carbohidratos: 8, grasas: 0.5, sodio: 35 },
   { nombre: "Pico de Gallo", grupo: "Verduras", grupo_equivalencia: "verdura", porcion_base: 100, unidad: "g", calorias: 25.8, proteinas: 1, carbohidratos: 5, grasas: 0.2, sodio: 150 },
   { nombre: "Salsa Verde", grupo: "Otros", grupo_equivalencia: "condimento", porcion_base: 30, unidad: "g", calorias: 10.1, proteinas: 0.3, carbohidratos: 2, grasas: 0.1, sodio: 180 },
+  { nombre: "Chipotle en Adobo", grupo: "Otros", grupo_equivalencia: "condimento", porcion_base: 30, unidad: "g", calorias: 15.6, proteinas: 0.5, carbohidratos: 2.5, grasas: 0.4, sodio: 220 },
   { nombre: "Frijoles Refritos Light", grupo: "Leguminosas", grupo_equivalencia: "legumbre", porcion_base: 100, unidad: "g", calorias: 93.5, proteinas: 6, carbohidratos: 14, grasas: 1.5, sodio: 320 },
   { nombre: "Atún con Verduras", grupo: "Carnes", grupo_equivalencia: "proteina_magra", porcion_base: 100, unidad: "g", calorias: 102, proteinas: 18, carbohidratos: 3, grasas: 2, sodio: 280 },
   { nombre: "Bowl de Avena Proteica", grupo: "Cereales", grupo_equivalencia: "carbohidrato_complejo", porcion_base: 250, unidad: "g", calorias: 278, proteinas: 18, carbohidratos: 38, grasas: 6, sodio: 120 },
