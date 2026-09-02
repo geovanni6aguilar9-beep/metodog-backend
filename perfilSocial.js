@@ -7,7 +7,7 @@ const crypto = require("crypto");
 const { crearNotificacion } = require("./notificaciones");
 const { deduplicarFilasHistorialFuerza } = require("./fuerzaHistorial");
 
-const MAX_FOTO_CHARS = 520_000;
+const MAX_FOTO_CHARS = 780_000;
 const MAX_VITRINA = 24;
 const MAX_MSG_CHARS = 400;
 const MAX_HILO = 80;
@@ -1071,7 +1071,7 @@ async function rankingCirculo(db, user) {
     const uid = toNum(persona.usuario_id);
     const corporal = await contextoCorporal(db, uid);
     const lifts = await mejoresPorLift(db, uid);
-    const soyYo = uid === user.id;
+    const soyYo = toNum(uid) === toNum(user.id);
     const foto = soyYo || Number(persona.mostrar_foto) === 1 ? (persona.foto || null) : null;
     for (const tabla of tablas) {
       const lift = lifts[tabla.clave];
@@ -1375,7 +1375,7 @@ async function listarFeed(db, user) {
   for (const row of r.rows || []) {
     const uid = toNum(row.usuario_id);
     if (uid !== user.id && (await hayBloqueo(db, user.id, uid))) continue;
-    const soyYo = uid === user.id;
+    const soyYo = toNum(uid) === toNum(user.id);
     const verFoto = soyYo || Number(row.mostrar_foto) === 1;
     posts.push({
       id: toNum(row.id),
@@ -1475,19 +1475,31 @@ async function crearPost(db, user, body) {
 
 async function borrarPost(db, user, postId) {
   const id = toNum(postId);
-  if (!id) return { ok: false, status: 400, error: "Publicación inválida." };
+  const uid = toNum(user.id);
+  if (!id || !uid) return { ok: false, status: 400, error: "Publicación inválida." };
   const prev = await db.execute({
     sql: "SELECT publico FROM social_posts WHERE id = ? AND usuario_id = ?",
-    args: [id, user.id]
+    args: [id, uid]
   });
   if (!prev.rows?.length) {
     return { ok: false, status: 404, error: "No se encontró esa publicación." };
   }
   const eraPublico = Number(prev.rows[0].publico) === 1;
   await db.execute({
-    sql: "DELETE FROM social_posts WHERE id = ? AND usuario_id = ?",
-    args: [id, user.id]
+    sql: "DELETE FROM social_post_likes WHERE post_id = ?",
+    args: [id]
   });
+  await db.execute({
+    sql: "DELETE FROM social_post_comentarios WHERE post_id = ?",
+    args: [id]
+  });
+  const del = await db.execute({
+    sql: "DELETE FROM social_posts WHERE id = ? AND usuario_id = ?",
+    args: [id, uid]
+  });
+  if (!(del.rowsAffected > 0)) {
+    return { ok: false, status: 500, error: "No se pudo borrar." };
+  }
   if (eraPublico) return listarMuro(db, user);
   return listarFeed(db, user);
 }
@@ -1529,7 +1541,7 @@ async function listarMuro(db, user) {
   for (const row of r.rows || []) {
     const uid = toNum(row.usuario_id);
     if (uid !== user.id && (await hayBloqueo(db, user.id, uid))) continue;
-    const soyYo = uid === user.id;
+    const soyYo = toNum(uid) === toNum(user.id);
     const verFoto = soyYo || Number(row.mostrar_foto) === 1;
     const postId = toNum(row.id);
     const likes = await db.execute({
@@ -1573,7 +1585,7 @@ async function listarMuro(db, user) {
           alias: c.alias,
           texto: c.texto,
           created_at: c.created_at,
-          soy_yo: toNum(c.usuario_id) === user.id
+          soy_yo: toNum(c.usuario_id) === toNum(user.id)
         }))
     });
   }
