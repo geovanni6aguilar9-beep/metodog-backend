@@ -1,6 +1,6 @@
 /** Cuota Combo IA freemium — Turso (no localStorage). */
 
-const MAX_COMBOS_GRATIS = 2;
+const MAX_COMBOS_GRATIS = 1;
 
 async function ensureTablaCuotaComboIa(db) {
   await db.execute(`CREATE TABLE IF NOT EXISTS cuota_combo_ia (
