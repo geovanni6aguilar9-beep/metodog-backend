@@ -1777,7 +1777,7 @@ async function borrarComentario(db, user, comIdRaw) {
 // ─────── Historias (stories 24h) ───────
 
 const MAX_HISTORIAS_DIA = 10;
-const MAX_HISTORIA_CHARS = 780_000;
+const MAX_HISTORIA_CHARS = 4_500_000;
 
 async function crearHistoria(db, user, body) {
   if (!(await rolEsCliente(db, user.id))) {

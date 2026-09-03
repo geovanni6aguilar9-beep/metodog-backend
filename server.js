@@ -233,6 +233,8 @@ app.post(
 );
 
 app.use(cors(buildCorsOptions()));
+// Higher limit for stories (videos can be large)
+app.use("/api/social/historias", express.json({ limit: "5mb" }));
 app.use(express.json({ limit: "800kb" }));
 
 /** Público — ANTES del JWT (UptimeRobot usa HEAD) */
