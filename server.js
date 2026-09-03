@@ -133,7 +133,17 @@ const {
   toggleLikePost: toggleLikePostSocial,
   comentarPost: comentarPostSocial,
   borrarComentario: borrarComentarioSocial,
-  borrarDatosSocialesUsuario
+  borrarDatosSocialesUsuario,
+  crearHistoria: crearHistoriaSocial,
+  listarHistorias: listarHistoriasSocial,
+  borrarHistoria: borrarHistoriaSocial,
+  seguirUsuario: seguirUsuarioSocial,
+  dejarDeSeguir: dejarDeSeguirSocial,
+  listarSeguidores: listarSeguidoresSocial,
+  listarSiguiendo: listarSiguiendoSocial,
+  contadoresFollow: contadoresFollowSocial,
+  yoSigo: yoSigoSocial,
+  sugerenciasFollow: sugerenciasFollowSocial
 } = require("./perfilSocial");
 const {
   importarAlimentosCsv,
@@ -622,7 +632,7 @@ app.get("/api/alimentos", async (req, res) => {
       const acceso = await resolverAccesoBibliotecaPersonal(db, req.user);
       if (acceso.ok) {
         await limpiarNombresInvalidosCoach(db, acceso.ownerId);
-        sql = "SELECT * FROM alimentos WHERE coach_id IS NULL OR coach_id = ?";
+      sql = "SELECT * FROM alimentos WHERE coach_id IS NULL OR coach_id = ?";
         args.push(acceso.ownerId);
       }
     }
@@ -2152,6 +2162,100 @@ app.delete("/api/social/comentario/:id", async (req, res) => {
   }
 });
 
+// --- Historias ---
+app.post("/api/social/historias", async (req, res) => {
+  try {
+    const result = await crearHistoriaSocial(db, req.user, req.body || {});
+    return responderPerfilSocial(res, result);
+  } catch (err) {
+    console.error("POST social/historias:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/api/social/historias", async (req, res) => {
+  try {
+    const result = await listarHistoriasSocial(db, req.user);
+    return responderPerfilSocial(res, result);
+  } catch (err) {
+    console.error("GET social/historias:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete("/api/social/historias/:id", async (req, res) => {
+  try {
+    const result = await borrarHistoriaSocial(db, req.user, req.params.id);
+    return responderPerfilSocial(res, result);
+  } catch (err) {
+    console.error("DELETE social/historias:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// --- Follows ---
+app.post("/api/social/seguir/:id", async (req, res) => {
+  try {
+    const result = await seguirUsuarioSocial(db, req.user, req.params.id);
+    return responderPerfilSocial(res, result);
+  } catch (err) {
+    console.error("POST social/seguir:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete("/api/social/seguir/:id", async (req, res) => {
+  try {
+    const result = await dejarDeSeguirSocial(db, req.user, req.params.id);
+    return responderPerfilSocial(res, result);
+  } catch (err) {
+    console.error("DELETE social/seguir:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/api/social/seguidores", async (req, res) => {
+  try {
+    const result = await listarSeguidoresSocial(db, req.user);
+    return responderPerfilSocial(res, result);
+  } catch (err) {
+    console.error("GET social/seguidores:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/api/social/siguiendo", async (req, res) => {
+  try {
+    const result = await listarSiguiendoSocial(db, req.user);
+    return responderPerfilSocial(res, result);
+  } catch (err) {
+    console.error("GET social/siguiendo:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/api/social/follow-counts/:id", async (req, res) => {
+  try {
+    const counts = await contadoresFollowSocial(db, Number(req.params.id));
+    const sigo = await yoSigoSocial(db, req.user.id, Number(req.params.id));
+    res.json({ ...counts, yo_sigo: sigo });
+  } catch (err) {
+    console.error("GET social/follow-counts:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// --- Sugerencias ---
+app.get("/api/social/sugerencias", async (req, res) => {
+  try {
+    const result = await sugerenciasFollowSocial(db, req.user);
+    return responderPerfilSocial(res, result);
+  } catch (err) {
+    console.error("GET social/sugerencias:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 function parseMacrosTotalesJson(raw) {
   if (raw == null || raw === "") return null;
   if (typeof raw === "object") return raw;
@@ -3239,15 +3343,15 @@ app.get("/api/admin/usuarios", async (req, res) => {
         const concesion = await obtenerConcesionActiva(db, r.id);
         const activa = concesion && concesion.status === "active";
         return {
-          id: Number(r.id),
-          nombre: r.nombre,
-          email: r.email,
-          rol: r.rol,
-          coach_id: r.coach_id != null ? Number(r.coach_id) : null,
-          fecha_inicio: r.fecha_inicio,
-          coach_sub_status: r.coach_sub_status || null,
-          coach_plan: r.coach_plan || null,
-          atleta_sub_status: r.atleta_sub_status || null,
+      id: Number(r.id),
+      nombre: r.nombre,
+      email: r.email,
+      rol: r.rol,
+      coach_id: r.coach_id != null ? Number(r.coach_id) : null,
+      fecha_inicio: r.fecha_inicio,
+      coach_sub_status: r.coach_sub_status || null,
+      coach_plan: r.coach_plan || null,
+      atleta_sub_status: r.atleta_sub_status || null,
           paquete_rutina_6_dias: !!Number(r.paquete_rutina_6_dias),
           paquete_grandfathered: !!Number(r.paquete_grandfathered),
           directorio_verificado: !!Number(r.directorio_verificado),

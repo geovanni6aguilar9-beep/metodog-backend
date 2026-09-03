@@ -169,6 +169,35 @@ async function ensureTablasPerfilSocial(db) {
     `CREATE INDEX IF NOT EXISTS idx_social_comentarios_post
      ON social_post_comentarios(post_id, id DESC)`
   );
+
+  // --- Historias (stories 24h) ---
+  await db.execute(`CREATE TABLE IF NOT EXISTS social_historias (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    usuario_id INTEGER NOT NULL,
+    tipo TEXT NOT NULL DEFAULT 'imagen',
+    contenido TEXT NOT NULL,
+    texto_overlay TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(usuario_id) REFERENCES usuarios(id)
+  )`);
+  await db.execute(
+    `CREATE INDEX IF NOT EXISTS idx_social_historias_user
+     ON social_historias(usuario_id, created_at DESC)`
+  );
+
+  // --- Follows (seguir/dejar de seguir) ---
+  await db.execute(`CREATE TABLE IF NOT EXISTS social_follows (
+    seguidor_id INTEGER NOT NULL,
+    seguido_id INTEGER NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (seguidor_id, seguido_id),
+    FOREIGN KEY(seguidor_id) REFERENCES usuarios(id),
+    FOREIGN KEY(seguido_id) REFERENCES usuarios(id)
+  )`);
+  await db.execute(
+    `CREATE INDEX IF NOT EXISTS idx_social_follows_seguido
+     ON social_follows(seguido_id)`
+  );
 }
 
 function toNum(v) {
@@ -1745,6 +1774,283 @@ async function borrarComentario(db, user, comIdRaw) {
   return listarMuro(db, user);
 }
 
+// ─────── Historias (stories 24h) ───────
+
+const MAX_HISTORIAS_DIA = 10;
+const MAX_HISTORIA_CHARS = 780_000;
+
+async function crearHistoria(db, user, body) {
+  if (!(await rolEsCliente(db, user.id))) {
+    return { ok: false, status: 403, error: "Solo atletas." };
+  }
+  if (await esMenorOSinEdad(db, user.id)) {
+    return { ok: false, status: 403, error: "Cerrado hasta los 18 años." };
+  }
+  await asegurarPerfil(db, user.id, user.nombre);
+
+  const tipo = ["imagen", "texto", "video"].includes(body?.tipo) ? body.tipo : "imagen";
+  const contenido = String(body?.contenido || "").trim();
+  if (!contenido) {
+    return { ok: false, status: 400, error: "Agrega contenido a tu historia." };
+  }
+  if (contenido.length > MAX_HISTORIA_CHARS) {
+    return { ok: false, status: 400, error: "El contenido es muy pesado." };
+  }
+  if (tipo === "imagen" || tipo === "video") {
+    if (!contenido.startsWith("data:")) {
+      return { ok: false, status: 400, error: "Formato de archivo inválido." };
+    }
+  }
+  const textoOverlay = body?.texto_overlay ? String(body.texto_overlay).slice(0, 200).trim() : null;
+
+  const cnt = await db.execute({
+    sql: `SELECT COUNT(*) AS n FROM social_historias
+          WHERE usuario_id = ? AND created_at >= datetime('now', '-24 hours')`,
+    args: [user.id]
+  });
+  if (Number(cnt.rows?.[0]?.n || 0) >= MAX_HISTORIAS_DIA) {
+    return { ok: false, status: 429, error: `Máximo ${MAX_HISTORIAS_DIA} historias por día.` };
+  }
+
+  const ins = await db.execute({
+    sql: `INSERT INTO social_historias (usuario_id, tipo, contenido, texto_overlay) VALUES (?, ?, ?, ?)`,
+    args: [user.id, tipo, contenido, textoOverlay]
+  });
+  if (!(ins.rowsAffected > 0)) {
+    return { ok: false, status: 500, error: "No se pudo crear la historia." };
+  }
+  return { ok: true };
+}
+
+async function listarHistorias(db, user) {
+  if (!(await rolEsCliente(db, user.id))) {
+    return { ok: false, status: 403, error: "Solo atletas." };
+  }
+  if (await esMenorOSinEdad(db, user.id)) {
+    return { ok: true, historias: [] };
+  }
+  await asegurarPerfil(db, user.id, user.nombre);
+
+  // Get IDs of people I follow + myself
+  const followsR = await db.execute({
+    sql: `SELECT seguido_id FROM social_follows WHERE seguidor_id = ?`,
+    args: [user.id]
+  });
+  const followIds = [user.id, ...(followsR.rows || []).map((r) => toNum(r.seguido_id)).filter(Boolean)];
+  const uniq = [...new Set(followIds)];
+  const ph = uniq.map(() => "?").join(",");
+
+  const r = await db.execute({
+    sql: `SELECT h.id, h.usuario_id, h.tipo, h.contenido, h.texto_overlay, h.created_at,
+                 s.alias, s.foto, s.mostrar_foto
+          FROM social_historias h
+          JOIN perfiles_sociales s ON s.usuario_id = h.usuario_id
+          WHERE h.usuario_id IN (${ph})
+            AND h.created_at >= datetime('now', '-24 hours')
+          ORDER BY h.created_at DESC`,
+    args: uniq
+  });
+
+  // Group by user
+  const porUser = new Map();
+  for (const row of r.rows || []) {
+    const uid = toNum(row.usuario_id);
+    if (uid !== user.id && (await hayBloqueo(db, user.id, uid))) continue;
+    if (!porUser.has(uid)) {
+      const soyYo = uid === user.id;
+      const verFoto = soyYo || Number(row.mostrar_foto) === 1;
+      porUser.set(uid, {
+        user_id: uid,
+        alias: row.alias,
+        foto: verFoto ? (row.foto || null) : null,
+        soy_yo: soyYo,
+        items: []
+      });
+    }
+    porUser.get(uid).items.push({
+      id: toNum(row.id),
+      tipo: row.tipo,
+      contenido: row.contenido,
+      texto_overlay: row.texto_overlay || null,
+      created_at: row.created_at
+    });
+  }
+
+  // My stories first, then rest sorted by most recent
+  const grupos = [...porUser.values()];
+  grupos.sort((a, b) => {
+    if (a.soy_yo) return -1;
+    if (b.soy_yo) return 1;
+    const aT = a.items[0]?.created_at || "";
+    const bT = b.items[0]?.created_at || "";
+    return bT.localeCompare(aT);
+  });
+
+  return { ok: true, historias: grupos };
+}
+
+async function borrarHistoria(db, user, historiaId) {
+  const id = toNum(historiaId);
+  if (!id) return { ok: false, status: 400, error: "Historia inválida." };
+  const del = await db.execute({
+    sql: `DELETE FROM social_historias WHERE id = ? AND usuario_id = ?`,
+    args: [id, user.id]
+  });
+  if (!(del.rowsAffected > 0)) {
+    return { ok: false, status: 404, error: "No se encontró esa historia." };
+  }
+  return { ok: true };
+}
+
+// ─────── Follows (seguir / dejar de seguir) ───────
+
+async function seguirUsuario(db, user, targetId) {
+  const tid = toNum(targetId);
+  if (!tid || tid === user.id) return { ok: false, status: 400, error: "Usuario inválido." };
+  if (!(await rolEsCliente(db, user.id))) {
+    return { ok: false, status: 403, error: "Solo atletas." };
+  }
+  if (await esMenorOSinEdad(db, user.id)) {
+    return { ok: false, status: 403, error: "Cerrado hasta los 18 años." };
+  }
+  if (!(await rolEsCliente(db, tid))) {
+    return { ok: false, status: 404, error: "Usuario no encontrado." };
+  }
+  if (await hayBloqueo(db, user.id, tid)) {
+    return { ok: false, status: 403, error: "No puedes seguir a esa persona." };
+  }
+  await db.execute({
+    sql: `INSERT OR IGNORE INTO social_follows (seguidor_id, seguido_id) VALUES (?, ?)`,
+    args: [user.id, tid]
+  });
+  return { ok: true };
+}
+
+async function dejarDeSeguir(db, user, targetId) {
+  const tid = toNum(targetId);
+  if (!tid) return { ok: false, status: 400, error: "Usuario inválido." };
+  await db.execute({
+    sql: `DELETE FROM social_follows WHERE seguidor_id = ? AND seguido_id = ?`,
+    args: [user.id, tid]
+  });
+  return { ok: true };
+}
+
+async function listarSeguidores(db, user) {
+  const r = await db.execute({
+    sql: `SELECT f.seguidor_id AS user_id, s.alias, s.foto, s.mostrar_foto
+          FROM social_follows f
+          JOIN perfiles_sociales s ON s.usuario_id = f.seguidor_id
+          WHERE f.seguido_id = ?
+          ORDER BY f.created_at DESC LIMIT 200`,
+    args: [user.id]
+  });
+  const seguidores = (r.rows || []).map((row) => ({
+    user_id: toNum(row.user_id),
+    alias: row.alias,
+    foto: Number(row.mostrar_foto) === 1 ? (row.foto || null) : null
+  }));
+  return { ok: true, seguidores };
+}
+
+async function listarSiguiendo(db, user) {
+  const r = await db.execute({
+    sql: `SELECT f.seguido_id AS user_id, s.alias, s.foto, s.mostrar_foto
+          FROM social_follows f
+          JOIN perfiles_sociales s ON s.usuario_id = f.seguido_id
+          WHERE f.seguidor_id = ?
+          ORDER BY f.created_at DESC LIMIT 200`,
+    args: [user.id]
+  });
+  const siguiendo = (r.rows || []).map((row) => ({
+    user_id: toNum(row.user_id),
+    alias: row.alias,
+    foto: Number(row.mostrar_foto) === 1 ? (row.foto || null) : null
+  }));
+  return { ok: true, siguiendo };
+}
+
+async function contadoresFollow(db, userId) {
+  const seg = await db.execute({
+    sql: `SELECT COUNT(*) AS n FROM social_follows WHERE seguido_id = ?`,
+    args: [userId]
+  });
+  const sig = await db.execute({
+    sql: `SELECT COUNT(*) AS n FROM social_follows WHERE seguidor_id = ?`,
+    args: [userId]
+  });
+  return {
+    seguidores: Number(seg.rows?.[0]?.n || 0),
+    siguiendo: Number(sig.rows?.[0]?.n || 0)
+  };
+}
+
+async function yoSigo(db, userId, targetId) {
+  const r = await db.execute({
+    sql: `SELECT 1 FROM social_follows WHERE seguidor_id = ? AND seguido_id = ? LIMIT 1`,
+    args: [userId, targetId]
+  });
+  return !!(r.rows || []).length;
+}
+
+// ─────── Sugerencias ───────
+
+async function sugerenciasFollow(db, user) {
+  if (!(await rolEsCliente(db, user.id))) {
+    return { ok: false, status: 403, error: "Solo atletas." };
+  }
+  if (await esMenorOSinEdad(db, user.id)) {
+    return { ok: true, sugerencias: [] };
+  }
+  await asegurarPerfil(db, user.id, user.nombre);
+
+  // Users I already follow
+  const sigR = await db.execute({
+    sql: `SELECT seguido_id FROM social_follows WHERE seguidor_id = ?`,
+    args: [user.id]
+  });
+  const yaFollow = new Set((sigR.rows || []).map((r) => toNum(r.seguido_id)));
+  yaFollow.add(user.id);
+
+  // Blocked
+  const bloqR = await db.execute({
+    sql: `SELECT blocked_id FROM social_bloqueos WHERE blocker_id = ?
+          UNION SELECT blocker_id FROM social_bloqueos WHERE blocked_id = ?`,
+    args: [user.id, user.id]
+  });
+  const bloqueados = new Set((bloqR.rows || []).map((r) => toNum(r.blocked_id || r.blocker_id)));
+
+  // Active users with recent posts or same coach, mode alias (discoverable)
+  const r = await db.execute({
+    sql: `SELECT DISTINCT s.usuario_id, s.alias, s.foto, s.mostrar_foto
+          FROM perfiles_sociales s
+          JOIN usuarios u ON u.id = s.usuario_id
+          LEFT JOIN perfiles_clientes c ON c.usuario_id = s.usuario_id
+          WHERE s.modo_entrada = 'alias'
+            AND s.usuario_id != ?
+            AND (
+              UPPER(u.rol) IN ('COACH', 'SUPERADMIN')
+              OR (c.edad IS NOT NULL AND c.edad >= 18)
+            )
+          ORDER BY s.usuario_id DESC
+          LIMIT 50`,
+    args: [user.id]
+  });
+
+  const sugerencias = [];
+  for (const row of r.rows || []) {
+    if (sugerencias.length >= 10) break;
+    const uid = toNum(row.usuario_id);
+    if (yaFollow.has(uid) || bloqueados.has(uid)) continue;
+    sugerencias.push({
+      user_id: uid,
+      alias: row.alias,
+      foto: Number(row.mostrar_foto) === 1 ? (row.foto || null) : null
+    });
+  }
+  return { ok: true, sugerencias };
+}
+
 async function borrarDatosSocialesUsuario(db, userId) {
   await db.execute({
     sql: `DELETE FROM social_post_likes WHERE usuario_id = ? OR post_id IN
@@ -1774,6 +2080,14 @@ async function borrarDatosSocialesUsuario(db, userId) {
   });
   await db.execute({
     sql: "DELETE FROM social_bloqueos WHERE blocker_id = ? OR blocked_id = ?",
+    args: [userId, userId]
+  });
+  await db.execute({
+    sql: "DELETE FROM social_historias WHERE usuario_id = ?",
+    args: [userId]
+  });
+  await db.execute({
+    sql: "DELETE FROM social_follows WHERE seguidor_id = ? OR seguido_id = ?",
     args: [userId, userId]
   });
   await db.execute({
@@ -1809,5 +2123,15 @@ module.exports = {
   toggleLikePost,
   comentarPost,
   borrarComentario,
+  crearHistoria,
+  listarHistorias,
+  borrarHistoria,
+  seguirUsuario,
+  dejarDeSeguir,
+  listarSeguidores,
+  listarSiguiendo,
+  contadoresFollow,
+  yoSigo,
+  sugerenciasFollow,
   borrarDatosSocialesUsuario
 };
