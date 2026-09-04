@@ -26,7 +26,7 @@ async function ensureTablasPerfilSocial(db) {
     alias TEXT NOT NULL UNIQUE,
     codigo TEXT NOT NULL UNIQUE,
     foto TEXT,
-    modo_entrada TEXT NOT NULL DEFAULT 'cerrado',
+    modo_entrada TEXT NOT NULL DEFAULT 'alias',
     mostrar_foto INTEGER NOT NULL DEFAULT 1,
     mostrar_prs INTEGER NOT NULL DEFAULT 1,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -87,9 +87,23 @@ async function ensureTablasPerfilSocial(db) {
   } catch (_) { /* ya existe */ }
   try {
     await db.execute(
-      "ALTER TABLE perfiles_sociales ADD COLUMN mostrar_muro INTEGER DEFAULT 0"
+      "ALTER TABLE perfiles_sociales ADD COLUMN mostrar_muro INTEGER DEFAULT 1"
     );
   } catch (_) { /* ya existe */ }
+
+  // Producto abierto por defecto: publicar + aparecer en sugerencias/búsqueda
+  try {
+    await db.execute(
+      `UPDATE perfiles_sociales SET mostrar_muro = 1 WHERE COALESCE(mostrar_muro, 0) = 0`
+    );
+  } catch (_) { /* ignore */ }
+  try {
+    await db.execute(
+      `UPDATE perfiles_sociales
+       SET modo_entrada = 'alias'
+       WHERE modo_entrada IS NULL OR modo_entrada = '' OR modo_entrada = 'cerrado'`
+    );
+  } catch (_) { /* ignore */ }
 
   await db.execute(`CREATE TABLE IF NOT EXISTS social_vitrina (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -315,8 +329,8 @@ async function asegurarPerfil(db, userId, nombre) {
   const codigo = await generarCodigoUnico(db);
   await db.execute({
     sql: `INSERT INTO perfiles_sociales
-          (usuario_id, alias, codigo, modo_entrada, mostrar_foto, mostrar_prs, mostrar_vitrina, mostrar_ranking, updated_at)
-          VALUES (?, ?, ?, 'cerrado', 1, 1, 0, 0, datetime('now'))`,
+          (usuario_id, alias, codigo, modo_entrada, mostrar_foto, mostrar_prs, mostrar_vitrina, mostrar_ranking, mostrar_muro, mostrar_feed, updated_at)
+          VALUES (?, ?, ?, 'alias', 1, 1, 0, 0, 1, 1, datetime('now'))`,
     args: [userId, alias, codigo]
   });
   const fresh = await db.execute({
@@ -1586,11 +1600,19 @@ async function listarMuro(db, user) {
       args: [postId]
     });
     const preview = await db.execute({
-      sql: `SELECT c.id, c.texto, c.created_at, c.usuario_id, s.alias
+      sql: `SELECT c.id, c.texto, c.created_at, c.usuario_id, s.alias, s.foto, s.mostrar_foto
             FROM social_post_comentarios c
             JOIN perfiles_sociales s ON s.usuario_id = c.usuario_id
             WHERE c.post_id = ?
-            ORDER BY c.id DESC LIMIT 2`,
+            ORDER BY c.id DESC LIMIT 6`,
+      args: [postId]
+    });
+    const likesPrev = await db.execute({
+      sql: `SELECT l.usuario_id, s.alias, s.foto, s.mostrar_foto
+            FROM social_post_likes l
+            JOIN perfiles_sociales s ON s.usuario_id = l.usuario_id
+            WHERE l.post_id = ?
+            ORDER BY l.created_at DESC LIMIT 5`,
       args: [postId]
     });
     posts.push({
@@ -1605,17 +1627,31 @@ async function listarMuro(db, user) {
       soy_yo: soyYo,
       likes: Number(likes.rows?.[0]?.n || 0),
       yo_like: !!(yoLike.rows || []).length,
+      likes_preview: (likesPrev.rows || []).map((l) => {
+        const lid = toNum(l.usuario_id);
+        const verL = lid === toNum(user.id) || Number(l.mostrar_foto) === 1;
+        return {
+          user_id: lid,
+          alias: l.alias,
+          foto: verL ? (l.foto || null) : null
+        };
+      }),
       comentarios_n: Number(coms.rows?.[0]?.n || 0),
       comentarios: (preview.rows || [])
         .slice()
         .reverse()
-        .map((c) => ({
-          id: toNum(c.id),
-          alias: c.alias,
-          texto: c.texto,
-          created_at: c.created_at,
-          soy_yo: toNum(c.usuario_id) === toNum(user.id)
-        }))
+        .map((c) => {
+          const cid = toNum(c.usuario_id);
+          const verC = cid === toNum(user.id) || Number(c.mostrar_foto) === 1;
+          return {
+            id: toNum(c.id),
+            alias: c.alias,
+            texto: c.texto,
+            created_at: c.created_at,
+            foto: verC ? (c.foto || null) : null,
+            soy_yo: cid === toNum(user.id)
+          };
+        })
     });
   }
   return { ok: true, yo_publico: yoPublico, posts };
@@ -1706,6 +1742,21 @@ async function toggleLikePost(db, user, postIdRaw) {
       sql: `INSERT INTO social_post_likes (post_id, usuario_id) VALUES (?, ?)`,
       args: [postId, user.id]
     });
+    if (autor && autor !== user.id) {
+      try {
+        const miAlias = await aliasDe(db, user.id);
+        await crearNotificacion(db, {
+          usuarioId: autor,
+          tipo: "social_like",
+          titulo: "Nuevo me gusta",
+          cuerpo: `@${miAlias} le dio me gusta a tu publicación.`,
+          refTipo: "social_post",
+          refId: postId
+        });
+      } catch (err) {
+        console.warn("notif social_like:", err.message);
+      }
+    }
   }
   return listarMuro(db, user);
 }
@@ -1758,7 +1809,108 @@ async function comentarPost(db, user, postIdRaw, textoRaw) {
   if (!(ins.rowsAffected > 0)) {
     return { ok: false, status: 500, error: "No se pudo comentar." };
   }
+  if (autor && autor !== user.id) {
+    try {
+      const miAlias = await aliasDe(db, user.id);
+      const previewTxt = texto.length > 72 ? `${texto.slice(0, 72)}…` : texto;
+      await crearNotificacion(db, {
+        usuarioId: autor,
+        tipo: "social_comentario",
+        titulo: "Nuevo comentario",
+        cuerpo: `@${miAlias}: ${previewTxt}`,
+        refTipo: "social_post",
+        refId: postId
+      });
+    } catch (err) {
+      console.warn("notif social_comentario:", err.message);
+    }
+  }
   return listarMuro(db, user);
+}
+
+async function listarComentariosPost(db, user, postIdRaw) {
+  if (!(await rolEsCliente(db, user.id))) {
+    return { ok: false, status: 403, error: "Solo red social." };
+  }
+  const postId = toNum(postIdRaw);
+  if (!postId) return { ok: false, status: 400, error: "Post inválido." };
+
+  const post = await db.execute({
+    sql: `SELECT id, usuario_id, publico FROM social_posts WHERE id = ?`,
+    args: [postId]
+  });
+  const row = post.rows?.[0];
+  if (!row || Number(row.publico) !== 1) {
+    return { ok: false, status: 404, error: "Publicación no encontrada." };
+  }
+  const autor = toNum(row.usuario_id);
+  if (autor !== user.id && (await hayBloqueo(db, user.id, autor))) {
+    return { ok: false, status: 403, error: "No disponible." };
+  }
+
+  const r = await db.execute({
+    sql: `SELECT c.id, c.texto, c.created_at, c.usuario_id, s.alias, s.foto, s.mostrar_foto
+          FROM social_post_comentarios c
+          JOIN perfiles_sociales s ON s.usuario_id = c.usuario_id
+          WHERE c.post_id = ?
+          ORDER BY c.id ASC
+          LIMIT 120`,
+    args: [postId]
+  });
+  const comentarios = (r.rows || []).map((c) => {
+    const cid = toNum(c.usuario_id);
+    const verC = cid === toNum(user.id) || Number(c.mostrar_foto) === 1;
+    return {
+      id: toNum(c.id),
+      alias: c.alias,
+      texto: c.texto,
+      created_at: c.created_at,
+      foto: verC ? (c.foto || null) : null,
+      soy_yo: cid === toNum(user.id)
+    };
+  });
+  return { ok: true, post_id: postId, comentarios };
+}
+
+async function listarLikesPost(db, user, postIdRaw) {
+  if (!(await rolEsCliente(db, user.id))) {
+    return { ok: false, status: 403, error: "Solo red social." };
+  }
+  const postId = toNum(postIdRaw);
+  if (!postId) return { ok: false, status: 400, error: "Post inválido." };
+
+  const post = await db.execute({
+    sql: `SELECT id, usuario_id, publico FROM social_posts WHERE id = ?`,
+    args: [postId]
+  });
+  const row = post.rows?.[0];
+  if (!row || Number(row.publico) !== 1) {
+    return { ok: false, status: 404, error: "Publicación no encontrada." };
+  }
+  const autor = toNum(row.usuario_id);
+  if (autor !== user.id && (await hayBloqueo(db, user.id, autor))) {
+    return { ok: false, status: 403, error: "No disponible." };
+  }
+
+  const r = await db.execute({
+    sql: `SELECT l.usuario_id, s.alias, s.foto, s.mostrar_foto
+          FROM social_post_likes l
+          JOIN perfiles_sociales s ON s.usuario_id = l.usuario_id
+          WHERE l.post_id = ?
+          ORDER BY l.created_at DESC
+          LIMIT 200`,
+    args: [postId]
+  });
+  const likes = (r.rows || []).map((l) => {
+    const lid = toNum(l.usuario_id);
+    const verL = lid === toNum(user.id) || Number(l.mostrar_foto) === 1;
+    return {
+      user_id: lid,
+      alias: l.alias,
+      foto: verL ? (l.foto || null) : null
+    };
+  });
+  return { ok: true, post_id: postId, likes };
 }
 
 async function borrarComentario(db, user, comIdRaw) {
@@ -2122,6 +2274,8 @@ module.exports = {
   buscarPersonas,
   toggleLikePost,
   comentarPost,
+  listarComentariosPost,
+  listarLikesPost,
   borrarComentario,
   crearHistoria,
   listarHistorias,

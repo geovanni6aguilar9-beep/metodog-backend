@@ -132,6 +132,8 @@ const {
   buscarPersonas: buscarPersonasSocial,
   toggleLikePost: toggleLikePostSocial,
   comentarPost: comentarPostSocial,
+  listarComentariosPost: listarComentariosPostSocial,
+  listarLikesPost: listarLikesPostSocial,
   borrarComentario: borrarComentarioSocial,
   borrarDatosSocialesUsuario,
   crearHistoria: crearHistoriaSocial,
@@ -2150,6 +2152,26 @@ app.post("/api/social/muro/:id/comentario", async (req, res) => {
     return responderPerfilSocial(res, result);
   } catch (err) {
     console.error("POST social/muro/comentario:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/api/social/muro/:id/comentarios", async (req, res) => {
+  try {
+    const result = await listarComentariosPostSocial(db, req.user, req.params.id);
+    return responderPerfilSocial(res, result);
+  } catch (err) {
+    console.error("GET social/muro/comentarios:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/api/social/muro/:id/likes", async (req, res) => {
+  try {
+    const result = await listarLikesPostSocial(db, req.user, req.params.id);
+    return responderPerfilSocial(res, result);
+  } catch (err) {
+    console.error("GET social/muro/likes:", err.message);
     res.status(500).json({ error: err.message });
   }
 });
