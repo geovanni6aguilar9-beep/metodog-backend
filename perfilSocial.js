@@ -1586,11 +1586,19 @@ async function listarMuro(db, user) {
       args: [postId]
     });
     const preview = await db.execute({
-      sql: `SELECT c.id, c.texto, c.created_at, c.usuario_id, s.alias
+      sql: `SELECT c.id, c.texto, c.created_at, c.usuario_id, s.alias, s.foto, s.mostrar_foto
             FROM social_post_comentarios c
             JOIN perfiles_sociales s ON s.usuario_id = c.usuario_id
             WHERE c.post_id = ?
-            ORDER BY c.id DESC LIMIT 2`,
+            ORDER BY c.id DESC LIMIT 6`,
+      args: [postId]
+    });
+    const likesPrev = await db.execute({
+      sql: `SELECT l.usuario_id, s.alias, s.foto, s.mostrar_foto
+            FROM social_post_likes l
+            JOIN perfiles_sociales s ON s.usuario_id = l.usuario_id
+            WHERE l.post_id = ?
+            ORDER BY l.created_at DESC LIMIT 5`,
       args: [postId]
     });
     posts.push({
@@ -1605,17 +1613,31 @@ async function listarMuro(db, user) {
       soy_yo: soyYo,
       likes: Number(likes.rows?.[0]?.n || 0),
       yo_like: !!(yoLike.rows || []).length,
+      likes_preview: (likesPrev.rows || []).map((l) => {
+        const lid = toNum(l.usuario_id);
+        const verL = lid === toNum(user.id) || Number(l.mostrar_foto) === 1;
+        return {
+          user_id: lid,
+          alias: l.alias,
+          foto: verL ? (l.foto || null) : null
+        };
+      }),
       comentarios_n: Number(coms.rows?.[0]?.n || 0),
       comentarios: (preview.rows || [])
         .slice()
         .reverse()
-        .map((c) => ({
-          id: toNum(c.id),
-          alias: c.alias,
-          texto: c.texto,
-          created_at: c.created_at,
-          soy_yo: toNum(c.usuario_id) === toNum(user.id)
-        }))
+        .map((c) => {
+          const cid = toNum(c.usuario_id);
+          const verC = cid === toNum(user.id) || Number(c.mostrar_foto) === 1;
+          return {
+            id: toNum(c.id),
+            alias: c.alias,
+            texto: c.texto,
+            created_at: c.created_at,
+            foto: verC ? (c.foto || null) : null,
+            soy_yo: cid === toNum(user.id)
+          };
+        })
     });
   }
   return { ok: true, yo_publico: yoPublico, posts };
@@ -1706,6 +1728,21 @@ async function toggleLikePost(db, user, postIdRaw) {
       sql: `INSERT INTO social_post_likes (post_id, usuario_id) VALUES (?, ?)`,
       args: [postId, user.id]
     });
+    if (autor && autor !== user.id) {
+      try {
+        const miAlias = await aliasDe(db, user.id);
+        await crearNotificacion(db, {
+          usuarioId: autor,
+          tipo: "social_like",
+          titulo: "Nuevo me gusta",
+          cuerpo: `@${miAlias} le dio me gusta a tu publicación.`,
+          refTipo: "social_post",
+          refId: postId
+        });
+      } catch (err) {
+        console.warn("notif social_like:", err.message);
+      }
+    }
   }
   return listarMuro(db, user);
 }
@@ -1757,6 +1794,22 @@ async function comentarPost(db, user, postIdRaw, textoRaw) {
   });
   if (!(ins.rowsAffected > 0)) {
     return { ok: false, status: 500, error: "No se pudo comentar." };
+  }
+  if (autor && autor !== user.id) {
+    try {
+      const miAlias = await aliasDe(db, user.id);
+      const previewTxt = texto.length > 72 ? `${texto.slice(0, 72)}…` : texto;
+      await crearNotificacion(db, {
+        usuarioId: autor,
+        tipo: "social_comentario",
+        titulo: "Nuevo comentario",
+        cuerpo: `@${miAlias}: ${previewTxt}`,
+        refTipo: "social_post",
+        refId: postId
+      });
+    } catch (err) {
+      console.warn("notif social_comentario:", err.message);
+    }
   }
   return listarMuro(db, user);
 }
