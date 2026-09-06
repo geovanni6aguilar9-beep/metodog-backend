@@ -563,8 +563,9 @@ async function inicializarBD() {
     await seedAlimentosMetodog(db);
     console.log("✅ Base de datos conectada (suscripciones atleta/coach + tiers).");
   } catch (error) {
-    console.error("❌ Error al conectar con la base de datos:", error.message);
-    if (process.env.USE_LOCAL_DB !== "true") {
+    console.error("❌ Error al inicializar BD (migraciones/seed):", error.message);
+    if (error?.stack) console.error(error.stack.split("\n").slice(0, 6).join("\n"));
+    if (process.env.USE_LOCAL_DB !== "true" && /TURSO|fetch failed|ECONN|network|401|403/i.test(String(error.message))) {
       console.error("💡 Si estás en local y falla la red a Turso, añade USE_LOCAL_DB=true en backend/.env");
     }
   }

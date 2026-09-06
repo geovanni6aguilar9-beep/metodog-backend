@@ -114,8 +114,8 @@ async function seedAlimentosMetodog(db) {
   }
 
   // Aceites mal etiquetados como "1 g" con macros de cucharada (global + coach)
-  await db.execute({
-    sql: `UPDATE alimentos
+  // Importante: pasar string (o args: []) — `{ sql }` sin args rompe @libsql (Object.entries(undefined)).
+  await db.execute(`UPDATE alimentos
           SET unidad = 'cucharada',
               porcion_base = 1,
               grupo = 'Grasas',
@@ -126,8 +126,7 @@ async function seedAlimentosMetodog(db) {
             )
             AND LOWER(COALESCE(unidad, 'g')) IN ('g', 'gr', 'gramo', 'gramos')
             AND CAST(porcion_base AS REAL) <= 2
-            AND CAST(grasas AS REAL) >= 10`
-  });
+            AND CAST(grasas AS REAL) >= 10`);
 
   const count = await db.execute("SELECT COUNT(*) AS n FROM alimentos");
   console.log(`✅ Biblioteca alimentos: ${count.rows[0]?.n ?? "?"} ítems (grupo_equivalencia activo).`);
