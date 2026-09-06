@@ -613,8 +613,13 @@ function validarStripeEnProduccion() {
         const price = await stripe.prices.retrieve(priceId);
         if (!price.active) {
           console.error(`❌ ${envKey}=${priceId} existe pero está INACTIVO en Stripe.`);
+        } else if (envKey === "STRIPE_PRICE_FULL_WEEK" && !price.recurring) {
+          console.error(
+            `❌ ${envKey}=${priceId} es pago ÚNICO (no recurrente). Checkout atleta necesita Recurrente · Mensual.`
+          );
         } else {
-          console.log(`✓ ${envKey} OK (${priceId}, ${price.currency} ${price.unit_amount / 100})`);
+          const rec = price.recurring ? ` · ${price.recurring.interval}` : " · one_time";
+          console.log(`✓ ${envKey} OK (${priceId}, ${price.currency} ${price.unit_amount / 100}${rec})`);
         }
       } catch (err) {
         console.error(

@@ -819,9 +819,13 @@ async function crearCheckoutAtleta(req, res, db) {
         line_items: buildLineItems(priceId)
       });
     } catch (err) {
-      if (priceId && /no such price/i.test(err.message)) {
+      const msg = String(err?.message || "");
+      const priceInutil =
+        priceId &&
+        (/no such price/i.test(msg) || /recurring price/i.test(msg) || /subscription.*mode/i.test(msg));
+      if (priceInutil) {
         console.error(
-          `Stripe checkout atleta: Price ID inválido (${priceId}). Usando precio inline. Actualiza STRIPE_PRICE_FULL_WEEK en Render con un price_ live.`
+          `Stripe checkout atleta: Price ID no sirve para suscripción (${priceId}): ${msg}. Usando precio recurrente inline $149. En Stripe crea un precio Recurrente · Mensual y actualiza STRIPE_PRICE_FULL_WEEK.`
         );
         session = await stripe.checkout.sessions.create({
           ...sessionPayload,
