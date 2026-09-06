@@ -157,6 +157,25 @@ async function ensureTablasPerfilSocial(db) {
       "ALTER TABLE social_posts ADD COLUMN publico INTEGER NOT NULL DEFAULT 0"
     );
   } catch (_) { /* ya existe */ }
+  try {
+    await db.execute(
+      "ALTER TABLE social_posts ADD COLUMN comentarios_off INTEGER NOT NULL DEFAULT 0"
+    );
+  } catch (_) { /* ya existe */ }
+
+  await db.execute(`CREATE TABLE IF NOT EXISTS social_comentario_reacciones (
+    comentario_id INTEGER NOT NULL,
+    usuario_id INTEGER NOT NULL,
+    emoji TEXT NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (comentario_id, usuario_id),
+    FOREIGN KEY(comentario_id) REFERENCES social_post_comentarios(id),
+    FOREIGN KEY(usuario_id) REFERENCES usuarios(id)
+  )`);
+  await db.execute(
+    `CREATE INDEX IF NOT EXISTS idx_com_reacciones_com
+     ON social_comentario_reacciones(comentario_id)`
+  );
 
   await db.execute(`CREATE TABLE IF NOT EXISTS social_post_likes (
     post_id INTEGER NOT NULL,
@@ -1558,6 +1577,7 @@ async function listarMuro(db, user) {
 
   const r = await db.execute({
     sql: `SELECT p.id, p.usuario_id, p.texto, p.imagen, p.created_at, p.publico,
+                 COALESCE(p.comentarios_off, 0) AS comentarios_off,
                  s.alias, s.foto, s.mostrar_foto, s.mostrar_muro
           FROM social_posts p
           JOIN perfiles_sociales s ON s.usuario_id = p.usuario_id
@@ -1637,6 +1657,7 @@ async function listarMuro(db, user) {
         };
       }),
       comentarios_n: Number(coms.rows?.[0]?.n || 0),
+      comentarios_off: Number(row.comentarios_off) === 1,
       comentarios: (preview.rows || [])
         .slice()
         .reverse()
@@ -1781,12 +1802,16 @@ async function comentarPost(db, user, postIdRaw, textoRaw) {
   }
 
   const post = await db.execute({
-    sql: `SELECT id, usuario_id, publico FROM social_posts WHERE id = ?`,
+    sql: `SELECT id, usuario_id, publico, COALESCE(comentarios_off, 0) AS comentarios_off
+          FROM social_posts WHERE id = ?`,
     args: [postId]
   });
   const row = post.rows?.[0];
   if (!row || Number(row.publico) !== 1) {
     return { ok: false, status: 404, error: "Publicación no encontrada." };
+  }
+  if (Number(row.comentarios_off) === 1) {
+    return { ok: false, status: 403, error: "El autor desactivó los comentarios." };
   }
   const autor = toNum(row.usuario_id);
   if (autor !== user.id && (await hayBloqueo(db, user.id, autor))) {
@@ -1836,7 +1861,8 @@ async function listarComentariosPost(db, user, postIdRaw) {
   if (!postId) return { ok: false, status: 400, error: "Post inválido." };
 
   const post = await db.execute({
-    sql: `SELECT id, usuario_id, publico FROM social_posts WHERE id = ?`,
+    sql: `SELECT id, usuario_id, publico, COALESCE(comentarios_off, 0) AS comentarios_off
+          FROM social_posts WHERE id = ?`,
     args: [postId]
   });
   const row = post.rows?.[0];
@@ -1857,19 +1883,145 @@ async function listarComentariosPost(db, user, postIdRaw) {
           LIMIT 120`,
     args: [postId]
   });
-  const comentarios = (r.rows || []).map((c) => {
+  const comentarios = [];
+  for (const c of r.rows || []) {
     const cid = toNum(c.usuario_id);
+    const comId = toNum(c.id);
     const verC = cid === toNum(user.id) || Number(c.mostrar_foto) === 1;
-    return {
-      id: toNum(c.id),
+    const reac = await db.execute({
+      sql: `SELECT emoji, COUNT(*) AS n FROM social_comentario_reacciones
+            WHERE comentario_id = ? GROUP BY emoji`,
+      args: [comId]
+    });
+    const mi = await db.execute({
+      sql: `SELECT emoji FROM social_comentario_reacciones
+            WHERE comentario_id = ? AND usuario_id = ? LIMIT 1`,
+      args: [comId, user.id]
+    });
+    comentarios.push({
+      id: comId,
       alias: c.alias,
       texto: c.texto,
       created_at: c.created_at,
       foto: verC ? (c.foto || null) : null,
-      soy_yo: cid === toNum(user.id)
-    };
+      soy_yo: cid === toNum(user.id),
+      puedo_borrar: cid === toNum(user.id) || autor === toNum(user.id),
+      mi_reaccion: mi.rows?.[0]?.emoji || null,
+      reacciones: (reac.rows || []).map((x) => ({
+        emoji: x.emoji,
+        n: Number(x.n || 0)
+      }))
+    });
+  }
+  return {
+    ok: true,
+    post_id: postId,
+    comentarios_off: Number(row.comentarios_off) === 1,
+    soy_autor: autor === toNum(user.id),
+    comentarios
+  };
+}
+
+async function setComentariosOff(db, user, postIdRaw, offRaw) {
+  if (!(await rolEsCliente(db, user.id))) {
+    return { ok: false, status: 403, error: "Solo red social." };
+  }
+  const postId = toNum(postIdRaw);
+  if (!postId) return { ok: false, status: 400, error: "Post inválido." };
+  const off = offRaw === true || offRaw === 1 || offRaw === "1" ? 1 : 0;
+  const upd = await db.execute({
+    sql: `UPDATE social_posts SET comentarios_off = ? WHERE id = ? AND usuario_id = ?`,
+    args: [off, postId, user.id]
   });
-  return { ok: true, post_id: postId, comentarios };
+  if (!(upd.rowsAffected > 0)) {
+    return { ok: false, status: 404, error: "Solo el autor puede cambiar comentarios." };
+  }
+  return listarMuro(db, user);
+}
+
+const REACCIONES_OK = new Set(["❤️", "🔥", "💪", "👏", "🙌", "😍", "😮", "😂"]);
+
+async function reaccionarComentario(db, user, comIdRaw, emojiRaw) {
+  if (!(await rolEsCliente(db, user.id))) {
+    return { ok: false, status: 403, error: "Solo red social." };
+  }
+  const comId = toNum(comIdRaw);
+  const emoji = String(emojiRaw || "").trim();
+  if (!comId || !REACCIONES_OK.has(emoji)) {
+    return { ok: false, status: 400, error: "Reacción inválida." };
+  }
+
+  const com = await db.execute({
+    sql: `SELECT c.id, c.post_id, p.usuario_id AS autor_post, p.publico
+          FROM social_post_comentarios c
+          JOIN social_posts p ON p.id = c.post_id
+          WHERE c.id = ?`,
+    args: [comId]
+  });
+  const row = com.rows?.[0];
+  if (!row || Number(row.publico) !== 1) {
+    return { ok: false, status: 404, error: "Comentario no encontrado." };
+  }
+  const autorPost = toNum(row.autor_post);
+  if (autorPost !== user.id && (await hayBloqueo(db, user.id, autorPost))) {
+    return { ok: false, status: 403, error: "No disponible." };
+  }
+
+  const prev = await db.execute({
+    sql: `SELECT emoji FROM social_comentario_reacciones
+          WHERE comentario_id = ? AND usuario_id = ? LIMIT 1`,
+    args: [comId, user.id]
+  });
+  const prevEmoji = prev.rows?.[0]?.emoji;
+  if (prevEmoji === emoji) {
+    await db.execute({
+      sql: `DELETE FROM social_comentario_reacciones
+            WHERE comentario_id = ? AND usuario_id = ?`,
+      args: [comId, user.id]
+    });
+  } else {
+    await db.execute({
+      sql: `INSERT INTO social_comentario_reacciones (comentario_id, usuario_id, emoji)
+            VALUES (?, ?, ?)
+            ON CONFLICT(comentario_id, usuario_id) DO UPDATE SET emoji = excluded.emoji`,
+      args: [comId, user.id, emoji]
+    });
+  }
+  return listarComentariosPost(db, user, row.post_id);
+}
+
+async function borrarComentario(db, user, comIdRaw) {
+  const id = toNum(comIdRaw);
+  if (!id) return { ok: false, status: 400, error: "Comentario inválido." };
+
+  const com = await db.execute({
+    sql: `SELECT c.id, c.usuario_id, c.post_id, p.usuario_id AS autor_post
+          FROM social_post_comentarios c
+          JOIN social_posts p ON p.id = c.post_id
+          WHERE c.id = ?`,
+    args: [id]
+  });
+  const row = com.rows?.[0];
+  if (!row) return { ok: false, status: 404, error: "No se encontró ese comentario." };
+
+  const soyAutorCom = toNum(row.usuario_id) === toNum(user.id);
+  const soyAutorPost = toNum(row.autor_post) === toNum(user.id);
+  if (!soyAutorCom && !soyAutorPost) {
+    return { ok: false, status: 403, error: "No puedes borrar este comentario." };
+  }
+
+  await db.execute({
+    sql: `DELETE FROM social_comentario_reacciones WHERE comentario_id = ?`,
+    args: [id]
+  });
+  const del = await db.execute({
+    sql: `DELETE FROM social_post_comentarios WHERE id = ?`,
+    args: [id]
+  });
+  if (!(del.rowsAffected > 0)) {
+    return { ok: false, status: 404, error: "No se encontró ese comentario." };
+  }
+  return listarMuro(db, user);
 }
 
 async function listarLikesPost(db, user, postIdRaw) {
@@ -1911,19 +2063,6 @@ async function listarLikesPost(db, user, postIdRaw) {
     };
   });
   return { ok: true, post_id: postId, likes };
-}
-
-async function borrarComentario(db, user, comIdRaw) {
-  const id = toNum(comIdRaw);
-  if (!id) return { ok: false, status: 400, error: "Comentario inválido." };
-  const del = await db.execute({
-    sql: `DELETE FROM social_post_comentarios WHERE id = ? AND usuario_id = ?`,
-    args: [id, user.id]
-  });
-  if (!(del.rowsAffected > 0)) {
-    return { ok: false, status: 404, error: "No se encontró ese comentario." };
-  }
-  return listarMuro(db, user);
 }
 
 // ─────── Historias (stories 24h) ───────
@@ -2277,6 +2416,8 @@ module.exports = {
   listarComentariosPost,
   listarLikesPost,
   borrarComentario,
+  setComentariosOff,
+  reaccionarComentario,
   crearHistoria,
   listarHistorias,
   borrarHistoria,

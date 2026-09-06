@@ -135,6 +135,8 @@ const {
   listarComentariosPost: listarComentariosPostSocial,
   listarLikesPost: listarLikesPostSocial,
   borrarComentario: borrarComentarioSocial,
+  setComentariosOff: setComentariosOffSocial,
+  reaccionarComentario: reaccionarComentarioSocial,
   borrarDatosSocialesUsuario,
   crearHistoria: crearHistoriaSocial,
   listarHistorias: listarHistoriasSocial,
@@ -2188,6 +2190,26 @@ app.delete("/api/social/comentario/:id", async (req, res) => {
     return responderPerfilSocial(res, result);
   } catch (err) {
     console.error("DELETE social/comentario:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/social/muro/:id/comentarios-off", async (req, res) => {
+  try {
+    const result = await setComentariosOffSocial(db, req.user, req.params.id, req.body?.off);
+    return responderPerfilSocial(res, result);
+  } catch (err) {
+    console.error("POST social/muro/comentarios-off:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/social/comentario/:id/reaccion", async (req, res) => {
+  try {
+    const result = await reaccionarComentarioSocial(db, req.user, req.params.id, req.body?.emoji);
+    return responderPerfilSocial(res, result);
+  } catch (err) {
+    console.error("POST social/comentario/reaccion:", err.message);
     res.status(500).json({ error: err.message });
   }
 });
