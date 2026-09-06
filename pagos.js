@@ -27,11 +27,14 @@ function getStripe() {
   return new Stripe(key);
 }
 
-const { withMetodogAliases } = require("./corsConfig");
+const { withMetodogAliases, parseOrigins } = require("./corsConfig");
 
 function getFrontendOrigins() {
+  // Misma lista que CORS: si no, checkout rechaza metodog.lat cuando FRONTEND_URL es solo Vercel.
+  const fromCors = parseOrigins();
+  if (fromCors.length > 0) return fromCors;
   const raw = (process.env.FRONTEND_URL || process.env.CORS_ORIGINS || "http://localhost:5173").trim();
-  const list = raw.split(",").map(s => s.trim()).filter(Boolean);
+  const list = raw.split(",").map((s) => s.trim()).filter(Boolean);
   if (list.length === 0) return ["http://localhost:5173"];
   return withMetodogAliases(list);
 }

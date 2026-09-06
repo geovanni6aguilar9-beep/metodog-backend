@@ -1,16 +1,24 @@
 /** CORS: en producción restringir a FRONTEND_URL / CORS_ORIGINS (coma-separado). */
 
-/** Ambas URLs Vercel del mismo frontend (con y sin guion). */
+/** Ambas URLs Vercel del mismo frontend (con y sin guion) + dominio custom. */
 const METODOG_VERCEL_ORIGINS = [
   "https://metodog-frontend.vercel.app",
   "https://metodog-front-end.vercel.app"
 ];
 
+const METODOG_CUSTOM_ORIGINS = [
+  "https://metodog.lat",
+  "https://www.metodog.lat"
+];
+
 function withMetodogAliases(origins) {
   const set = new Set(origins.filter(Boolean));
-  const touchesMetodog = origins.some(o => /metodog-.*\.vercel\.app/i.test(o));
+  const touchesMetodog =
+    origins.some((o) => /metodog-.*\.vercel\.app/i.test(o)) ||
+    origins.some((o) => /metodog\.lat/i.test(o));
   if (touchesMetodog || (isProduction() && process.env.RENDER)) {
-    METODOG_VERCEL_ORIGINS.forEach(o => set.add(o));
+    METODOG_VERCEL_ORIGINS.forEach((o) => set.add(o));
+    METODOG_CUSTOM_ORIGINS.forEach((o) => set.add(o));
   }
   return [...set];
 }
@@ -59,5 +67,6 @@ module.exports = {
   parseOrigins,
   isProduction,
   METODOG_VERCEL_ORIGINS,
+  METODOG_CUSTOM_ORIGINS,
   withMetodogAliases
 };
