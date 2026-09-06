@@ -12,7 +12,7 @@ const COACH_TIERS = {
   trial: { nombre: "Trial", precioMxn: 0, alumnos: TRIAL_LIMITE_ALUMNOS }
 };
 
-const MONTO_ATLETA_MXN_DEFAULT = 111;
+const MONTO_ATLETA_MXN_DEFAULT = 149;
 const PRODUCTO_ATLETA = "full_week_pro";
 const PRODUCTO_COACH = "coach_suscripcion";
 const PRODUCTO_PAQUETE_LEGACY = "paquete_rutina_6_dias";

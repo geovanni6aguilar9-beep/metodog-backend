@@ -709,7 +709,7 @@ app.post("/api/planes/preview-import-ia", async (req, res) => {
     return res.status(403).json({
       ok: false,
       motivo: acceso.motivo || "sin_acceso",
-      error: acceso.error || "Activa Full Week PRO para importar con IA.",
+      error: acceso.error || "Activa MétodoG PRO para importar con IA.",
       restantes: acceso.restantes ?? 0
     });
   }
@@ -720,7 +720,7 @@ app.post("/api/planes/preview-import-ia", async (req, res) => {
       return res.status(403).json({
         ok: false,
         motivo: "sin_cuota",
-        error: `Ya usaste tus ${MAX_IMPORT_PLAN_IA_GRATIS} importaciones IA de prueba. Activa Full Week PRO para continuar.`,
+        error: `Ya usaste tus ${MAX_IMPORT_PLAN_IA_GRATIS} importaciones IA de prueba. Activa MétodoG PRO para continuar.`,
         restantes: cupo.restantes ?? 0
       });
     }
@@ -754,7 +754,7 @@ app.post("/api/planes/preview-import-ia", async (req, res) => {
         return res.status(403).json({
           ok: false,
           motivo: "sin_cuota",
-          error: `Ya usaste tus ${MAX_IMPORT_PLAN_IA_GRATIS} importaciones IA de prueba. Activa Full Week PRO para continuar.`,
+          error: `Ya usaste tus ${MAX_IMPORT_PLAN_IA_GRATIS} importaciones IA de prueba. Activa MétodoG PRO para continuar.`,
           restantes: cobro.restantes ?? 0
         });
       }
@@ -790,7 +790,7 @@ app.post("/api/planes/preview-import-imagen", (req, res) => {
       return res.status(403).json({
         ok: false,
         motivo: acceso.motivo || "sin_acceso",
-        error: acceso.error || "Activa Full Week PRO para importar con IA.",
+        error: acceso.error || "Activa MétodoG PRO para importar con IA.",
         restantes: acceso.restantes ?? 0
       });
     }
@@ -801,7 +801,7 @@ app.post("/api/planes/preview-import-imagen", (req, res) => {
         return res.status(403).json({
           ok: false,
           motivo: "sin_cuota",
-          error: `Ya usaste tus ${MAX_IMPORT_PLAN_IA_GRATIS} importaciones IA de prueba. Activa Full Week PRO para continuar.`,
+          error: `Ya usaste tus ${MAX_IMPORT_PLAN_IA_GRATIS} importaciones IA de prueba. Activa MétodoG PRO para continuar.`,
           restantes: cupo.restantes ?? 0
         });
       }
@@ -830,7 +830,7 @@ app.post("/api/planes/preview-import-imagen", (req, res) => {
           return res.status(403).json({
             ok: false,
             motivo: "sin_cuota",
-            error: `Ya usaste tus ${MAX_IMPORT_PLAN_IA_GRATIS} importaciones IA de prueba. Activa Full Week PRO para continuar.`,
+            error: `Ya usaste tus ${MAX_IMPORT_PLAN_IA_GRATIS} importaciones IA de prueba. Activa MétodoG PRO para continuar.`,
             restantes: cobro.restantes ?? 0
           });
         }
@@ -1103,7 +1103,7 @@ async function resolverAccesoComboIa(userId, rol) {
     return {
       ok: false,
       motivo: "sin_cuota",
-      error: `Ya usaste tus ${MAX_COMBOS_GRATIS} combos de prueba. Activa Full Week PRO para continuar.`,
+      error: `Ya usaste tus ${MAX_COMBOS_GRATIS} combos de prueba. Activa MétodoG PRO para continuar.`,
       restantes: 0,
       max: cuota.max
     };
@@ -1158,7 +1158,7 @@ async function resolverAccesoImportPlanIa(userId, rol) {
     return {
       ok: false,
       motivo: "sin_cuota",
-      error: `Ya usaste tus ${MAX_IMPORT_PLAN_IA_GRATIS} importaciones IA de prueba. Activa Full Week PRO para continuar.`,
+      error: `Ya usaste tus ${MAX_IMPORT_PLAN_IA_GRATIS} importaciones IA de prueba. Activa MétodoG PRO para continuar.`,
       restantes: 0,
       max: cuota.max
     };
@@ -1197,7 +1197,7 @@ async function resolverAccesoDietaIa(userId, rol) {
     return {
       ok: false,
       motivo: "sin_cuota",
-      error: "Ya usaste tu prueba de Armar dia con IA. Activa Full Week PRO para continuar.",
+      error: "Ya usaste tu prueba de Armar dia con IA. Activa MétodoG PRO para continuar.",
       restantes: 0,
       max: cuota.max
     };
@@ -1270,7 +1270,7 @@ app.post("/api/alimentos/receta-ia", async (req, res) => {
     return res.status(403).json({
       ok: false,
       motivo: acceso.motivo || "sin_acceso",
-      error: acceso.error || "Activa Full Week PRO para usar recetas con IA.",
+      error: acceso.error || "Activa MétodoG PRO para usar recetas con IA.",
       restantes: acceso.restantes ?? 0
     });
   }
@@ -1282,7 +1282,7 @@ app.post("/api/alimentos/receta-ia", async (req, res) => {
       return res.status(403).json({
         ok: false,
         motivo: "sin_cuota",
-        error: `Ya usaste tus ${MAX_COMBOS_GRATIS} combos de prueba. Activa Full Week PRO para continuar.`,
+        error: `Ya usaste tus ${MAX_COMBOS_GRATIS} combos de prueba. Activa MétodoG PRO para continuar.`,
         restantes: reserva.restantes ?? 0
       });
     }
@@ -1380,7 +1380,7 @@ app.post("/api/alimentos/dieta-ia", async (req, res) => {
     return res.status(403).json({
       ok: false,
       motivo: acceso.motivo || "sin_acceso",
-      error: acceso.error || "Activa Full Week PRO para usar el planificador IA.",
+      error: acceso.error || "Activa MétodoG PRO para usar el planificador IA.",
       restantes: acceso.restantes ?? 0
     });
   }
@@ -1392,7 +1392,7 @@ app.post("/api/alimentos/dieta-ia", async (req, res) => {
       return res.status(403).json({
         ok: false,
         motivo: "sin_cuota",
-        error: "Ya usaste tu prueba de Armar dia con IA. Activa Full Week PRO para continuar.",
+        error: "Ya usaste tu prueba de Armar dia con IA. Activa MétodoG PRO para continuar.",
         restantes: reserva.restantes ?? 0
       });
     }
@@ -2323,7 +2323,7 @@ app.post("/api/dietas/guardar", async (req, res) => {
       const coachId = coachRaw != null && coachRaw !== "" ? Number(coachRaw) : null;
       if (coachId && !Number.isNaN(coachId) && coachId > 0) {
         return res.status(403).json({
-          error: "Tu plan lo administra tu coach. No puedes sobrescribir la dieta completa. Usa Sustituir (Full Week PRO) para un intercambio puntual.",
+          error: "Tu plan lo administra tu coach. No puedes sobrescribir la dieta completa. Usa Sustituir (MétodoG PRO) para un intercambio puntual.",
           codigo: "dieta_solo_coach",
           ruta_alternativa: "/api/dietas/sustituir"
         });
@@ -2489,7 +2489,7 @@ app.post("/api/dietas/sustituir", async (req, res) => {
     }
     if (!row.paquete_rutina_6_dias) {
       return res.status(403).json({
-        error: "Activa Full Week PRO para aplicar equivalencias a tu plan.",
+        error: "Activa MétodoG PRO para aplicar equivalencias a tu plan.",
         codigo: "requiere_full_week"
       });
     }
@@ -3553,7 +3553,7 @@ app.post("/api/usuarios/me/password", async (req, res) => {
 app.put("/api/usuarios/paquete-6-dias", async (req, res) => {
   if (isProduction() && req.user.rol !== "SUPERADMIN") {
     return res.status(403).json({
-      error: "Activa Full Week PRO desde Paquetes (Stripe). Solo SUPERADMIN puede simular en producción."
+      error: "Activa MétodoG PRO desde Paquetes (Stripe). Solo SUPERADMIN puede simular en producción."
     });
   }
   const { usuario_id, activo } = req.body;

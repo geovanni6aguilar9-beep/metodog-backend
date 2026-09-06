@@ -18,7 +18,7 @@ const { obtenerConcesionActiva, mapConcesionEntitlements } = require("./concesio
 
 const MONTO_PAQUETE_MXN_DEFAULT = 149;
 const PRODUCTO_PAQUETE_LEGACY_NOMBRE = "MétodoG — Rutina Full Week (6 días)";
-const PRODUCTO_ATLETA_NOMBRE = "MétodoG — Full Week PRO";
+const PRODUCTO_ATLETA_NOMBRE = "MétodoG PRO";
 const PRODUCTO_COACH_NOMBRE = "MétodoG Coach PRO";
 
 function getStripe() {
@@ -748,7 +748,7 @@ async function crearCheckoutAtleta(req, res, db) {
   const user = userRes.rows[0];
   if (user.coach_id) {
     return res.status(400).json({
-      error: "Full Week PRO es para atletas en modo libre. Si tienes coach, usa la rutina que te asigna."
+      error: "MétodoG PRO es para atletas en modo libre. Si tienes coach, usa la rutina que te asigna."
     });
   }
 
@@ -758,7 +758,7 @@ async function crearCheckoutAtleta(req, res, db) {
     args: [userId]
   });
   if (refreshed.rows[0]?.paquete_rutina_6_dias) {
-    return res.status(400).json({ error: "Ya tienes Full Week PRO activo." });
+    return res.status(400).json({ error: "Ya tienes MétodoG PRO activo." });
   }
 
   const { success_url, cancel_url } = req.body || {};
@@ -1056,7 +1056,7 @@ async function procesarCheckoutCompletado(db, stripe, session) {
 
   if (producto === PRODUCTO_ATLETA) {
     await activarAtletaDesdeStripe(db, stripe, uid, session.subscription, session.customer);
-    console.log(`✅ Webhook: Full Week PRO activado usuario ${usuarioId}`);
+    console.log(`✅ Webhook: MétodoG PRO activado usuario ${usuarioId}`);
     return;
   }
 

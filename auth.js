@@ -226,7 +226,7 @@ async function resolverAccesoBibliotecaPersonal(db, user) {
         ok: false,
         status: 403,
         motivo: "sin_pro",
-        error: "Activa Full Week PRO para tu biblioteca personal."
+        error: "Activa MétodoG PRO para tu biblioteca personal."
       };
     }
     return { ok: true, ownerId: id };
