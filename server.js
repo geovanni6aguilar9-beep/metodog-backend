@@ -156,7 +156,8 @@ const {
   archivarPost: archivarPostSocial,
   toggleGuardarPost: toggleGuardarPostSocial,
   reportarPost: reportarPostSocial,
-  listarPostsPerfil: listarPostsPerfilSocial
+  listarPostsPerfil: listarPostsPerfilSocial,
+  listarPostsGuardados: listarPostsGuardadosSocial
 } = require("./socialPostAcciones");
 const {
   importarAlimentosCsv,
@@ -1933,6 +1934,26 @@ app.get("/api/social/yo", async (req, res) => {
   }
 });
 
+app.get("/api/social/yo/posts", async (req, res) => {
+  try {
+    const result = await listarPostsPerfilSocial(db, req.user, req.user.id);
+    return responderPerfilSocial(res, result);
+  } catch (err) {
+    console.error("GET social/yo/posts:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/api/social/yo/guardados", async (req, res) => {
+  try {
+    const result = await listarPostsGuardadosSocial(db, req.user);
+    return responderPerfilSocial(res, result);
+  } catch (err) {
+    console.error("GET social/yo/guardados:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.put("/api/social/yo", async (req, res) => {
   try {
     const result = await guardarPerfilSocialYo(db, req.user, req.body || {});
@@ -2282,16 +2303,6 @@ app.get("/api/social/posts/:userId", async (req, res) => {
     return responderPerfilSocial(res, result);
   } catch (err) {
     console.error("GET social/posts:", err.message);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.get("/api/social/yo/posts", async (req, res) => {
-  try {
-    const result = await listarPostsPerfilSocial(db, req.user, req.user.id);
-    return responderPerfilSocial(res, result);
-  } catch (err) {
-    console.error("GET social/yo/posts:", err.message);
     res.status(500).json({ error: err.message });
   }
 });
