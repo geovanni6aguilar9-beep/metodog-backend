@@ -155,7 +155,8 @@ const {
   fijarPost: fijarPostSocial,
   archivarPost: archivarPostSocial,
   toggleGuardarPost: toggleGuardarPostSocial,
-  reportarPost: reportarPostSocial
+  reportarPost: reportarPostSocial,
+  listarPostsPerfil: listarPostsPerfilSocial
 } = require("./socialPostAcciones");
 const {
   importarAlimentosCsv,
@@ -2271,6 +2272,26 @@ app.post("/api/social/muro/:id/reportar", async (req, res) => {
     return responderPerfilSocial(res, result);
   } catch (err) {
     console.error("POST social/muro/reportar:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/api/social/posts/:userId", async (req, res) => {
+  try {
+    const result = await listarPostsPerfilSocial(db, req.user, req.params.userId);
+    return responderPerfilSocial(res, result);
+  } catch (err) {
+    console.error("GET social/posts:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/api/social/yo/posts", async (req, res) => {
+  try {
+    const result = await listarPostsPerfilSocial(db, req.user, req.user.id);
+    return responderPerfilSocial(res, result);
+  } catch (err) {
+    console.error("GET social/yo/posts:", err.message);
     res.status(500).json({ error: err.message });
   }
 });
