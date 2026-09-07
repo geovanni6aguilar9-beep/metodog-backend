@@ -85,7 +85,12 @@ async function postPropio(db, userId, postId) {
   return r.rows?.[0] || null;
 }
 
+async function ensureReady(db) {
+  await ensureTablasAccionesPost(db);
+}
+
 async function editarPost(db, user, postIdRaw, body) {
+  await ensureReady(db);
   const postId = toNum(postIdRaw);
   const uid = toNum(user.id);
   if (!postId || !uid) return { ok: false, status: 400, error: "Publicación inválida." };
@@ -110,6 +115,7 @@ async function editarPost(db, user, postIdRaw, body) {
 }
 
 async function fijarPost(db, user, postIdRaw, fijarRaw) {
+  await ensureReady(db);
   const postId = toNum(postIdRaw);
   const uid = toNum(user.id);
   if (!postId || !uid) return { ok: false, status: 400, error: "Publicación inválida." };
@@ -138,6 +144,7 @@ async function fijarPost(db, user, postIdRaw, fijarRaw) {
 }
 
 async function archivarPost(db, user, postIdRaw, archivarRaw) {
+  await ensureReady(db);
   const postId = toNum(postIdRaw);
   const uid = toNum(user.id);
   if (!postId || !uid) return { ok: false, status: 400, error: "Publicación inválida." };
@@ -148,7 +155,7 @@ async function archivarPost(db, user, postIdRaw, archivarRaw) {
 
   const upd = await db.execute({
     sql: `UPDATE social_posts
-          SET archivado = ?, fijado = CASE WHEN ? = 1 THEN 0 ELSE fijado END
+          SET archivado = ?, fijado = CASE WHEN ? = 1 THEN 0 ELSE COALESCE(fijado, 0) END
           WHERE id = ? AND usuario_id = ?`,
     args: [archivar, archivar, postId, uid]
   });
@@ -159,6 +166,7 @@ async function archivarPost(db, user, postIdRaw, archivarRaw) {
 }
 
 async function toggleGuardarPost(db, user, postIdRaw) {
+  await ensureReady(db);
   const postId = toNum(postIdRaw);
   const uid = toNum(user.id);
   if (!postId || !uid) return { ok: false, status: 400, error: "Publicación inválida." };
@@ -200,6 +208,7 @@ async function toggleGuardarPost(db, user, postIdRaw) {
 }
 
 async function reportarPost(db, user, postIdRaw, body) {
+  await ensureReady(db);
   const postId = toNum(postIdRaw);
   const uid = toNum(user.id);
   if (!postId || !uid) return { ok: false, status: 400, error: "Publicación inválida." };
@@ -249,6 +258,63 @@ async function reportarPost(db, user, postIdRaw, body) {
   return { ok: true, mensaje: "Reporte enviado. Gracias." };
 }
 
+/** Publicaciones de un perfil (estilo IG) — propias o de otro (solo públicas). */
+async function listarPostsPerfil(db, user, targetIdRaw) {
+  await ensureReady(db);
+  const viewer = toNum(user.id);
+  const tid = toNum(targetIdRaw) || viewer;
+  if (!viewer || !tid) return { ok: false, status: 400, error: "Usuario inválido." };
+
+  const propio = viewer === tid;
+  const r = await db.execute({
+    sql: `SELECT p.id, p.usuario_id, p.texto, p.imagen, p.created_at, p.publico,
+                 COALESCE(p.fijado, 0) AS fijado,
+                 COALESCE(p.archivado, 0) AS archivado,
+                 COALESCE(p.comentarios_off, 0) AS comentarios_off,
+                 COALESCE(p.quien_comenta, 'todos') AS quien_comenta,
+                 COALESCE(p.reacciones_off, 0) AS reacciones_off,
+                 s.alias, s.foto, s.mostrar_foto
+          FROM social_posts p
+          JOIN perfiles_sociales s ON s.usuario_id = p.usuario_id
+          WHERE p.usuario_id = ?
+            AND p.publico = 1
+            AND COALESCE(p.archivado, 0) = 0
+          ORDER BY COALESCE(p.fijado, 0) DESC, p.id DESC
+          LIMIT 60`,
+    args: [tid]
+  });
+
+  const posts = [];
+  for (const row of r.rows || []) {
+    const postId = toNum(row.id);
+    const likes = await db.execute({
+      sql: `SELECT COUNT(*) AS n FROM social_post_likes WHERE post_id = ?`,
+      args: [postId]
+    });
+    const coms = await db.execute({
+      sql: `SELECT COUNT(*) AS n FROM social_post_comentarios WHERE post_id = ?`,
+      args: [postId]
+    });
+    posts.push({
+      id: postId,
+      user_id: toNum(row.usuario_id),
+      alias: row.alias,
+      texto: row.texto || null,
+      imagen: row.imagen || null,
+      created_at: row.created_at,
+      publico: true,
+      soy_yo: propio,
+      fijado: Number(row.fijado) === 1,
+      likes: Number(likes.rows?.[0]?.n || 0),
+      comentarios_n: Number(coms.rows?.[0]?.n || 0),
+      quien_comenta: row.quien_comenta || "todos",
+      comentarios_off: Number(row.comentarios_off) === 1 || row.quien_comenta === "off",
+      reacciones_off: Number(row.reacciones_off) === 1
+    });
+  }
+  return { ok: true, user_id: tid, propio, posts };
+}
+
 module.exports = {
   ensureTablasAccionesPost,
   editarPost,
@@ -256,5 +322,6 @@ module.exports = {
   archivarPost,
   toggleGuardarPost,
   reportarPost,
+  listarPostsPerfil,
   MOTIVOS_OK
 };
