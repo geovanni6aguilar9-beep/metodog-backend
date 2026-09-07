@@ -90,6 +90,11 @@ async function ensureTablasPerfilSocial(db) {
       "ALTER TABLE perfiles_sociales ADD COLUMN mostrar_muro INTEGER DEFAULT 1"
     );
   } catch (_) { /* ya existe */ }
+  try {
+    await db.execute(
+      "ALTER TABLE perfiles_sociales ADD COLUMN bio TEXT"
+    );
+  } catch (_) { /* ya existe */ }
 
   // Producto abierto por defecto: publicar + aparecer en sugerencias/búsqueda
   try {
@@ -521,11 +526,23 @@ async function progresoCorporal(db, userId) {
   };
 }
 
+const BIO_MAX = 140;
+
+function normalizarBio(raw) {
+  if (raw == null) return "";
+  return String(raw)
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, BIO_MAX);
+}
+
 function filaAPerfilPropio(row, { menor, resumen, vitrina, progreso }) {
   return {
     usuario_id: toNum(row.usuario_id),
     alias: row.alias,
     codigo: row.codigo,
+    bio: normalizarBio(row.bio),
     foto: row.foto || null,
     modo_entrada: MODOS.has(row.modo_entrada) ? row.modo_entrada : "cerrado",
     mostrar_foto: Number(row.mostrar_foto) === 1,
@@ -577,6 +594,15 @@ async function guardarYo(db, user, body) {
     }
     patch.push("alias = ?");
     args.push(alias);
+  }
+
+  if (body.bio != null) {
+    const bio = normalizarBio(body.bio);
+    if (String(body.bio).length > BIO_MAX + 40) {
+      return { ok: false, status: 400, error: `Bio: máximo ${BIO_MAX} caracteres.` };
+    }
+    patch.push("bio = ?");
+    args.push(bio || null);
   }
 
   if (body.modo_entrada != null) {
@@ -1202,6 +1228,7 @@ async function tarjetaPublica(db, viewer, targetId) {
     tarjeta: {
       user_id: tid,
       alias: row.alias,
+      bio: normalizarBio(row.bio) || null,
       foto: verFoto ? (row.foto || null) : null,
       mostrar_prs: verPrs,
       mostrar_vitrina: verVitrina,
