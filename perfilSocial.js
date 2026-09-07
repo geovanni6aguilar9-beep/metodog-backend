@@ -185,6 +185,13 @@ async function ensureTablasPerfilSocial(db) {
     );
   } catch (_) { /* ignore */ }
 
+  try {
+    const { ensureTablasAccionesPost } = require("./socialPostAcciones");
+    await ensureTablasAccionesPost(db);
+  } catch (err) {
+    console.warn("ensureTablasAccionesPost:", err.message);
+  }
+
   await db.execute(`CREATE TABLE IF NOT EXISTS social_comentario_reacciones (
     comentario_id INTEGER NOT NULL,
     usuario_id INTEGER NOT NULL,
@@ -1599,6 +1606,16 @@ async function borrarPost(db, user, postId) {
     sql: "DELETE FROM social_post_comentarios WHERE post_id = ?",
     args: [id]
   });
+  try {
+    await db.execute({
+      sql: "DELETE FROM social_posts_guardados WHERE post_id = ?",
+      args: [id]
+    });
+    await db.execute({
+      sql: "DELETE FROM social_reportes WHERE post_id = ?",
+      args: [id]
+    });
+  } catch (_) { /* tablas nuevas */ }
   const del = await db.execute({
     sql: "DELETE FROM social_posts WHERE id = ? AND usuario_id = ?",
     args: [id, uid]
@@ -1624,6 +1641,8 @@ async function listarMuro(db, user) {
                  COALESCE(p.comentarios_off, 0) AS comentarios_off,
                  COALESCE(p.quien_comenta, 'todos') AS quien_comenta,
                  COALESCE(p.reacciones_off, 0) AS reacciones_off,
+                 COALESCE(p.fijado, 0) AS fijado,
+                 COALESCE(p.archivado, 0) AS archivado,
                  s.alias, s.foto, s.mostrar_foto, s.mostrar_muro
           FROM social_posts p
           JOIN perfiles_sociales s ON s.usuario_id = p.usuario_id
@@ -1631,11 +1650,12 @@ async function listarMuro(db, user) {
           LEFT JOIN perfiles_clientes c ON c.usuario_id = p.usuario_id
           WHERE p.publico = 1
             AND s.mostrar_muro = 1
+            AND COALESCE(p.archivado, 0) = 0
             AND (
               UPPER(u.rol) IN ('COACH', 'SUPERADMIN')
               OR (c.edad IS NOT NULL AND c.edad >= 18)
             )
-          ORDER BY p.id DESC
+          ORDER BY COALESCE(p.fijado, 0) DESC, p.id DESC
           LIMIT ?`,
     args: [MAX_MURO]
   });
@@ -1681,6 +1701,15 @@ async function listarMuro(db, user) {
             ORDER BY l.created_at DESC LIMIT 5`,
       args: [postId]
     });
+    const yoGuardado = { rows: [] };
+    try {
+      const g = await db.execute({
+        sql: `SELECT 1 FROM social_posts_guardados
+              WHERE post_id = ? AND usuario_id = ? LIMIT 1`,
+        args: [postId, user.id]
+      });
+      yoGuardado.rows = g.rows || [];
+    } catch (_) { /* tabla aún no migrada */ }
     posts.push({
       id: postId,
       user_id: uid,
@@ -1691,6 +1720,8 @@ async function listarMuro(db, user) {
       created_at: row.created_at,
       publico: true,
       soy_yo: soyYo,
+      fijado: Number(row.fijado) === 1,
+      yo_guardado: !!(yoGuardado.rows || []).length,
       likes: Number(likes.rows?.[0]?.n || 0),
       yo_like: !!(yoLike.rows || []).length,
       likes_preview: (likesPrev.rows || []).map((l) => {

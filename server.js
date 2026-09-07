@@ -151,6 +151,13 @@ const {
   sugerenciasFollow: sugerenciasFollowSocial
 } = require("./perfilSocial");
 const {
+  editarPost: editarPostSocial,
+  fijarPost: fijarPostSocial,
+  archivarPost: archivarPostSocial,
+  toggleGuardarPost: toggleGuardarPostSocial,
+  reportarPost: reportarPostSocial
+} = require("./socialPostAcciones");
+const {
   importarAlimentosCsv,
   previewImportacionCsv,
   PLANTILLA_CSV,
@@ -2211,6 +2218,59 @@ app.post("/api/social/muro/:id/privacidad-comentarios", async (req, res) => {
     return responderPerfilSocial(res, result);
   } catch (err) {
     console.error("POST social/muro/privacidad-comentarios:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/** Carril acciones post — editar / fijar / archivar / guardar / reportar */
+app.patch("/api/social/muro/:id", async (req, res) => {
+  try {
+    const result = await editarPostSocial(db, req.user, req.params.id, req.body || {});
+    return responderPerfilSocial(res, result);
+  } catch (err) {
+    console.error("PATCH social/muro:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/social/muro/:id/fijar", async (req, res) => {
+  try {
+    const fijar = req.body?.fijar != null ? req.body.fijar : true;
+    const result = await fijarPostSocial(db, req.user, req.params.id, fijar);
+    return responderPerfilSocial(res, result);
+  } catch (err) {
+    console.error("POST social/muro/fijar:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/social/muro/:id/archivar", async (req, res) => {
+  try {
+    const archivar = req.body?.archivar != null ? req.body.archivar : true;
+    const result = await archivarPostSocial(db, req.user, req.params.id, archivar);
+    return responderPerfilSocial(res, result);
+  } catch (err) {
+    console.error("POST social/muro/archivar:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/social/muro/:id/guardar", async (req, res) => {
+  try {
+    const result = await toggleGuardarPostSocial(db, req.user, req.params.id);
+    return responderPerfilSocial(res, result);
+  } catch (err) {
+    console.error("POST social/muro/guardar:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/social/muro/:id/reportar", async (req, res) => {
+  try {
+    const result = await reportarPostSocial(db, req.user, req.params.id, req.body || {});
+    return responderPerfilSocial(res, result);
+  } catch (err) {
+    console.error("POST social/muro/reportar:", err.message);
     res.status(500).json({ error: err.message });
   }
 });
