@@ -136,6 +136,7 @@ const {
   listarLikesPost: listarLikesPostSocial,
   borrarComentario: borrarComentarioSocial,
   setComentariosOff: setComentariosOffSocial,
+  setPrivacidadComentarios: setPrivacidadComentariosSocial,
   reaccionarComentario: reaccionarComentarioSocial,
   borrarDatosSocialesUsuario,
   crearHistoria: crearHistoriaSocial,
@@ -2200,6 +2201,16 @@ app.post("/api/social/muro/:id/comentarios-off", async (req, res) => {
     return responderPerfilSocial(res, result);
   } catch (err) {
     console.error("POST social/muro/comentarios-off:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/social/muro/:id/privacidad-comentarios", async (req, res) => {
+  try {
+    const result = await setPrivacidadComentariosSocial(db, req.user, req.params.id, req.body || {});
+    return responderPerfilSocial(res, result);
+  } catch (err) {
+    console.error("POST social/muro/privacidad-comentarios:", err.message);
     res.status(500).json({ error: err.message });
   }
 });

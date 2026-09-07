@@ -167,6 +167,23 @@ async function ensureTablasPerfilSocial(db) {
       "ALTER TABLE social_posts ADD COLUMN comentarios_off INTEGER NOT NULL DEFAULT 0"
     );
   } catch (_) { /* ya existe */ }
+  try {
+    await db.execute(
+      "ALTER TABLE social_posts ADD COLUMN quien_comenta TEXT NOT NULL DEFAULT 'todos'"
+    );
+  } catch (_) { /* ya existe */ }
+  try {
+    await db.execute(
+      "ALTER TABLE social_posts ADD COLUMN reacciones_off INTEGER NOT NULL DEFAULT 0"
+    );
+  } catch (_) { /* ya existe */ }
+  try {
+    await db.execute(
+      `UPDATE social_posts SET quien_comenta = 'off'
+       WHERE COALESCE(comentarios_off, 0) = 1
+         AND (quien_comenta IS NULL OR quien_comenta = '' OR quien_comenta = 'todos')`
+    );
+  } catch (_) { /* ignore */ }
 
   await db.execute(`CREATE TABLE IF NOT EXISTS social_comentario_reacciones (
     comentario_id INTEGER NOT NULL,
@@ -1605,6 +1622,8 @@ async function listarMuro(db, user) {
   const r = await db.execute({
     sql: `SELECT p.id, p.usuario_id, p.texto, p.imagen, p.created_at, p.publico,
                  COALESCE(p.comentarios_off, 0) AS comentarios_off,
+                 COALESCE(p.quien_comenta, 'todos') AS quien_comenta,
+                 COALESCE(p.reacciones_off, 0) AS reacciones_off,
                  s.alias, s.foto, s.mostrar_foto, s.mostrar_muro
           FROM social_posts p
           JOIN perfiles_sociales s ON s.usuario_id = p.usuario_id
@@ -1684,7 +1703,7 @@ async function listarMuro(db, user) {
         };
       }),
       comentarios_n: Number(coms.rows?.[0]?.n || 0),
-      comentarios_off: Number(row.comentarios_off) === 1,
+      ...packPrivacidadComentarios(row),
       comentarios: (preview.rows || [])
         .slice()
         .reverse()
@@ -1752,6 +1771,35 @@ async function buscarPersonas(db, user, qRaw) {
 
 const MAX_COMENTARIO = 200;
 const MAX_COMS_HORA = 40;
+const QUIEN_COMENTA_OK = new Set(["todos", "seguidores", "off"]);
+
+function normalizarQuienComenta(raw, comentariosOff) {
+  const v = String(raw || "").trim().toLowerCase();
+  if (QUIEN_COMENTA_OK.has(v)) return v;
+  if (Number(comentariosOff) === 1) return "off";
+  return "todos";
+}
+
+async function puedeComentarEnPost(db, viewerId, autorId, quienComenta) {
+  const modo = normalizarQuienComenta(quienComenta, 0);
+  if (modo === "off") return { ok: false, error: "El autor desactivó los comentarios." };
+  if (toNum(viewerId) === toNum(autorId)) return { ok: true };
+  if (modo === "todos") return { ok: true };
+  if (modo === "seguidores") {
+    if (await yoSigo(db, viewerId, autorId)) return { ok: true };
+    return { ok: false, error: "Solo pueden comentar quienes te siguen." };
+  }
+  return { ok: false, error: "No puedes comentar." };
+}
+
+function packPrivacidadComentarios(row) {
+  const quien = normalizarQuienComenta(row.quien_comenta, row.comentarios_off);
+  return {
+    quien_comenta: quien,
+    comentarios_off: quien === "off",
+    reacciones_off: Number(row.reacciones_off) === 1
+  };
+}
 
 async function toggleLikePost(db, user, postIdRaw) {
   if (!(await rolEsCliente(db, user.id))) {
@@ -1828,7 +1876,10 @@ async function comentarPost(db, user, postIdRaw, textoRaw) {
   }
 
   const post = await db.execute({
-    sql: `SELECT id, usuario_id, publico, COALESCE(comentarios_off, 0) AS comentarios_off
+    sql: `SELECT id, usuario_id, publico,
+                 COALESCE(comentarios_off, 0) AS comentarios_off,
+                 COALESCE(quien_comenta, 'todos') AS quien_comenta,
+                 COALESCE(reacciones_off, 0) AS reacciones_off
           FROM social_posts WHERE id = ?`,
     args: [postId]
   });
@@ -1836,10 +1887,11 @@ async function comentarPost(db, user, postIdRaw, textoRaw) {
   if (!row || Number(row.publico) !== 1) {
     return { ok: false, status: 404, error: "Publicación no encontrada." };
   }
-  if (Number(row.comentarios_off) === 1) {
-    return { ok: false, status: 403, error: "El autor desactivó los comentarios." };
-  }
   const autor = toNum(row.usuario_id);
+  const gate = await puedeComentarEnPost(db, user.id, autor, row.quien_comenta || (Number(row.comentarios_off) === 1 ? "off" : "todos"));
+  if (!gate.ok) {
+    return { ok: false, status: 403, error: gate.error };
+  }
   if (autor !== user.id && (await hayBloqueo(db, user.id, autor))) {
     return { ok: false, status: 403, error: "No disponible." };
   }
@@ -1887,7 +1939,10 @@ async function listarComentariosPost(db, user, postIdRaw) {
   if (!postId) return { ok: false, status: 400, error: "Post inválido." };
 
   const post = await db.execute({
-    sql: `SELECT id, usuario_id, publico, COALESCE(comentarios_off, 0) AS comentarios_off
+    sql: `SELECT id, usuario_id, publico,
+                 COALESCE(comentarios_off, 0) AS comentarios_off,
+                 COALESCE(quien_comenta, 'todos') AS quien_comenta,
+                 COALESCE(reacciones_off, 0) AS reacciones_off
           FROM social_posts WHERE id = ?`,
     args: [postId]
   });
@@ -1899,6 +1954,10 @@ async function listarComentariosPost(db, user, postIdRaw) {
   if (autor !== user.id && (await hayBloqueo(db, user.id, autor))) {
     return { ok: false, status: 403, error: "No disponible." };
   }
+
+  const priv = packPrivacidadComentarios(row);
+  const gate = await puedeComentarEnPost(db, user.id, autor, priv.quien_comenta);
+  const ocultarReac = priv.reacciones_off;
 
   const r = await db.execute({
     sql: `SELECT c.id, c.texto, c.created_at, c.usuario_id, s.alias, s.foto, s.mostrar_foto
@@ -1914,16 +1973,25 @@ async function listarComentariosPost(db, user, postIdRaw) {
     const cid = toNum(c.usuario_id);
     const comId = toNum(c.id);
     const verC = cid === toNum(user.id) || Number(c.mostrar_foto) === 1;
-    const reac = await db.execute({
-      sql: `SELECT emoji, COUNT(*) AS n FROM social_comentario_reacciones
-            WHERE comentario_id = ? GROUP BY emoji`,
-      args: [comId]
-    });
-    const mi = await db.execute({
-      sql: `SELECT emoji FROM social_comentario_reacciones
-            WHERE comentario_id = ? AND usuario_id = ? LIMIT 1`,
-      args: [comId, user.id]
-    });
+    let mi_reaccion = null;
+    let reacciones = [];
+    if (!ocultarReac) {
+      const reac = await db.execute({
+        sql: `SELECT emoji, COUNT(*) AS n FROM social_comentario_reacciones
+              WHERE comentario_id = ? GROUP BY emoji`,
+        args: [comId]
+      });
+      const mi = await db.execute({
+        sql: `SELECT emoji FROM social_comentario_reacciones
+              WHERE comentario_id = ? AND usuario_id = ? LIMIT 1`,
+        args: [comId, user.id]
+      });
+      mi_reaccion = mi.rows?.[0]?.emoji || null;
+      reacciones = (reac.rows || []).map((x) => ({
+        emoji: x.emoji,
+        n: Number(x.n || 0)
+      }));
+    }
     comentarios.push({
       id: comId,
       alias: c.alias,
@@ -1932,32 +2000,62 @@ async function listarComentariosPost(db, user, postIdRaw) {
       foto: verC ? (c.foto || null) : null,
       soy_yo: cid === toNum(user.id),
       puedo_borrar: cid === toNum(user.id) || autor === toNum(user.id),
-      mi_reaccion: mi.rows?.[0]?.emoji || null,
-      reacciones: (reac.rows || []).map((x) => ({
-        emoji: x.emoji,
-        n: Number(x.n || 0)
-      }))
+      mi_reaccion,
+      reacciones
     });
   }
   return {
     ok: true,
     post_id: postId,
-    comentarios_off: Number(row.comentarios_off) === 1,
+    ...priv,
+    puedo_comentar: gate.ok,
     soy_autor: autor === toNum(user.id),
     comentarios
   };
 }
 
 async function setComentariosOff(db, user, postIdRaw, offRaw) {
+  const off = offRaw === true || offRaw === 1 || offRaw === "1";
+  return setPrivacidadComentarios(db, user, postIdRaw, {
+    quien_comenta: off ? "off" : "todos"
+  });
+}
+
+async function setPrivacidadComentarios(db, user, postIdRaw, body = {}) {
   if (!(await rolEsCliente(db, user.id))) {
     return { ok: false, status: 403, error: "Solo red social." };
   }
   const postId = toNum(postIdRaw);
   if (!postId) return { ok: false, status: 400, error: "Post inválido." };
-  const off = offRaw === true || offRaw === 1 || offRaw === "1" ? 1 : 0;
+
+  const patch = [];
+  const args = [];
+
+  if (body.quien_comenta != null) {
+    const quien = String(body.quien_comenta || "").trim().toLowerCase();
+    if (!QUIEN_COMENTA_OK.has(quien)) {
+      return { ok: false, status: 400, error: "Opción de comentarios inválida." };
+    }
+    patch.push("quien_comenta = ?");
+    args.push(quien);
+    patch.push("comentarios_off = ?");
+    args.push(quien === "off" ? 1 : 0);
+  }
+
+  if (body.reacciones_off != null) {
+    const off = body.reacciones_off === true || body.reacciones_off === 1 || body.reacciones_off === "1" ? 1 : 0;
+    patch.push("reacciones_off = ?");
+    args.push(off);
+  }
+
+  if (!patch.length) {
+    return { ok: false, status: 400, error: "Nada que actualizar." };
+  }
+
+  args.push(postId, user.id);
   const upd = await db.execute({
-    sql: `UPDATE social_posts SET comentarios_off = ? WHERE id = ? AND usuario_id = ?`,
-    args: [off, postId, user.id]
+    sql: `UPDATE social_posts SET ${patch.join(", ")} WHERE id = ? AND usuario_id = ?`,
+    args
   });
   if (!(upd.rowsAffected > 0)) {
     return { ok: false, status: 404, error: "Solo el autor puede cambiar comentarios." };
@@ -1978,7 +2076,8 @@ async function reaccionarComentario(db, user, comIdRaw, emojiRaw) {
   }
 
   const com = await db.execute({
-    sql: `SELECT c.id, c.post_id, p.usuario_id AS autor_post, p.publico
+    sql: `SELECT c.id, c.post_id, p.usuario_id AS autor_post, p.publico,
+                 COALESCE(p.reacciones_off, 0) AS reacciones_off
           FROM social_post_comentarios c
           JOIN social_posts p ON p.id = c.post_id
           WHERE c.id = ?`,
@@ -1987,6 +2086,9 @@ async function reaccionarComentario(db, user, comIdRaw, emojiRaw) {
   const row = com.rows?.[0];
   if (!row || Number(row.publico) !== 1) {
     return { ok: false, status: 404, error: "Comentario no encontrado." };
+  }
+  if (Number(row.reacciones_off) === 1) {
+    return { ok: false, status: 403, error: "El autor ocultó las reacciones." };
   }
   const autorPost = toNum(row.autor_post);
   if (autorPost !== user.id && (await hayBloqueo(db, user.id, autorPost))) {
@@ -2443,6 +2545,7 @@ module.exports = {
   listarLikesPost,
   borrarComentario,
   setComentariosOff,
+  setPrivacidadComentarios,
   reaccionarComentario,
   crearHistoria,
   listarHistorias,
