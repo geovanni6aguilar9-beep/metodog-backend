@@ -35,14 +35,191 @@ async function ensureTablesNotificaciones(db) {
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY(usuario_id) REFERENCES usuarios(id)
   )`);
+  try {
+    await db.execute("ALTER TABLE notificaciones ADD COLUMN meta TEXT");
+  } catch (_) { /* ya existe */ }
 }
 
-async function crearNotificacion(db, { usuarioId, tipo, titulo, cuerpo, refTipo, refId }) {
+async function crearNotificacion(db, { usuarioId, tipo, titulo, cuerpo, refTipo, refId, meta }) {
   await db.execute({
-    sql: `INSERT INTO notificaciones (usuario_id, tipo, titulo, cuerpo, ref_tipo, ref_id)
-          VALUES (?, ?, ?, ?, ?, ?)`,
-    args: [usuarioId, tipo, titulo, cuerpo || null, refTipo || null, refId ?? null]
+    sql: `INSERT INTO notificaciones (usuario_id, tipo, titulo, cuerpo, ref_tipo, ref_id, meta)
+          VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    args: [
+      usuarioId,
+      tipo,
+      titulo,
+      cuerpo || null,
+      refTipo || null,
+      refId ?? null,
+      meta != null ? (typeof meta === "string" ? meta : JSON.stringify(meta)) : null
+    ]
   });
+}
+
+function parseMeta(raw) {
+  if (!raw) return null;
+  if (typeof raw === "object") return raw;
+  try {
+    return JSON.parse(String(raw));
+  } catch {
+    return null;
+  }
+}
+
+function formatearNotifSocial(tipo, actores, previewComentario) {
+  const uniq = [...new Set((actores || []).filter(Boolean))];
+  const a0 = uniq[0] || "alguien";
+  if (tipo === "social_like") {
+    if (uniq.length <= 1) {
+      return {
+        titulo: "Nuevo me gusta",
+        cuerpo: `@${a0} le dio me gusta a tu publicación.`,
+        meta: { actores: uniq }
+      };
+    }
+    if (uniq.length === 2) {
+      return {
+        titulo: "Nuevos me gusta",
+        cuerpo: `@${a0} y @${uniq[1]} le dieron me gusta.`,
+        meta: { actores: uniq }
+      };
+    }
+    return {
+      titulo: "Nuevos me gusta",
+      cuerpo: `@${a0} y ${uniq.length - 1} más le dieron me gusta.`,
+      meta: { actores: uniq }
+    };
+  }
+  // social_comentario
+  const preview = previewComentario
+    ? previewComentario.length > 72
+      ? `${previewComentario.slice(0, 72)}…`
+      : previewComentario
+    : null;
+  if (uniq.length <= 1) {
+    return {
+      titulo: "Nuevo comentario",
+      cuerpo: preview ? `@${a0}: ${preview}` : `@${a0} comentó tu publicación.`,
+      meta: { actores: uniq, preview: preview || null }
+    };
+  }
+  if (uniq.length === 2) {
+    return {
+      titulo: "Nuevos comentarios",
+      cuerpo: `@${a0} y @${uniq[1]} comentaron tu publicación.`,
+      meta: { actores: uniq, preview: preview || null }
+    };
+  }
+  return {
+    titulo: "Nuevos comentarios",
+    cuerpo: `@${a0} y ${uniq.length - 1} más comentaron tu publicación.`,
+    meta: { actores: uniq, preview: preview || null }
+  };
+}
+
+/**
+ * Agrupa likes/comentarios del mismo post en una sola notif no leída (menos spam en campana).
+ */
+async function crearOAgruparNotifSocial(db, {
+  usuarioId,
+  tipo,
+  actorAlias,
+  refTipo = "social_post",
+  refId,
+  previewComentario
+}) {
+  if (!usuarioId || !tipo || !refId) return;
+  const alias = String(actorAlias || "alguien").replace(/^@/, "").trim() || "alguien";
+
+  const existing = await db.execute({
+    sql: `SELECT id, meta, cuerpo FROM notificaciones
+          WHERE usuario_id = ? AND tipo = ? AND ref_tipo = ? AND ref_id = ? AND leida = 0
+          ORDER BY id DESC LIMIT 1`,
+    args: [usuarioId, tipo, refTipo, refId]
+  });
+
+  if (existing.rows?.length) {
+    const row = existing.rows[0];
+    const metaPrev = parseMeta(row.meta) || {};
+    let actores = Array.isArray(metaPrev.actores) ? [...metaPrev.actores] : [];
+    if (!actores.length) {
+      const m = String(row.cuerpo || "").match(/@([a-zA-Z0-9_]+)/);
+      if (m) actores = [m[1]];
+    }
+    actores = [alias, ...actores.filter((a) => a !== alias)];
+    const packed = formatearNotifSocial(tipo, actores, previewComentario || metaPrev.preview);
+    await db.execute({
+      sql: `UPDATE notificaciones
+            SET titulo = ?, cuerpo = ?, meta = ?, created_at = CURRENT_TIMESTAMP
+            WHERE id = ?`,
+      args: [packed.titulo, packed.cuerpo, JSON.stringify(packed.meta), row.id]
+    });
+    return;
+  }
+
+  const packed = formatearNotifSocial(tipo, [alias], previewComentario);
+  await crearNotificacion(db, {
+    usuarioId,
+    tipo,
+    titulo: packed.titulo,
+    cuerpo: packed.cuerpo,
+    refTipo,
+    refId,
+    meta: packed.meta
+  });
+}
+
+/** Colapsa filas legacy duplicadas (mismo tipo+post) al listar. */
+function agruparNotifsSocialesEnLista(items) {
+  const out = [];
+  const indexByKey = new Map();
+  for (const n of items) {
+    if (n.tipo !== "social_like" && n.tipo !== "social_comentario") {
+      out.push(n);
+      continue;
+    }
+    const key = `${n.tipo}:${n.ref_id ?? ""}`;
+    if (!indexByKey.has(key)) {
+      const meta = parseMeta(n.meta) || {};
+      const actores = Array.isArray(meta.actores) ? meta.actores : [];
+      const packed = actores.length
+        ? formatearNotifSocial(n.tipo, actores, meta.preview)
+        : null;
+      const item = {
+        ...n,
+        titulo: packed?.titulo || n.titulo,
+        cuerpo: packed?.cuerpo || n.cuerpo,
+        ids: [n.id],
+        agrupada: false
+      };
+      indexByKey.set(key, out.length);
+      out.push(item);
+      continue;
+    }
+    const idx = indexByKey.get(key);
+    const g = out[idx];
+    g.ids.push(n.id);
+    g.agrupada = true;
+    if (!n.leida) g.leida = false;
+    const metaG = parseMeta(g.meta) || {};
+    const metaN = parseMeta(n.meta) || {};
+    let actores = [
+      ...(Array.isArray(metaN.actores) ? metaN.actores : []),
+      ...(Array.isArray(metaG.actores) ? metaG.actores : [])
+    ];
+    if (!actores.length) {
+      for (const body of [n.cuerpo, g.cuerpo]) {
+        const m = String(body || "").match(/@([a-zA-Z0-9_]+)/);
+        if (m) actores.push(m[1]);
+      }
+    }
+    actores = [...new Set(actores.filter(Boolean))];
+    const packed = formatearNotifSocial(n.tipo, actores, metaN.preview || metaG.preview);
+    g.titulo = packed.titulo;
+    g.cuerpo = packed.cuerpo;
+    g.meta = packed.meta;
+  }
+  return out;
 }
 
 async function validarCoachRecibeCliente(db, coachId) {
@@ -382,7 +559,7 @@ function buildPreviewSolicitud(sol, metaLabel) {
 
 async function listarNotificaciones(db, userId, { filtro, limite = 50 }) {
   const args = [userId];
-  let sql = `SELECT id, tipo, titulo, cuerpo, ref_tipo, ref_id, leida, created_at
+  let sql = `SELECT id, tipo, titulo, cuerpo, ref_tipo, ref_id, leida, created_at, meta
              FROM notificaciones WHERE usuario_id = ?`;
   if (filtro === "planes") {
     sql += " AND tipo IN ('plan_rutina', 'plan_dieta')";
@@ -445,7 +622,7 @@ async function listarNotificaciones(db, userId, { filtro, limite = 50 }) {
     }
   }
 
-  return items.map((n) => {
+  const mapped = items.map((n) => {
     const refId = toNum(n.ref_id);
     const sol = refId != null ? solicitudesMap[refId] : null;
     const clienteId = sol ? toNum(sol.cliente_id) : null;
@@ -454,6 +631,7 @@ async function listarNotificaciones(db, userId, { filtro, limite = 50 }) {
       id: toNum(n.id),
       ref_id: refId,
       leida: !!n.leida,
+      meta: parseMeta(n.meta),
       solicitud: sol
         ? {
             id: toNum(sol.id),
@@ -466,6 +644,8 @@ async function listarNotificaciones(db, userId, { filtro, limite = 50 }) {
         : null
     };
   });
+
+  return agruparNotifsSocialesEnLista(mapped);
 }
 
 async function contarNotificacionesNoLeidas(db, userId) {
@@ -477,9 +657,31 @@ async function contarNotificacionesNoLeidas(db, userId) {
 }
 
 async function marcarNotificacionLeida(db, userId, notifId) {
+  const id = toNum(notifId);
+  if (!id) return false;
+  const row = await db.execute({
+    sql: `SELECT tipo, ref_tipo, ref_id FROM notificaciones WHERE id = ? AND usuario_id = ?`,
+    args: [id, userId]
+  });
+  const n = row.rows?.[0];
+  if (!n) return false;
+
+  if (
+    (n.tipo === "social_like" || n.tipo === "social_comentario") &&
+    n.ref_tipo === "social_post" &&
+    n.ref_id != null
+  ) {
+    const r = await db.execute({
+      sql: `UPDATE notificaciones SET leida = 1
+            WHERE usuario_id = ? AND tipo = ? AND ref_tipo = ? AND ref_id = ? AND leida = 0`,
+      args: [userId, n.tipo, n.ref_tipo, n.ref_id]
+    });
+    return (r.rowsAffected ?? 0) > 0;
+  }
+
   const r = await db.execute({
     sql: "UPDATE notificaciones SET leida = 1 WHERE id = ? AND usuario_id = ?",
-    args: [notifId, userId]
+    args: [id, userId]
   });
   return (r.rowsAffected ?? 0) > 0;
 }
@@ -511,6 +713,7 @@ async function borrarTodasNotificaciones(db, userId) {
 module.exports = {
   ensureTablesNotificaciones,
   crearNotificacion,
+  crearOAgruparNotifSocial,
   enrichUsuarioVinculo,
   solicitarVinculoCoach,
   responderSolicitudVinculo,

@@ -4,7 +4,7 @@
  */
 
 const crypto = require("crypto");
-const { crearNotificacion } = require("./notificaciones");
+const { crearNotificacion, crearOAgruparNotifSocial } = require("./notificaciones");
 const { deduplicarFilasHistorialFuerza } = require("./fuerzaHistorial");
 
 const MAX_FOTO_CHARS = 780_000;
@@ -1766,11 +1766,10 @@ async function toggleLikePost(db, user, postIdRaw) {
     if (autor && autor !== user.id) {
       try {
         const miAlias = await aliasDe(db, user.id);
-        await crearNotificacion(db, {
+        await crearOAgruparNotifSocial(db, {
           usuarioId: autor,
           tipo: "social_like",
-          titulo: "Nuevo me gusta",
-          cuerpo: `@${miAlias} le dio me gusta a tu publicación.`,
+          actorAlias: miAlias,
           refTipo: "social_post",
           refId: postId
         });
@@ -1838,13 +1837,13 @@ async function comentarPost(db, user, postIdRaw, textoRaw) {
     try {
       const miAlias = await aliasDe(db, user.id);
       const previewTxt = texto.length > 72 ? `${texto.slice(0, 72)}…` : texto;
-      await crearNotificacion(db, {
+      await crearOAgruparNotifSocial(db, {
         usuarioId: autor,
         tipo: "social_comentario",
-        titulo: "Nuevo comentario",
-        cuerpo: `@${miAlias}: ${previewTxt}`,
+        actorAlias: miAlias,
         refTipo: "social_post",
-        refId: postId
+        refId: postId,
+        previewComentario: previewTxt
       });
     } catch (err) {
       console.warn("notif social_comentario:", err.message);
