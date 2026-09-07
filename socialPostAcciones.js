@@ -108,7 +108,7 @@ async function editarPost(db, user, postIdRaw, body) {
     sql: `UPDATE social_posts SET texto = ? WHERE id = ? AND usuario_id = ?`,
     args: [texto, postId, uid]
   });
-  if (!(upd.rowsAffected > 0)) {
+  if (!(upd.rowsAffected > 0) && upd.rowsAffected != null) {
     return { ok: false, status: 500, error: "No se pudo editar." };
   }
   return listarMuroLazy()(db, user);
@@ -137,7 +137,7 @@ async function fijarPost(db, user, postIdRaw, fijarRaw) {
     sql: `UPDATE social_posts SET fijado = ? WHERE id = ? AND usuario_id = ?`,
     args: [fijar, postId, uid]
   });
-  if (!(upd.rowsAffected > 0)) {
+  if (!(upd.rowsAffected > 0) && upd.rowsAffected != null) {
     return { ok: false, status: 500, error: "No se pudo fijar." };
   }
   return listarMuroLazy()(db, user);
@@ -159,7 +159,7 @@ async function archivarPost(db, user, postIdRaw, archivarRaw) {
           WHERE id = ? AND usuario_id = ?`,
     args: [archivar, archivar, postId, uid]
   });
-  if (!(upd.rowsAffected > 0)) {
+  if (!(upd.rowsAffected > 0) && upd.rowsAffected != null) {
     return { ok: false, status: 500, error: "No se pudo archivar." };
   }
   return listarMuroLazy()(db, user);
@@ -266,35 +266,57 @@ async function listarPostsPerfil(db, user, targetIdRaw) {
   if (!viewer || !tid) return { ok: false, status: 400, error: "Usuario inválido." };
 
   const propio = viewer === tid;
-  const r = await db.execute({
-    sql: `SELECT p.id, p.usuario_id, p.texto, p.imagen, p.created_at, p.publico,
-                 COALESCE(p.fijado, 0) AS fijado,
-                 COALESCE(p.archivado, 0) AS archivado,
-                 COALESCE(p.comentarios_off, 0) AS comentarios_off,
-                 COALESCE(p.quien_comenta, 'todos') AS quien_comenta,
-                 COALESCE(p.reacciones_off, 0) AS reacciones_off,
-                 s.alias, s.foto, s.mostrar_foto
-          FROM social_posts p
-          JOIN perfiles_sociales s ON s.usuario_id = p.usuario_id
-          WHERE p.usuario_id = ?
-            AND p.publico = 1
-            AND COALESCE(p.archivado, 0) = 0
-          ORDER BY COALESCE(p.fijado, 0) DESC, p.id DESC
-          LIMIT 60`,
-    args: [tid]
-  });
+  let rows = [];
+  try {
+    const r = await db.execute({
+      sql: `SELECT p.id, p.usuario_id, p.texto, p.imagen, p.created_at, p.publico,
+                   COALESCE(p.fijado, 0) AS fijado,
+                   COALESCE(p.archivado, 0) AS archivado,
+                   COALESCE(p.comentarios_off, 0) AS comentarios_off,
+                   COALESCE(p.quien_comenta, 'todos') AS quien_comenta,
+                   COALESCE(p.reacciones_off, 0) AS reacciones_off,
+                   s.alias, s.foto, s.mostrar_foto
+            FROM social_posts p
+            JOIN perfiles_sociales s ON s.usuario_id = p.usuario_id
+            WHERE p.usuario_id = ?
+              AND COALESCE(p.publico, 0) = 1
+              AND COALESCE(p.archivado, 0) = 0
+            ORDER BY COALESCE(p.fijado, 0) DESC, p.id DESC
+            LIMIT 60`,
+      args: [tid]
+    });
+    rows = r.rows || [];
+  } catch (err) {
+    console.warn("listarPostsPerfil full:", err.message);
+    const r2 = await db.execute({
+      sql: `SELECT p.id, p.usuario_id, p.texto, p.imagen, p.created_at, p.publico, s.alias
+            FROM social_posts p
+            JOIN perfiles_sociales s ON s.usuario_id = p.usuario_id
+            WHERE p.usuario_id = ? AND COALESCE(p.publico, 0) = 1
+            ORDER BY p.id DESC
+            LIMIT 60`,
+      args: [tid]
+    });
+    rows = r2.rows || [];
+  }
 
   const posts = [];
-  for (const row of r.rows || []) {
+  for (const row of rows) {
     const postId = toNum(row.id);
-    const likes = await db.execute({
-      sql: `SELECT COUNT(*) AS n FROM social_post_likes WHERE post_id = ?`,
-      args: [postId]
-    });
-    const coms = await db.execute({
-      sql: `SELECT COUNT(*) AS n FROM social_post_comentarios WHERE post_id = ?`,
-      args: [postId]
-    });
+    let likesN = 0;
+    let comsN = 0;
+    try {
+      const likes = await db.execute({
+        sql: `SELECT COUNT(*) AS n FROM social_post_likes WHERE post_id = ?`,
+        args: [postId]
+      });
+      likesN = Number(likes.rows?.[0]?.n || 0);
+      const coms = await db.execute({
+        sql: `SELECT COUNT(*) AS n FROM social_post_comentarios WHERE post_id = ?`,
+        args: [postId]
+      });
+      comsN = Number(coms.rows?.[0]?.n || 0);
+    } catch (_) { /* ignore */ }
     posts.push({
       id: postId,
       user_id: toNum(row.usuario_id),
@@ -305,14 +327,56 @@ async function listarPostsPerfil(db, user, targetIdRaw) {
       publico: true,
       soy_yo: propio,
       fijado: Number(row.fijado) === 1,
-      likes: Number(likes.rows?.[0]?.n || 0),
-      comentarios_n: Number(coms.rows?.[0]?.n || 0),
+      likes: likesN,
+      comentarios_n: comsN,
       quien_comenta: row.quien_comenta || "todos",
       comentarios_off: Number(row.comentarios_off) === 1 || row.quien_comenta === "off",
       reacciones_off: Number(row.reacciones_off) === 1
     });
   }
   return { ok: true, user_id: tid, propio, posts };
+}
+
+/** Posts que el usuario guardó (bookmark). */
+async function listarPostsGuardados(db, user) {
+  await ensureReady(db);
+  const uid = toNum(user.id);
+  if (!uid) return { ok: false, status: 400, error: "Usuario inválido." };
+
+  let rows = [];
+  try {
+    const r = await db.execute({
+      sql: `SELECT p.id, p.usuario_id, p.texto, p.imagen, p.created_at,
+                   COALESCE(p.fijado, 0) AS fijado, s.alias
+            FROM social_posts_guardados g
+            JOIN social_posts p ON p.id = g.post_id
+            JOIN perfiles_sociales s ON s.usuario_id = p.usuario_id
+            WHERE g.usuario_id = ?
+              AND COALESCE(p.publico, 0) = 1
+              AND COALESCE(p.archivado, 0) = 0
+            ORDER BY g.created_at DESC
+            LIMIT 60`,
+      args: [uid]
+    });
+    rows = r.rows || [];
+  } catch (err) {
+    console.warn("listarPostsGuardados:", err.message);
+    return { ok: true, posts: [] };
+  }
+
+  const posts = rows.map((row) => ({
+    id: toNum(row.id),
+    user_id: toNum(row.usuario_id),
+    alias: row.alias,
+    texto: row.texto || null,
+    imagen: row.imagen || null,
+    created_at: row.created_at,
+    publico: true,
+    soy_yo: toNum(row.usuario_id) === uid,
+    fijado: Number(row.fijado) === 1,
+    yo_guardado: true
+  }));
+  return { ok: true, posts };
 }
 
 module.exports = {
@@ -323,5 +387,6 @@ module.exports = {
   toggleGuardarPost,
   reportarPost,
   listarPostsPerfil,
+  listarPostsGuardados,
   MOTIVOS_OK
 };
