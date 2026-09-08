@@ -1755,6 +1755,153 @@ async function listarMuro(db, user) {
   return { ok: true, yo_publico: yoPublico, posts };
 }
 
+async function enriquecerPostFila(db, user, row) {
+  const uid = toNum(row.usuario_id);
+  const soyYo = toNum(uid) === toNum(user.id);
+  const verFoto = soyYo || Number(row.mostrar_foto) === 1;
+  const postId = toNum(row.id);
+  const likes = await db.execute({
+    sql: `SELECT COUNT(*) AS n FROM social_post_likes WHERE post_id = ?`,
+    args: [postId]
+  });
+  const yoLike = await db.execute({
+    sql: `SELECT 1 FROM social_post_likes WHERE post_id = ? AND usuario_id = ? LIMIT 1`,
+    args: [postId, user.id]
+  });
+  const coms = await db.execute({
+    sql: `SELECT COUNT(*) AS n FROM social_post_comentarios WHERE post_id = ?`,
+    args: [postId]
+  });
+  const preview = await db.execute({
+    sql: `SELECT c.id, c.texto, c.created_at, c.usuario_id, s.alias, s.foto, s.mostrar_foto
+          FROM social_post_comentarios c
+          JOIN perfiles_sociales s ON s.usuario_id = c.usuario_id
+          WHERE c.post_id = ?
+          ORDER BY c.id DESC LIMIT 6`,
+    args: [postId]
+  });
+  let likesPrevRows = [];
+  try {
+    const likesPrev = await db.execute({
+      sql: `SELECT l.usuario_id, s.alias, s.foto, s.mostrar_foto
+            FROM social_post_likes l
+            JOIN perfiles_sociales s ON s.usuario_id = l.usuario_id
+            WHERE l.post_id = ?
+            ORDER BY l.rowid DESC LIMIT 5`,
+      args: [postId]
+    });
+    likesPrevRows = likesPrev.rows || [];
+  } catch (_) {
+    const likesPrev = await db.execute({
+      sql: `SELECT l.usuario_id, s.alias, s.foto, s.mostrar_foto
+            FROM social_post_likes l
+            JOIN perfiles_sociales s ON s.usuario_id = l.usuario_id
+            WHERE l.post_id = ?
+            LIMIT 5`,
+      args: [postId]
+    });
+    likesPrevRows = likesPrev.rows || [];
+  }
+  const yoGuardado = { rows: [] };
+  try {
+    const g = await db.execute({
+      sql: `SELECT 1 FROM social_posts_guardados
+            WHERE post_id = ? AND usuario_id = ? LIMIT 1`,
+      args: [postId, user.id]
+    });
+    yoGuardado.rows = g.rows || [];
+  } catch (_) { /* tabla aún no migrada */ }
+
+  return {
+    id: postId,
+    user_id: uid,
+    alias: row.alias,
+    foto: verFoto ? (row.foto || null) : null,
+    texto: row.texto || null,
+    imagen: row.imagen || null,
+    created_at: row.created_at,
+    publico: true,
+    soy_yo: soyYo,
+    fijado: Number(row.fijado) === 1,
+    yo_guardado: !!(yoGuardado.rows || []).length,
+    likes: Number(likes.rows?.[0]?.n || 0),
+    yo_like: !!(yoLike.rows || []).length,
+    likes_preview: likesPrevRows.map((l) => {
+      const lid = toNum(l.usuario_id);
+      const verL = lid === toNum(user.id) || Number(l.mostrar_foto) === 1;
+      return {
+        user_id: lid,
+        alias: l.alias,
+        foto: verL ? (l.foto || null) : null
+      };
+    }),
+    comentarios_n: Number(coms.rows?.[0]?.n || 0),
+    ...packPrivacidadComentarios(row),
+    comentarios: (preview.rows || [])
+      .slice()
+      .reverse()
+      .map((c) => {
+        const cid = toNum(c.usuario_id);
+        const verC = cid === toNum(user.id) || Number(c.mostrar_foto) === 1;
+        return {
+          id: toNum(c.id),
+          alias: c.alias,
+          texto: c.texto,
+          created_at: c.created_at,
+          foto: verC ? (c.foto || null) : null,
+          soy_yo: cid === toNum(user.id)
+        };
+      })
+  };
+}
+
+/** Deep link / compartir: una publicación pública por id. */
+async function obtenerPostMuro(db, user, postIdRaw) {
+  if (!(await rolEsCliente(db, user.id))) {
+    return { ok: false, status: 403, error: "El muro es para atletas." };
+  }
+  if (await esMenorOSinEdad(db, user.id)) {
+    return { ok: false, status: 403, error: "Cerrado hasta los 18 años." };
+  }
+  const postId = toNum(postIdRaw);
+  if (!postId) return { ok: false, status: 400, error: "Publicación inválida." };
+  await asegurarPerfil(db, user.id, user.nombre);
+
+  const r = await db.execute({
+    sql: `SELECT p.id, p.usuario_id, p.texto, p.imagen, p.created_at, p.publico,
+                 COALESCE(p.comentarios_off, 0) AS comentarios_off,
+                 COALESCE(p.quien_comenta, 'todos') AS quien_comenta,
+                 COALESCE(p.reacciones_off, 0) AS reacciones_off,
+                 COALESCE(p.fijado, 0) AS fijado,
+                 COALESCE(p.archivado, 0) AS archivado,
+                 s.alias, s.foto, s.mostrar_foto, s.mostrar_muro
+          FROM social_posts p
+          JOIN perfiles_sociales s ON s.usuario_id = p.usuario_id
+          JOIN usuarios u ON u.id = p.usuario_id
+          LEFT JOIN perfiles_clientes c ON c.usuario_id = p.usuario_id
+          WHERE p.id = ?
+            AND p.publico = 1
+            AND s.mostrar_muro = 1
+            AND COALESCE(p.archivado, 0) = 0
+            AND (
+              UPPER(u.rol) IN ('COACH', 'SUPERADMIN')
+              OR (c.edad IS NOT NULL AND c.edad >= 18)
+            )
+          LIMIT 1`,
+    args: [postId]
+  });
+  const row = r.rows?.[0];
+  if (!row) {
+    return { ok: false, status: 404, error: "Publicación no disponible." };
+  }
+  const autor = toNum(row.usuario_id);
+  if (autor !== toNum(user.id) && (await hayBloqueo(db, user.id, autor))) {
+    return { ok: false, status: 404, error: "Publicación no disponible." };
+  }
+  const post = await enriquecerPostFila(db, user, row);
+  return { ok: true, post };
+}
+
 async function buscarPersonas(db, user, qRaw) {
   if (!(await rolEsCliente(db, user.id))) {
     return { ok: false, status: 403, error: "Solo atletas." };
@@ -2576,6 +2723,7 @@ module.exports = {
   crearPost,
   borrarPost,
   listarMuro,
+  obtenerPostMuro,
   buscarPersonas,
   toggleLikePost,
   comentarPost,

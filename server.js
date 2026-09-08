@@ -129,6 +129,7 @@ const {
   crearPost: crearPostSocial,
   borrarPost: borrarPostSocial,
   listarMuro: listarMuroSocial,
+  obtenerPostMuro: obtenerPostMuroSocial,
   buscarPersonas: buscarPersonasSocial,
   toggleLikePost: toggleLikePostSocial,
   comentarPost: comentarPostSocial,
@@ -2160,6 +2161,16 @@ app.get("/api/social/muro", async (req, res) => {
     return responderPerfilSocial(res, result);
   } catch (err) {
     console.error("GET social/muro:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/api/social/muro/:id", async (req, res) => {
+  try {
+    const result = await obtenerPostMuroSocial(db, req.user, req.params.id);
+    return responderPerfilSocial(res, result);
+  } catch (err) {
+    console.error("GET social/muro/:id:", err.message);
     res.status(500).json({ error: err.message });
   }
 });
