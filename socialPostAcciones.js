@@ -162,7 +162,12 @@ async function archivarPost(db, user, postIdRaw, archivarRaw) {
   if (!(upd.rowsAffected > 0) && upd.rowsAffected != null) {
     return { ok: false, status: 500, error: "No se pudo archivar." };
   }
-  return listarMuroLazy()(db, user);
+  try {
+    return await listarMuroLazy()(db, user);
+  } catch (err) {
+    console.warn("archivarPost listarMuro:", err.message);
+    return { ok: true, posts: null, archivado: !!archivar, post_id: postId };
+  }
 }
 
 async function toggleGuardarPost(db, user, postIdRaw) {
@@ -275,9 +280,11 @@ async function listarPostsPerfil(db, user, targetIdRaw) {
                    COALESCE(p.comentarios_off, 0) AS comentarios_off,
                    COALESCE(p.quien_comenta, 'todos') AS quien_comenta,
                    COALESCE(p.reacciones_off, 0) AS reacciones_off,
-                   s.alias, s.foto, s.mostrar_foto
+                   s.alias, s.foto, s.mostrar_foto,
+                   u.nombre AS nombre_cuenta
             FROM social_posts p
             JOIN perfiles_sociales s ON s.usuario_id = p.usuario_id
+            JOIN usuarios u ON u.id = p.usuario_id
             WHERE p.usuario_id = ?
               AND COALESCE(p.publico, 0) = 1
               AND COALESCE(p.archivado, 0) = 0
@@ -289,9 +296,11 @@ async function listarPostsPerfil(db, user, targetIdRaw) {
   } catch (err) {
     console.warn("listarPostsPerfil full:", err.message);
     const r2 = await db.execute({
-      sql: `SELECT p.id, p.usuario_id, p.texto, p.imagen, p.created_at, p.publico, s.alias
+      sql: `SELECT p.id, p.usuario_id, p.texto, p.imagen, p.created_at, p.publico, s.alias,
+                   u.nombre AS nombre_cuenta
             FROM social_posts p
             JOIN perfiles_sociales s ON s.usuario_id = p.usuario_id
+            JOIN usuarios u ON u.id = p.usuario_id
             WHERE p.usuario_id = ? AND COALESCE(p.publico, 0) = 1
             ORDER BY p.id DESC
             LIMIT 60`,
@@ -317,10 +326,17 @@ async function listarPostsPerfil(db, user, targetIdRaw) {
       });
       comsN = Number(coms.rows?.[0]?.n || 0);
     } catch (_) { /* ignore */ }
+    const nombreRaw = String(row.nombre_cuenta || "")
+      .replace(/\s+/g, " ")
+      .trim();
+    const nombre = nombreRaw
+      ? nombreRaw.split(" ").filter(Boolean).slice(0, 2).join(" ").slice(0, 40)
+      : null;
     posts.push({
       id: postId,
       user_id: toNum(row.usuario_id),
       alias: row.alias,
+      nombre,
       texto: row.texto || null,
       imagen: row.imagen || null,
       created_at: row.created_at,
