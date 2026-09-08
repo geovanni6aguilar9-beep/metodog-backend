@@ -1698,7 +1698,7 @@ async function listarMuro(db, user) {
             FROM social_post_likes l
             JOIN perfiles_sociales s ON s.usuario_id = l.usuario_id
             WHERE l.post_id = ?
-            ORDER BY l.created_at DESC LIMIT 5`,
+            ORDER BY l.rowid DESC LIMIT 5`,
       args: [postId]
     });
     const yoGuardado = { rows: [] };
@@ -1855,33 +1855,40 @@ async function toggleLikePost(db, user, postIdRaw) {
     return { ok: false, status: 403, error: "No disponible." };
   }
 
+  const uid = toNum(user.id);
   const prev = await db.execute({
     sql: `SELECT 1 FROM social_post_likes WHERE post_id = ? AND usuario_id = ? LIMIT 1`,
-    args: [postId, user.id]
+    args: [postId, uid]
   });
   if (prev.rows?.length) {
     await db.execute({
       sql: `DELETE FROM social_post_likes WHERE post_id = ? AND usuario_id = ?`,
-      args: [postId, user.id]
+      args: [postId, uid]
     });
   } else {
-    await db.execute({
-      sql: `INSERT INTO social_post_likes (post_id, usuario_id) VALUES (?, ?)`,
-      args: [postId, user.id]
-    });
-    if (autor && autor !== user.id) {
-      try {
-        const miAlias = await aliasDe(db, user.id);
-        await crearOAgruparNotifSocial(db, {
-          usuarioId: autor,
-          tipo: "social_like",
-          actorAlias: miAlias,
-          refTipo: "social_post",
-          refId: postId
-        });
-      } catch (err) {
-        console.warn("notif social_like:", err.message);
+    try {
+      const ins = await db.execute({
+        sql: `INSERT OR IGNORE INTO social_post_likes (post_id, usuario_id) VALUES (?, ?)`,
+        args: [postId, uid]
+      });
+      const inserted = Number(ins.rowsAffected || 0) > 0;
+      if (inserted && autor && autor !== uid) {
+        try {
+          const miAlias = await aliasDe(db, uid);
+          await crearOAgruparNotifSocial(db, {
+            usuarioId: autor,
+            tipo: "social_like",
+            actorAlias: miAlias,
+            refTipo: "social_post",
+            refId: postId
+          });
+        } catch (err) {
+          console.warn("notif social_like:", err.message);
+        }
       }
+    } catch (err) {
+      // Carrera doble-tap / click-through del sheet → ya estaba likeado
+      if (!/UNIQUE/i.test(String(err.message || ""))) throw err;
     }
   }
   return listarMuro(db, user);
