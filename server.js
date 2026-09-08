@@ -149,7 +149,8 @@ const {
   listarSiguiendo: listarSiguiendoSocial,
   contadoresFollow: contadoresFollowSocial,
   yoSigo: yoSigoSocial,
-  sugerenciasFollow: sugerenciasFollowSocial
+  sugerenciasFollow: sugerenciasFollowSocial,
+  perfilVistaPublica: perfilVistaPublicaSocial
 } = require("./perfilSocial");
 const {
   editarPost: editarPostSocial,
@@ -2091,6 +2092,16 @@ app.get("/api/social/tarjeta/:id", async (req, res) => {
     return responderPerfilSocial(res, result);
   } catch (err) {
     console.error("GET social/tarjeta:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/api/social/perfil/:userId", async (req, res) => {
+  try {
+    const result = await perfilVistaPublicaSocial(db, req.user, req.params.userId);
+    return responderPerfilSocial(res, result);
+  } catch (err) {
+    console.error("GET social/perfil:", err.message);
     res.status(500).json({ error: err.message });
   }
 });

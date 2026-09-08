@@ -2597,6 +2597,57 @@ async function yoSigo(db, userId, targetId) {
   return !!(r.rows || []).length;
 }
 
+/** Perfil IG público (sin exigir amistad) — bio, foto, follows + grid de posts. */
+async function perfilVistaPublica(db, user, targetIdRaw) {
+  if (!(await rolEsCliente(db, user.id))) {
+    return { ok: false, status: 403, error: "Solo red social." };
+  }
+  if (await esMenorOSinEdad(db, user.id)) {
+    return { ok: false, status: 403, error: "Cerrado hasta los 18 años." };
+  }
+  const tid = toNum(targetIdRaw);
+  const vid = toNum(user.id);
+  if (!tid || !vid) return { ok: false, status: 400, error: "Usuario inválido." };
+  if (await esMenorOSinEdad(db, tid)) {
+    return { ok: false, status: 404, error: "Perfil no disponible." };
+  }
+  if (tid !== vid && (await hayBloqueo(db, vid, tid))) {
+    return { ok: false, status: 404, error: "Perfil no disponible." };
+  }
+
+  const r = await db.execute({
+    sql: `SELECT usuario_id, alias, bio, foto, mostrar_foto
+          FROM perfiles_sociales WHERE usuario_id = ?`,
+    args: [tid]
+  });
+  const row = r.rows?.[0];
+  if (!row) return { ok: false, status: 404, error: "Perfil no disponible." };
+
+  const { listarPostsPerfil } = require("./socialPostAcciones");
+  const postsRes = await listarPostsPerfil(db, user, tid);
+  const posts = postsRes?.ok ? (postsRes.posts || []) : [];
+  const counts = await contadoresFollow(db, tid);
+  const propio = tid === vid;
+  const sigo = !propio ? await yoSigo(db, vid, tid) : false;
+  const verFoto = propio || Number(row.mostrar_foto) === 1;
+
+  return {
+    ok: true,
+    perfil: {
+      user_id: tid,
+      alias: row.alias,
+      bio: normalizarBio(row.bio) || null,
+      foto: verFoto ? (row.foto || null) : null,
+      seguidores: counts.seguidores,
+      siguiendo: counts.siguiendo,
+      yo_sigo: !!sigo,
+      soy_yo: propio,
+      n_posts: posts.length
+    },
+    posts
+  };
+}
+
 // ─────── Sugerencias ───────
 
 async function sugerenciasFollow(db, user) {
@@ -2743,5 +2794,6 @@ module.exports = {
   contadoresFollow,
   yoSigo,
   sugerenciasFollow,
+  perfilVistaPublica,
   borrarDatosSocialesUsuario
 };
