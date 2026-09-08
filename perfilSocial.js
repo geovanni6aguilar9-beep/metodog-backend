@@ -16,7 +16,7 @@ const MAX_POST_CHARS = 280;
 const MAX_POSTS_HORA = 15;
 const MAX_FEED = 40;
 const MAX_MURO = 50;
-const MAX_BUSCAR = 12;
+const MAX_BUSCAR = 40;
 const MODOS = new Set(["cerrado", "codigo", "alias"]);
 const ALIAS_RE = /^[a-z0-9_]{3,20}$/;
 
@@ -1953,10 +1953,8 @@ async function buscarPersonas(db, user, qRaw) {
               s.alias LIKE ?
               OR LOWER(COALESCE(u.nombre, '')) LIKE ?
             )
-            AND (
-              UPPER(u.rol) IN ('COACH', 'SUPERADMIN')
-              OR (c.edad IS NOT NULL AND c.edad >= 18)
-            )
+            AND UPPER(COALESCE(u.rol, '')) IN ('CLIENTE', 'COACH', 'SUPERADMIN')
+            AND (c.edad IS NULL OR c.edad >= 18)
           ORDER BY
             CASE WHEN s.alias LIKE 'atleta%' THEN 1 ELSE 0 END,
             s.alias ASC
@@ -2711,33 +2709,42 @@ async function sugerenciasFollow(db, user) {
   });
   const bloqueados = new Set((bloqR.rows || []).map((r) => toNum(r.blocked_id || r.blocker_id)));
 
-  // Preferir gente con nombre real / alias propio / foto (no solo atleta51)
+  // Preferir gente con nombre real / alias propio / foto.
+  // Edad NULL ≠ menor: solo se ocultan menores confirmados (edad < 18).
+  // Descubribles: modo alias O con posts públicos O muro abierto.
   const r = await db.execute({
     sql: `SELECT DISTINCT s.usuario_id, s.alias, s.foto, s.mostrar_foto,
                  u.nombre AS nombre_cuenta
           FROM perfiles_sociales s
           JOIN usuarios u ON u.id = s.usuario_id
           LEFT JOIN perfiles_clientes c ON c.usuario_id = s.usuario_id
-          WHERE s.modo_entrada = 'alias'
-            AND s.usuario_id != ?
+          WHERE s.usuario_id != ?
+            AND UPPER(COALESCE(u.rol, '')) IN ('CLIENTE', 'COACH', 'SUPERADMIN')
+            AND (c.edad IS NULL OR c.edad >= 18)
             AND (
-              UPPER(u.rol) IN ('COACH', 'SUPERADMIN')
-              OR (c.edad IS NOT NULL AND c.edad >= 18)
+              s.modo_entrada = 'alias'
+              OR COALESCE(s.mostrar_muro, 0) = 1
+              OR EXISTS (
+                SELECT 1 FROM social_posts p
+                WHERE p.usuario_id = s.usuario_id
+                  AND COALESCE(p.publico, 0) = 1
+                  AND COALESCE(p.archivado, 0) = 0
+              )
             )
           ORDER BY
             CASE WHEN s.alias GLOB 'atleta[0-9]*' THEN 1 ELSE 0 END ASC,
             CASE WHEN COALESCE(u.nombre, '') = '' THEN 1 ELSE 0 END ASC,
             CASE WHEN s.foto IS NOT NULL AND length(s.foto) > 40 THEN 0 ELSE 1 END ASC,
             s.usuario_id DESC
-          LIMIT 50`,
+          LIMIT 80`,
     args: [user.id]
   });
 
   const sugerencias = [];
   for (const row of r.rows || []) {
-    if (sugerencias.length >= 10) break;
+    if (sugerencias.length >= 40) break;
     const uid = toNum(row.usuario_id);
-    if (yaFollow.has(uid) || bloqueados.has(uid)) continue;
+    if (!uid || yaFollow.has(uid) || bloqueados.has(uid)) continue;
     sugerencias.push({
       user_id: uid,
       alias: row.alias,
