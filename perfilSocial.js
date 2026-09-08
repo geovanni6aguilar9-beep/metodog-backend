@@ -299,6 +299,14 @@ function aliasEsGenerico(alias) {
   return /^atleta\d+$/i.test(String(alias || "").trim());
 }
 
+function sinAcentos(raw) {
+  return String(raw || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .trim();
+}
+
 function codigoNuevo() {
   return crypto.randomBytes(4).toString("hex").slice(0, 8).toUpperCase();
 }
@@ -1930,42 +1938,43 @@ async function buscarPersonas(db, user, qRaw) {
   }
   await asegurarPerfil(db, user.id, user.nombre);
 
-  const rawBusca = String(qRaw || "")
-    .replace(/^@/, "")
-    .trim()
-    .toLowerCase();
-  const q = slugAlias(rawBusca, "");
-  if (rawBusca.length < 2 && q.length < 2) {
+  const rawBusca = String(qRaw || "").replace(/^@/, "").trim();
+  const needle = sinAcentos(rawBusca);
+  if (needle.length < 2) {
     return { ok: false, status: 400, error: "Escribe al menos 2 caracteres." };
   }
-  const aliasLike = `${(q.length >= 2 ? q : rawBusca)}%`;
-  const nombreLike = `%${rawBusca}%`;
 
+  // Candidatos amplios (sin exigir modo alias). Match final sin acentos en JS.
   const r = await db.execute({
     sql: `SELECT s.usuario_id, s.alias, s.foto, s.mostrar_foto, s.modo_entrada,
                  u.nombre AS nombre_cuenta
           FROM perfiles_sociales s
           JOIN usuarios u ON u.id = s.usuario_id
           LEFT JOIN perfiles_clientes c ON c.usuario_id = s.usuario_id
-          WHERE s.modo_entrada = 'alias'
-            AND s.usuario_id != ?
-            AND (
-              s.alias LIKE ?
-              OR LOWER(COALESCE(u.nombre, '')) LIKE ?
-            )
+          WHERE s.usuario_id != ?
             AND UPPER(COALESCE(u.rol, '')) IN ('CLIENTE', 'COACH', 'SUPERADMIN')
             AND (c.edad IS NULL OR c.edad >= 18)
-          ORDER BY
-            CASE WHEN s.alias LIKE 'atleta%' THEN 1 ELSE 0 END,
-            s.alias ASC
-          LIMIT ?`,
-    args: [user.id, aliasLike, nombreLike, MAX_BUSCAR]
+          ORDER BY s.usuario_id DESC
+          LIMIT 300`,
+    args: [user.id]
   });
 
   const resultados = [];
   for (const row of r.rows || []) {
+    if (resultados.length >= MAX_BUSCAR) break;
     const uid = toNum(row.usuario_id);
+    if (!uid) continue;
     if (await hayBloqueo(db, user.id, uid)) continue;
+
+    const aliasN = sinAcentos(row.alias);
+    const nombreN = sinAcentos(row.nombre_cuenta);
+    const match =
+      aliasN.includes(needle) ||
+      nombreN.includes(needle) ||
+      nombreN.split(/\s+/).some((w) => w.startsWith(needle)) ||
+      aliasN.startsWith(needle);
+    if (!match) continue;
+
     const verFoto = Number(row.mostrar_foto) === 1;
     resultados.push({
       user_id: uid,
@@ -1974,6 +1983,17 @@ async function buscarPersonas(db, user, qRaw) {
       foto: verFoto ? (row.foto || null) : null
     });
   }
+
+  // Nombre real primero; atletaXX al final
+  resultados.sort((a, b) => {
+    const ag = aliasEsGenerico(a.alias) ? 1 : 0;
+    const bg = aliasEsGenerico(b.alias) ? 1 : 0;
+    if (ag !== bg) return ag - bg;
+    const an = sinAcentos(a.nombre || a.alias);
+    const bn = sinAcentos(b.nombre || b.alias);
+    return an.localeCompare(bn);
+  });
+
   return { ok: true, resultados };
 }
 
