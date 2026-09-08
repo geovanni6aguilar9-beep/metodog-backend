@@ -284,6 +284,21 @@ function slugAlias(raw, fallback) {
   return (fb.length >= 3 ? fb : "atleta").slice(0, 20);
 }
 
+/** Nombre visible en red social (no el @alias). Máx 2 palabras. */
+function nombreCortoPublico(raw) {
+  const s = String(raw || "")
+    .replace(/[\u0000-\u001F]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!s) return null;
+  const parts = s.split(" ").filter(Boolean).slice(0, 2);
+  return parts.join(" ").slice(0, 40) || null;
+}
+
+function aliasEsGenerico(alias) {
+  return /^atleta\d+$/i.test(String(alias || "").trim());
+}
+
 function codigoNuevo() {
   return crypto.randomBytes(4).toString("hex").slice(0, 8).toUpperCase();
 }
@@ -1643,7 +1658,8 @@ async function listarMuro(db, user) {
                  COALESCE(p.reacciones_off, 0) AS reacciones_off,
                  COALESCE(p.fijado, 0) AS fijado,
                  COALESCE(p.archivado, 0) AS archivado,
-                 s.alias, s.foto, s.mostrar_foto, s.mostrar_muro
+                 s.alias, s.foto, s.mostrar_foto, s.mostrar_muro,
+                 u.nombre AS nombre_cuenta
           FROM social_posts p
           JOIN perfiles_sociales s ON s.usuario_id = p.usuario_id
           JOIN usuarios u ON u.id = p.usuario_id
@@ -1714,6 +1730,7 @@ async function listarMuro(db, user) {
       id: postId,
       user_id: uid,
       alias: row.alias,
+      nombre: nombreCortoPublico(row.nombre_cuenta),
       foto: verFoto ? (row.foto || null) : null,
       texto: row.texto || null,
       imagen: row.imagen || null,
@@ -1816,6 +1833,7 @@ async function enriquecerPostFila(db, user, row) {
     id: postId,
     user_id: uid,
     alias: row.alias,
+    nombre: nombreCortoPublico(row.nombre_cuenta),
     foto: verFoto ? (row.foto || null) : null,
     texto: row.texto || null,
     imagen: row.imagen || null,
@@ -1874,7 +1892,8 @@ async function obtenerPostMuro(db, user, postIdRaw) {
                  COALESCE(p.reacciones_off, 0) AS reacciones_off,
                  COALESCE(p.fijado, 0) AS fijado,
                  COALESCE(p.archivado, 0) AS archivado,
-                 s.alias, s.foto, s.mostrar_foto, s.mostrar_muro
+                 s.alias, s.foto, s.mostrar_foto, s.mostrar_muro,
+                 u.nombre AS nombre_cuenta
           FROM social_posts p
           JOIN perfiles_sociales s ON s.usuario_id = p.usuario_id
           JOIN usuarios u ON u.id = p.usuario_id
@@ -1911,26 +1930,38 @@ async function buscarPersonas(db, user, qRaw) {
   }
   await asegurarPerfil(db, user.id, user.nombre);
 
-  const q = slugAlias(String(qRaw || "").replace(/^@/, ""), "");
-  if (q.length < 2) {
+  const rawBusca = String(qRaw || "")
+    .replace(/^@/, "")
+    .trim()
+    .toLowerCase();
+  const q = slugAlias(rawBusca, "");
+  if (rawBusca.length < 2 && q.length < 2) {
     return { ok: false, status: 400, error: "Escribe al menos 2 caracteres." };
   }
+  const aliasLike = `${(q.length >= 2 ? q : rawBusca)}%`;
+  const nombreLike = `%${rawBusca}%`;
 
   const r = await db.execute({
-    sql: `SELECT s.usuario_id, s.alias, s.foto, s.mostrar_foto, s.modo_entrada
+    sql: `SELECT s.usuario_id, s.alias, s.foto, s.mostrar_foto, s.modo_entrada,
+                 u.nombre AS nombre_cuenta
           FROM perfiles_sociales s
           JOIN usuarios u ON u.id = s.usuario_id
           LEFT JOIN perfiles_clientes c ON c.usuario_id = s.usuario_id
           WHERE s.modo_entrada = 'alias'
-            AND s.alias LIKE ?
             AND s.usuario_id != ?
+            AND (
+              s.alias LIKE ?
+              OR LOWER(COALESCE(u.nombre, '')) LIKE ?
+            )
             AND (
               UPPER(u.rol) IN ('COACH', 'SUPERADMIN')
               OR (c.edad IS NOT NULL AND c.edad >= 18)
             )
-          ORDER BY s.alias ASC
+          ORDER BY
+            CASE WHEN s.alias LIKE 'atleta%' THEN 1 ELSE 0 END,
+            s.alias ASC
           LIMIT ?`,
-    args: [`${q}%`, user.id, MAX_BUSCAR]
+    args: [user.id, aliasLike, nombreLike, MAX_BUSCAR]
   });
 
   const resultados = [];
@@ -1941,6 +1972,7 @@ async function buscarPersonas(db, user, qRaw) {
     resultados.push({
       user_id: uid,
       alias: row.alias,
+      nombre: nombreCortoPublico(row.nombre_cuenta),
       foto: verFoto ? (row.foto || null) : null
     });
   }
@@ -2616,8 +2648,11 @@ async function perfilVistaPublica(db, user, targetIdRaw) {
   }
 
   const r = await db.execute({
-    sql: `SELECT usuario_id, alias, bio, foto, mostrar_foto
-          FROM perfiles_sociales WHERE usuario_id = ?`,
+    sql: `SELECT s.usuario_id, s.alias, s.bio, s.foto, s.mostrar_foto,
+                 u.nombre AS nombre_cuenta
+          FROM perfiles_sociales s
+          JOIN usuarios u ON u.id = s.usuario_id
+          WHERE s.usuario_id = ?`,
     args: [tid]
   });
   const row = r.rows?.[0];
@@ -2636,6 +2671,7 @@ async function perfilVistaPublica(db, user, targetIdRaw) {
     perfil: {
       user_id: tid,
       alias: row.alias,
+      nombre: nombreCortoPublico(row.nombre_cuenta),
       bio: normalizarBio(row.bio) || null,
       foto: verFoto ? (row.foto || null) : null,
       seguidores: counts.seguidores,
@@ -2675,9 +2711,10 @@ async function sugerenciasFollow(db, user) {
   });
   const bloqueados = new Set((bloqR.rows || []).map((r) => toNum(r.blocked_id || r.blocker_id)));
 
-  // Active users with recent posts or same coach, mode alias (discoverable)
+  // Preferir gente con nombre real / alias propio / foto (no solo atleta51)
   const r = await db.execute({
-    sql: `SELECT DISTINCT s.usuario_id, s.alias, s.foto, s.mostrar_foto
+    sql: `SELECT DISTINCT s.usuario_id, s.alias, s.foto, s.mostrar_foto,
+                 u.nombre AS nombre_cuenta
           FROM perfiles_sociales s
           JOIN usuarios u ON u.id = s.usuario_id
           LEFT JOIN perfiles_clientes c ON c.usuario_id = s.usuario_id
@@ -2687,7 +2724,11 @@ async function sugerenciasFollow(db, user) {
               UPPER(u.rol) IN ('COACH', 'SUPERADMIN')
               OR (c.edad IS NOT NULL AND c.edad >= 18)
             )
-          ORDER BY s.usuario_id DESC
+          ORDER BY
+            CASE WHEN s.alias GLOB 'atleta[0-9]*' THEN 1 ELSE 0 END ASC,
+            CASE WHEN COALESCE(u.nombre, '') = '' THEN 1 ELSE 0 END ASC,
+            CASE WHEN s.foto IS NOT NULL AND length(s.foto) > 40 THEN 0 ELSE 1 END ASC,
+            s.usuario_id DESC
           LIMIT 50`,
     args: [user.id]
   });
@@ -2700,6 +2741,7 @@ async function sugerenciasFollow(db, user) {
     sugerencias.push({
       user_id: uid,
       alias: row.alias,
+      nombre: nombreCortoPublico(row.nombre_cuenta),
       foto: Number(row.mostrar_foto) === 1 ? (row.foto || null) : null
     });
   }
