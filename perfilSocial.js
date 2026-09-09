@@ -16,7 +16,7 @@ const MAX_POST_CHARS = 280;
 const MAX_POSTS_HORA = 15;
 const MAX_FEED = 40;
 const MAX_MURO = 50;
-const MAX_BUSCAR = 40;
+const MAX_BUSCAR = 50;
 const MODOS = new Set(["cerrado", "codigo", "alias"]);
 const ALIAS_RE = /^[a-z0-9_]{3,20}$/;
 
@@ -305,6 +305,45 @@ function sinAcentos(raw) {
     .replace(/[\u0300-\u036f]/g, "")
     .toLowerCase()
     .trim();
+}
+
+/** Handle público: no mostrar @atleta67 genérico. */
+function handlePublico(alias) {
+  const a = String(alias || "").trim();
+  if (!a || aliasEsGenerico(a)) return null;
+  return a;
+}
+
+/**
+ * Empaqueta persona para buscador/sugerencias.
+ * NUNCA auto-crea perfiles_sociales: sin fila = privado (solo nombre).
+ */
+function packPersonaBusqueda(row) {
+  const uid = toNum(row.usuario_id || row.id);
+  if (!uid) return null;
+  const nombre = nombreCortoPublico(row.nombre_cuenta || row.nombre);
+  const socialId = toNum(row.social_id);
+  const tieneSocial = socialId != null || (row.alias != null && String(row.alias).trim() !== "");
+  if (!tieneSocial) {
+    return {
+      user_id: uid,
+      nombre,
+      social_activo: false,
+      privado: true,
+      alias: null,
+      handle: null,
+      foto: null
+    };
+  }
+  return {
+    user_id: uid,
+    nombre,
+    social_activo: true,
+    privado: false,
+    alias: row.alias,
+    handle: handlePublico(row.alias),
+    foto: Number(row.mostrar_foto) === 1 ? (row.foto || null) : null
+  };
 }
 
 function codigoNuevo() {
@@ -1938,24 +1977,23 @@ async function buscarPersonas(db, user, qRaw) {
   }
   await asegurarPerfil(db, user.id, user.nombre);
 
-  const rawBusca = String(qRaw || "").replace(/^@/, "").trim();
-  const needle = sinAcentos(rawBusca);
+  // Solo nombre/apellido — el @ se ignora; no es un buscador de handles.
+  const needle = sinAcentos(String(qRaw || "").replace(/@+/g, "").trim());
   if (needle.length < 2) {
-    return { ok: false, status: 400, error: "Escribe al menos 2 caracteres." };
+    return { ok: false, status: 400, error: "Escribe al menos 2 letras del nombre." };
   }
 
-  // Candidatos amplios (sin exigir modo alias). Match final sin acentos en JS.
   const r = await db.execute({
-    sql: `SELECT s.usuario_id, s.alias, s.foto, s.mostrar_foto, s.modo_entrada,
-                 u.nombre AS nombre_cuenta
-          FROM perfiles_sociales s
-          JOIN usuarios u ON u.id = s.usuario_id
-          LEFT JOIN perfiles_clientes c ON c.usuario_id = s.usuario_id
-          WHERE s.usuario_id != ?
+    sql: `SELECT u.id AS usuario_id, u.nombre AS nombre_cuenta,
+                 s.usuario_id AS social_id, s.alias, s.foto, s.mostrar_foto
+          FROM usuarios u
+          LEFT JOIN perfiles_sociales s ON s.usuario_id = u.id
+          LEFT JOIN perfiles_clientes c ON c.usuario_id = u.id
+          WHERE u.id != ?
             AND UPPER(COALESCE(u.rol, '')) IN ('CLIENTE', 'COACH', 'SUPERADMIN')
             AND (c.edad IS NULL OR c.edad >= 18)
-          ORDER BY s.usuario_id DESC
-          LIMIT 300`,
+          ORDER BY u.id DESC
+          LIMIT 400`,
     args: [user.id]
   });
 
@@ -1963,34 +2001,25 @@ async function buscarPersonas(db, user, qRaw) {
   for (const row of r.rows || []) {
     if (resultados.length >= MAX_BUSCAR) break;
     const uid = toNum(row.usuario_id);
-    if (!uid) continue;
-    if (await hayBloqueo(db, user.id, uid)) continue;
+    if (!uid || (await hayBloqueo(db, user.id, uid))) continue;
 
-    const aliasN = sinAcentos(row.alias);
     const nombreN = sinAcentos(row.nombre_cuenta);
     const match =
-      aliasN.includes(needle) ||
       nombreN.includes(needle) ||
-      nombreN.split(/\s+/).some((w) => w.startsWith(needle)) ||
-      aliasN.startsWith(needle);
+      nombreN.split(/\s+/).some((w) => w.startsWith(needle));
     if (!match) continue;
 
-    const verFoto = Number(row.mostrar_foto) === 1;
-    resultados.push({
-      user_id: uid,
-      alias: row.alias,
-      nombre: nombreCortoPublico(row.nombre_cuenta),
-      foto: verFoto ? (row.foto || null) : null
-    });
+    const packed = packPersonaBusqueda(row);
+    if (packed) resultados.push(packed);
   }
 
-  // Nombre real primero; atletaXX al final
+  // Activos sociales primero; luego nombre.
   resultados.sort((a, b) => {
-    const ag = aliasEsGenerico(a.alias) ? 1 : 0;
-    const bg = aliasEsGenerico(b.alias) ? 1 : 0;
-    if (ag !== bg) return ag - bg;
-    const an = sinAcentos(a.nombre || a.alias);
-    const bn = sinAcentos(b.nombre || b.alias);
+    const ap = a.privado ? 1 : 0;
+    const bp = b.privado ? 1 : 0;
+    if (ap !== bp) return ap - bp;
+    const an = sinAcentos(a.nombre || "");
+    const bn = sinAcentos(b.nombre || "");
     return an.localeCompare(bn);
   });
 
@@ -2647,7 +2676,8 @@ async function yoSigo(db, userId, targetId) {
   return !!(r.rows || []).length;
 }
 
-/** Perfil IG público (sin exigir amistad) — bio, foto, follows + grid de posts. */
+/** Perfil IG público (sin exigir amistad) — bio, foto, follows + grid de posts.
+ * Sin fila en perfiles_sociales → vista privada (nombre solo; sin auto-crear). */
 async function perfilVistaPublica(db, user, targetIdRaw) {
   if (!(await rolEsCliente(db, user.id))) {
     return { ok: false, status: 403, error: "Solo red social." };
@@ -2665,22 +2695,46 @@ async function perfilVistaPublica(db, user, targetIdRaw) {
     return { ok: false, status: 404, error: "Perfil no disponible." };
   }
 
-  const r = await db.execute({
-    sql: `SELECT s.usuario_id, s.alias, s.bio, s.foto, s.mostrar_foto,
-                 u.nombre AS nombre_cuenta
-          FROM perfiles_sociales s
-          JOIN usuarios u ON u.id = s.usuario_id
-          WHERE s.usuario_id = ?`,
+  const uR = await db.execute({
+    sql: `SELECT u.id, u.nombre AS nombre_cuenta,
+                 s.usuario_id AS social_id, s.alias, s.bio, s.foto, s.mostrar_foto
+          FROM usuarios u
+          LEFT JOIN perfiles_sociales s ON s.usuario_id = u.id
+          WHERE u.id = ?`,
     args: [tid]
   });
-  const row = r.rows?.[0];
+  const row = uR.rows?.[0];
   if (!row) return { ok: false, status: 404, error: "Perfil no disponible." };
+
+  const propio = tid === vid;
+  const tieneSocial = row.alias != null && String(row.alias).trim() !== "";
+
+  if (!tieneSocial) {
+    return {
+      ok: true,
+      perfil: {
+        user_id: tid,
+        alias: null,
+        handle: null,
+        nombre: nombreCortoPublico(row.nombre_cuenta),
+        bio: null,
+        foto: null,
+        privado: true,
+        social_activo: false,
+        seguidores: 0,
+        siguiendo: 0,
+        yo_sigo: false,
+        soy_yo: propio,
+        n_posts: 0
+      },
+      posts: []
+    };
+  }
 
   const { listarPostsPerfil } = require("./socialPostAcciones");
   const postsRes = await listarPostsPerfil(db, user, tid);
   const posts = postsRes?.ok ? (postsRes.posts || []) : [];
   const counts = await contadoresFollow(db, tid);
-  const propio = tid === vid;
   const sigo = !propio ? await yoSigo(db, vid, tid) : false;
   const verFoto = propio || Number(row.mostrar_foto) === 1;
 
@@ -2689,9 +2743,12 @@ async function perfilVistaPublica(db, user, targetIdRaw) {
     perfil: {
       user_id: tid,
       alias: row.alias,
+      handle: handlePublico(row.alias),
       nombre: nombreCortoPublico(row.nombre_cuenta),
       bio: normalizarBio(row.bio) || null,
       foto: verFoto ? (row.foto || null) : null,
+      privado: false,
+      social_activo: true,
       seguidores: counts.seguidores,
       siguiendo: counts.siguiendo,
       yo_sigo: !!sigo,
@@ -2729,35 +2786,29 @@ async function sugerenciasFollow(db, user) {
   });
   const bloqueados = new Set((bloqR.rows || []).map((r) => toNum(r.blocked_id || r.blocker_id)));
 
-  // Preferir gente con nombre real / alias propio / foto.
-  // Edad NULL ≠ menor: solo se ocultan menores confirmados (edad < 18).
-  // Descubribles: modo alias O con posts públicos O muro abierto.
+  // Solo quien YA activó Comunidad (fila en perfiles_sociales). Sin auto-crear.
+  // Prioriza mismo coach (tribu).
+  const coachR = await db.execute({
+    sql: `SELECT coach_id FROM usuarios WHERE id = ?`,
+    args: [user.id]
+  });
+  const miCoach = toNum(coachR.rows?.[0]?.coach_id);
+
   const r = await db.execute({
-    sql: `SELECT DISTINCT s.usuario_id, s.alias, s.foto, s.mostrar_foto,
-                 u.nombre AS nombre_cuenta
+    sql: `SELECT u.id AS usuario_id, u.nombre AS nombre_cuenta, u.coach_id,
+                 s.usuario_id AS social_id, s.alias, s.foto, s.mostrar_foto
           FROM perfiles_sociales s
           JOIN usuarios u ON u.id = s.usuario_id
-          LEFT JOIN perfiles_clientes c ON c.usuario_id = s.usuario_id
-          WHERE s.usuario_id != ?
+          LEFT JOIN perfiles_clientes c ON c.usuario_id = u.id
+          WHERE u.id != ?
             AND UPPER(COALESCE(u.rol, '')) IN ('CLIENTE', 'COACH', 'SUPERADMIN')
             AND (c.edad IS NULL OR c.edad >= 18)
-            AND (
-              s.modo_entrada = 'alias'
-              OR COALESCE(s.mostrar_muro, 0) = 1
-              OR EXISTS (
-                SELECT 1 FROM social_posts p
-                WHERE p.usuario_id = s.usuario_id
-                  AND COALESCE(p.publico, 0) = 1
-                  AND COALESCE(p.archivado, 0) = 0
-              )
-            )
           ORDER BY
-            CASE WHEN s.alias GLOB 'atleta[0-9]*' THEN 1 ELSE 0 END ASC,
+            CASE WHEN ? IS NOT NULL AND u.coach_id = ? THEN 0 ELSE 1 END ASC,
             CASE WHEN COALESCE(u.nombre, '') = '' THEN 1 ELSE 0 END ASC,
-            CASE WHEN s.foto IS NOT NULL AND length(s.foto) > 40 THEN 0 ELSE 1 END ASC,
-            s.usuario_id DESC
+            u.id DESC
           LIMIT 80`,
-    args: [user.id]
+    args: [user.id, miCoach, miCoach]
   });
 
   const sugerencias = [];
@@ -2765,12 +2816,8 @@ async function sugerenciasFollow(db, user) {
     if (sugerencias.length >= 40) break;
     const uid = toNum(row.usuario_id);
     if (!uid || yaFollow.has(uid) || bloqueados.has(uid)) continue;
-    sugerencias.push({
-      user_id: uid,
-      alias: row.alias,
-      nombre: nombreCortoPublico(row.nombre_cuenta),
-      foto: Number(row.mostrar_foto) === 1 ? (row.foto || null) : null
-    });
+    const packed = packPersonaBusqueda(row);
+    if (packed && !packed.privado) sugerencias.push(packed);
   }
   return { ok: true, sugerencias };
 }
