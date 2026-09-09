@@ -106,7 +106,7 @@ async function ensureTablasPerfilSocial(db) {
     await db.execute(
       `UPDATE perfiles_sociales
        SET modo_entrada = 'alias'
-       WHERE modo_entrada IS NULL OR modo_entrada = '' OR modo_entrada = 'cerrado'`
+       WHERE modo_entrada IS NULL OR modo_entrada = ''`
     );
   } catch (_) { /* ignore */ }
 
@@ -322,24 +322,29 @@ function packPersonaBusqueda(row) {
   const uid = toNum(row.usuario_id || row.id);
   if (!uid) return null;
   const nombre = nombreCortoPublico(row.nombre_cuenta || row.nombre);
-  const socialId = toNum(row.social_id);
-  const tieneSocial = socialId != null || (row.alias != null && String(row.alias).trim() !== "");
+  const tieneSocial = row.alias != null && String(row.alias).trim() !== "";
   if (!tieneSocial) {
     return {
       user_id: uid,
       nombre,
       social_activo: false,
       privado: true,
+      cuenta_abierta: false,
+      modo_entrada: null,
       alias: null,
       handle: null,
       foto: null
     };
   }
+  const modo = String(row.modo_entrada || "alias").toLowerCase();
+  const abierta = modo === "alias";
   return {
     user_id: uid,
     nombre,
     social_activo: true,
     privado: false,
+    cuenta_abierta: abierta,
+    modo_entrada: modo,
     alias: row.alias,
     handle: handlePublico(row.alias),
     foto: Number(row.mostrar_foto) === 1 ? (row.foto || null) : null
@@ -826,17 +831,19 @@ async function listarEnlaces(db, userId) {
   }
 
   const pend = await db.execute({
-    sql: `SELECT s.id, s.de_id, p.alias, s.created_at
+    sql: `SELECT s.id, s.de_id, p.alias, u.nombre AS nombre_cuenta, s.created_at
           FROM social_solicitudes s
           JOIN perfiles_sociales p ON p.usuario_id = s.de_id
+          JOIN usuarios u ON u.id = s.de_id
           WHERE s.para_id = ? AND s.estado = 'pendiente'
           ORDER BY s.created_at DESC`,
     args: [userId]
   });
   const env = await db.execute({
-    sql: `SELECT s.id, s.para_id, p.alias, s.created_at
+    sql: `SELECT s.id, s.para_id, p.alias, u.nombre AS nombre_cuenta, s.created_at
           FROM social_solicitudes s
           JOIN perfiles_sociales p ON p.usuario_id = s.para_id
+          JOIN usuarios u ON u.id = s.para_id
           WHERE s.de_id = ? AND s.estado = 'pendiente'
           ORDER BY s.created_at DESC`,
     args: [userId]
@@ -867,12 +874,14 @@ async function listarEnlaces(db, userId) {
     pendientes: (pend.rows || []).map((r) => ({
       id: toNum(r.id),
       user_id: toNum(r.de_id),
-      alias: r.alias
+      alias: r.alias,
+      nombre: nombreCortoPublico(r.nombre_cuenta)
     })),
     enviadas: (env.rows || []).map((r) => ({
       id: toNum(r.id),
       user_id: toNum(r.para_id),
-      alias: r.alias
+      alias: r.alias,
+      nombre: nombreCortoPublico(r.nombre_cuenta)
     })),
     companeros: (amigos.rows || []).map((r) => ({
       id: toNum(r.id),
@@ -1026,6 +1035,11 @@ async function responderSolicitud(db, user, solicitudId, aceptar) {
   }
 
   if (aceptar) {
+    // IG: al aceptar, el solicitante pasa a seguirte.
+    await db.execute({
+      sql: `INSERT OR IGNORE INTO social_follows (seguidor_id, seguido_id) VALUES (?, ?)`,
+      args: [deId, user.id]
+    });
     const yo = await db.execute({
       sql: "SELECT alias FROM perfiles_sociales WHERE usuario_id = ?",
       args: [user.id]
@@ -1034,8 +1048,8 @@ async function responderSolicitud(db, user, solicitudId, aceptar) {
       await crearNotificacion(db, {
         usuarioId: deId,
         tipo: "social_aceptada",
-        titulo: "Perfil aceptado",
-        cuerpo: `${yo.rows?.[0]?.alias || "Alguien"} aceptó verte.`,
+        titulo: "Solicitud aceptada",
+        cuerpo: `${yo.rows?.[0]?.alias || "Alguien"} aceptó tu solicitud.`,
         refTipo: "social_aceptada",
         refId: user.id
       });
@@ -1985,7 +1999,7 @@ async function buscarPersonas(db, user, qRaw) {
 
   const r = await db.execute({
     sql: `SELECT u.id AS usuario_id, u.nombre AS nombre_cuenta,
-                 s.usuario_id AS social_id, s.alias, s.foto, s.mostrar_foto
+                 s.usuario_id AS social_id, s.alias, s.foto, s.mostrar_foto, s.modo_entrada
           FROM usuarios u
           LEFT JOIN perfiles_sociales s ON s.usuario_id = u.id
           LEFT JOIN perfiles_clientes c ON c.usuario_id = u.id
@@ -2585,7 +2599,40 @@ async function borrarHistoria(db, user, historiaId) {
   return { ok: true };
 }
 
-// ─────── Follows (seguir / dejar de seguir) ───────
+// ─────── Follows (seguir / dejar de seguir) — modelo Instagram ───────
+
+async function upsertSolicitudPendiente(db, deId, paraId) {
+  const prev = await db.execute({
+    sql: `SELECT id, estado, de_id, para_id FROM social_solicitudes
+          WHERE (de_id = ? AND para_id = ?) OR (de_id = ? AND para_id = ?)`,
+    args: [deId, paraId, paraId, deId]
+  });
+  const existente = prev.rows?.[0];
+  if (existente) {
+    if (existente.estado === "pendiente" && toNum(existente.de_id) === deId) {
+      return { ok: true, estado: "pendiente", reused: true };
+    }
+    if (existente.estado === "pendiente") {
+      return { ok: false, status: 409, error: "Ya hay una solicitud en curso." };
+    }
+    if (existente.estado === "aceptada") {
+      // Ya hubo vínculo: permitir follow request fresh → reopen as pendiente
+    }
+    await db.execute({
+      sql: `UPDATE social_solicitudes
+            SET de_id = ?, para_id = ?, estado = 'pendiente', updated_at = datetime('now')
+            WHERE id = ?`,
+      args: [deId, paraId, existente.id]
+    });
+  } else {
+    await db.execute({
+      sql: `INSERT INTO social_solicitudes (de_id, para_id, estado, updated_at)
+            VALUES (?, ?, 'pendiente', datetime('now'))`,
+      args: [deId, paraId]
+    });
+  }
+  return { ok: true, estado: "pendiente", reused: false };
+}
 
 async function seguirUsuario(db, user, targetId) {
   const tid = toNum(targetId);
@@ -2599,14 +2646,72 @@ async function seguirUsuario(db, user, targetId) {
   if (!(await rolEsCliente(db, tid))) {
     return { ok: false, status: 404, error: "Usuario no encontrado." };
   }
+  if (await esMenorOSinEdad(db, tid)) {
+    return { ok: false, status: 404, error: "Usuario no encontrado." };
+  }
   if (await hayBloqueo(db, user.id, tid)) {
     return { ok: false, status: 403, error: "No puedes seguir a esa persona." };
   }
-  await db.execute({
-    sql: `INSERT OR IGNORE INTO social_follows (seguidor_id, seguido_id) VALUES (?, ?)`,
-    args: [user.id, tid]
+  await asegurarPerfil(db, user.id, user.nombre);
+
+  if (await yoSigo(db, user.id, tid)) {
+    return { ok: true, estado: "siguiendo" };
+  }
+
+  const soc = await db.execute({
+    sql: `SELECT alias, modo_entrada FROM perfiles_sociales WHERE usuario_id = ?`,
+    args: [tid]
   });
-  return { ok: true };
+  const target = soc.rows?.[0];
+  if (!target) {
+    return {
+      ok: false,
+      status: 403,
+      error: "Esa persona aún no activó Comunidad."
+    };
+  }
+
+  const modo = String(target.modo_entrada || "alias").toLowerCase();
+  const abierta = modo === "alias";
+
+  if (abierta) {
+    await db.execute({
+      sql: `INSERT OR IGNORE INTO social_follows (seguidor_id, seguido_id) VALUES (?, ?)`,
+      args: [user.id, tid]
+    });
+    // Limpia solicitud pendiente vieja si había
+    await db.execute({
+      sql: `DELETE FROM social_solicitudes
+            WHERE de_id = ? AND para_id = ? AND estado = 'pendiente'`,
+      args: [user.id, tid]
+    });
+    return { ok: true, estado: "siguiendo" };
+  }
+
+  // Cuenta privada (cerrado | codigo): solicitud de follow
+  const sol = await upsertSolicitudPendiente(db, user.id, tid);
+  if (!sol.ok) return sol;
+
+  if (!sol.reused) {
+    const yo = await db.execute({
+      sql: "SELECT alias FROM perfiles_sociales WHERE usuario_id = ?",
+      args: [user.id]
+    });
+    try {
+      await crearNotificacion(db, {
+        usuarioId: tid,
+        tipo: "social_solicitud",
+        titulo: "Solicitud de seguimiento",
+        cuerpo: `${yo.rows?.[0]?.alias || "Alguien"} quiere seguirte.`,
+        refTipo: "social_solicitud",
+        refId: user.id
+      });
+    } catch (err) {
+      console.warn("notif social_solicitud follow:", err.message);
+    }
+  }
+
+  return { ok: true, estado: "pendiente" };
 }
 
 async function dejarDeSeguir(db, user, targetId) {
@@ -2616,7 +2721,13 @@ async function dejarDeSeguir(db, user, targetId) {
     sql: `DELETE FROM social_follows WHERE seguidor_id = ? AND seguido_id = ?`,
     args: [user.id, tid]
   });
-  return { ok: true };
+  // Cancelar solicitud pendiente (tipo IG “cancelar solicitud”)
+  await db.execute({
+    sql: `DELETE FROM social_solicitudes
+          WHERE de_id = ? AND para_id = ? AND estado = 'pendiente'`,
+    args: [user.id, tid]
+  });
+  return { ok: true, estado: "none" };
 }
 
 async function listarSeguidores(db, user) {
@@ -2697,7 +2808,7 @@ async function perfilVistaPublica(db, user, targetIdRaw) {
 
   const uR = await db.execute({
     sql: `SELECT u.id, u.nombre AS nombre_cuenta,
-                 s.usuario_id AS social_id, s.alias, s.bio, s.foto, s.mostrar_foto
+                 s.usuario_id AS social_id, s.alias, s.bio, s.foto, s.mostrar_foto, s.modo_entrada
           FROM usuarios u
           LEFT JOIN perfiles_sociales s ON s.usuario_id = u.id
           WHERE u.id = ?`,
@@ -2721,6 +2832,9 @@ async function perfilVistaPublica(db, user, targetIdRaw) {
         foto: null,
         privado: true,
         social_activo: false,
+        cuenta_abierta: false,
+        modo_entrada: null,
+        solicitud_pendiente: false,
         seguidores: 0,
         siguiendo: 0,
         yo_sigo: false,
@@ -2732,11 +2846,28 @@ async function perfilVistaPublica(db, user, targetIdRaw) {
   }
 
   const { listarPostsPerfil } = require("./socialPostAcciones");
-  const postsRes = await listarPostsPerfil(db, user, tid);
-  const posts = postsRes?.ok ? (postsRes.posts || []) : [];
   const counts = await contadoresFollow(db, tid);
   const sigo = !propio ? await yoSigo(db, vid, tid) : false;
   const verFoto = propio || Number(row.mostrar_foto) === 1;
+  const modo = String(row.modo_entrada || "alias").toLowerCase();
+  const abierta = modo === "alias";
+  const puedeVerPosts = propio || abierta || !!sigo;
+
+  let posts = [];
+  if (puedeVerPosts) {
+    const postsRes = await listarPostsPerfil(db, user, tid);
+    posts = postsRes?.ok ? (postsRes.posts || []) : [];
+  }
+
+  let solicitudPendiente = false;
+  if (!propio && !sigo) {
+    const sp = await db.execute({
+      sql: `SELECT id FROM social_solicitudes
+            WHERE de_id = ? AND para_id = ? AND estado = 'pendiente' LIMIT 1`,
+      args: [vid, tid]
+    });
+    solicitudPendiente = !!(sp.rows || []).length;
+  }
 
   return {
     ok: true,
@@ -2749,11 +2880,14 @@ async function perfilVistaPublica(db, user, targetIdRaw) {
       foto: verFoto ? (row.foto || null) : null,
       privado: false,
       social_activo: true,
+      cuenta_abierta: abierta,
+      modo_entrada: modo,
+      solicitud_pendiente: solicitudPendiente,
       seguidores: counts.seguidores,
       siguiendo: counts.siguiendo,
       yo_sigo: !!sigo,
       soy_yo: propio,
-      n_posts: posts.length
+      n_posts: puedeVerPosts ? posts.length : 0
     },
     posts
   };
@@ -2796,7 +2930,7 @@ async function sugerenciasFollow(db, user) {
 
   const r = await db.execute({
     sql: `SELECT u.id AS usuario_id, u.nombre AS nombre_cuenta, u.coach_id,
-                 s.usuario_id AS social_id, s.alias, s.foto, s.mostrar_foto
+                 s.usuario_id AS social_id, s.alias, s.foto, s.mostrar_foto, s.modo_entrada
           FROM perfiles_sociales s
           JOIN usuarios u ON u.id = s.usuario_id
           LEFT JOIN perfiles_clientes c ON c.usuario_id = u.id
