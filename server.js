@@ -432,6 +432,13 @@ async function inicializarBD() {
     try {
       await db.execute("ALTER TABLE usuarios ADD COLUMN paquete_grandfathered INTEGER DEFAULT 0");
     } catch (_) { /* columna ya existe */ }
+    // DEFAULT 1: usuarios ya existentes no vuelven a ver guía/tutorial en cada dispositivo.
+    try {
+      await db.execute("ALTER TABLE usuarios ADD COLUMN onboarding_guia_vista INTEGER DEFAULT 1");
+    } catch (_) { /* ya existe */ }
+    try {
+      await db.execute("ALTER TABLE usuarios ADD COLUMN onboarding_quests TEXT");
+    } catch (_) { /* ya existe */ }
 
     await db.execute(`CREATE TABLE IF NOT EXISTS suscripciones_atleta (
       usuario_id INTEGER PRIMARY KEY,
@@ -3659,6 +3666,62 @@ app.delete("/api/usuarios/me", async (req, res) => {
   }
 });
 
+/** Onboarding guía/tutorial — bandera en la cuenta (cross-device). */
+app.post("/api/usuarios/me/onboarding", async (req, res) => {
+  const userId = parseInt(req.user.id, 10);
+  if (!userId || Number.isNaN(userId)) return res.status(400).json({ error: "Usuario inválido" });
+
+  try {
+    const rowR = await db.execute({
+      sql: "SELECT onboarding_guia_vista, onboarding_quests FROM usuarios WHERE id = ?",
+      args: [userId]
+    });
+    if (!rowR.rows?.length) return res.status(404).json({ error: "Usuario no encontrado" });
+    const row = rowR.rows[0];
+
+    let guiaVista = row.onboarding_guia_vista != null ? !!Number(row.onboarding_guia_vista) : true;
+    let quests = {};
+    try {
+      quests = row.onboarding_quests ? JSON.parse(String(row.onboarding_quests)) : {};
+      if (!quests || typeof quests !== "object") quests = {};
+    } catch {
+      quests = {};
+    }
+
+    if (req.body?.guia_vista === true || req.body?.guia_vista === 1) {
+      guiaVista = true;
+    }
+
+    const questId = String(req.body?.quest || "").trim();
+    if (questId && /^[a-z0-9-]{3,40}$/i.test(questId)) {
+      if (req.body?.completo === false || req.body?.reiniciar) {
+        delete quests[questId];
+      } else {
+        quests[questId] = 1;
+      }
+    }
+
+    const questsJson = JSON.stringify(quests);
+    const upd = await db.execute({
+      sql: `UPDATE usuarios
+            SET onboarding_guia_vista = ?, onboarding_quests = ?
+            WHERE id = ?`,
+      args: [guiaVista ? 1 : 0, questsJson, userId]
+    });
+    if (!(upd.rowsAffected > 0)) {
+      return res.status(500).json({ error: "No se pudo guardar onboarding." });
+    }
+
+    res.json({
+      onboarding_guia_vista: guiaVista,
+      onboarding_quests: questsJson
+    });
+  } catch (err) {
+    console.error("onboarding:", err.message);
+    res.status(500).json({ error: "No se pudo guardar onboarding." });
+  }
+});
+
 /** Cambio de contraseña con sesión activa (Ajustes → Cuenta). */
 app.post("/api/usuarios/me/password", async (req, res) => {
   const userId = parseInt(req.user.id, 10);
@@ -4445,7 +4508,7 @@ app.post("/api/registro", async (req, res) => {
   const hash = bcrypt.hashSync(password, 10);
   const emailLimpio = email.toLowerCase().trim();
   const rol = esEmailSuperAdmin(emailLimpio) ? 'SUPERADMIN' : 'CLIENTE';
-  const query = `INSERT INTO usuarios (nombre, email, password, rol, codigo_invitacion, coach_id) VALUES (?, ?, ?, ?, ?, ?)`;
+  const query = `INSERT INTO usuarios (nombre, email, password, rol, codigo_invitacion, coach_id, onboarding_guia_vista, onboarding_quests) VALUES (?, ?, ?, ?, ?, ?, 0, '{}')`;
   
   try {
     const codigoRegistro = normalizarCodigoInvitacion(codigoIngresado);

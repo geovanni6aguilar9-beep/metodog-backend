@@ -37,6 +37,19 @@ function sanitizeUsuario(row) {
   }
   usuario.paquete_rutina_6_dias = !!usuario.paquete_rutina_6_dias;
   usuario.paquete_grandfathered = !!usuario.paquete_grandfathered;
+  // Onboarding: cuenta (no dispositivo). 1 = ya vio guía; null quests + vista = legacy completo.
+  if (usuario.onboarding_guia_vista != null) {
+    usuario.onboarding_guia_vista = !!Number(usuario.onboarding_guia_vista);
+  } else {
+    usuario.onboarding_guia_vista = true;
+  }
+  if (usuario.onboarding_quests != null && typeof usuario.onboarding_quests !== "string") {
+    try {
+      usuario.onboarding_quests = JSON.stringify(usuario.onboarding_quests);
+    } catch {
+      usuario.onboarding_quests = null;
+    }
+  }
   return usuario;
 }
 
