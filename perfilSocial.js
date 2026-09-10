@@ -317,11 +317,23 @@ function handlePublico(alias) {
 /**
  * Empaqueta persona para buscador/sugerencias.
  * NUNCA auto-crea perfiles_sociales: sin fila = privado (solo nombre).
+ * @param {object} row
+ * @param {{ miCoach?: number|null, viewerId?: number|null, soyCoach?: boolean }} [ctx]
  */
-function packPersonaBusqueda(row) {
+function packPersonaBusqueda(row, ctx = {}) {
   const uid = toNum(row.usuario_id || row.id);
   if (!uid) return null;
   const nombre = nombreCortoPublico(row.nombre_cuenta || row.nombre);
+  const coachId = toNum(row.coach_id);
+  const miCoach = toNum(ctx.miCoach);
+  const viewerId = toNum(ctx.viewerId);
+  const soyCoach = !!ctx.soyCoach;
+  const mismoCoach =
+    (soyCoach && viewerId != null && coachId === viewerId) ||
+    (miCoach != null && coachId === miCoach);
+
+  const baseTribu = { mismo_coach: !!mismoCoach, coach_id: coachId };
+
   const tieneSocial = row.alias != null && String(row.alias).trim() !== "";
   if (!tieneSocial) {
     return {
@@ -333,7 +345,8 @@ function packPersonaBusqueda(row) {
       modo_entrada: null,
       alias: null,
       handle: null,
-      foto: null
+      foto: null,
+      ...baseTribu
     };
   }
   const modo = String(row.modo_entrada || "alias").toLowerCase();
@@ -347,7 +360,23 @@ function packPersonaBusqueda(row) {
     modo_entrada: modo,
     alias: row.alias,
     handle: handlePublico(row.alias),
-    foto: Number(row.mostrar_foto) === 1 ? (row.foto || null) : null
+    foto: Number(row.mostrar_foto) === 1 ? (row.foto || null) : null,
+    ...baseTribu
+  };
+}
+
+async function contextoTribuViewer(db, userId) {
+  const r = await db.execute({
+    sql: `SELECT coach_id, UPPER(COALESCE(rol, '')) AS rol FROM usuarios WHERE id = ?`,
+    args: [userId]
+  });
+  const row = r.rows?.[0];
+  const rol = String(row?.rol || "");
+  const soyCoach = rol === "COACH" || rol === "SUPERADMIN";
+  return {
+    viewerId: toNum(userId),
+    miCoach: toNum(row?.coach_id),
+    soyCoach
   };
 }
 
@@ -1997,8 +2026,10 @@ async function buscarPersonas(db, user, qRaw) {
     return { ok: false, status: 400, error: "Escribe al menos 2 letras del nombre." };
   }
 
+  const tribu = await contextoTribuViewer(db, user.id);
+
   const r = await db.execute({
-    sql: `SELECT u.id AS usuario_id, u.nombre AS nombre_cuenta,
+    sql: `SELECT u.id AS usuario_id, u.nombre AS nombre_cuenta, u.coach_id,
                  s.usuario_id AS social_id, s.alias, s.foto, s.mostrar_foto, s.modo_entrada
           FROM usuarios u
           LEFT JOIN perfiles_sociales s ON s.usuario_id = u.id
@@ -2023,12 +2054,15 @@ async function buscarPersonas(db, user, qRaw) {
       nombreN.split(/\s+/).some((w) => w.startsWith(needle));
     if (!match) continue;
 
-    const packed = packPersonaBusqueda(row);
+    const packed = packPersonaBusqueda(row, tribu);
     if (packed) resultados.push(packed);
   }
 
-  // Activos sociales primero; luego nombre.
+  // Tribu (mismo coach) → activos sociales → nombre.
   resultados.sort((a, b) => {
+    const at = a.mismo_coach ? 0 : 1;
+    const bt = b.mismo_coach ? 0 : 1;
+    if (at !== bt) return at - bt;
     const ap = a.privado ? 1 : 0;
     const bp = b.privado ? 1 : 0;
     if (ap !== bp) return ap - bp;
@@ -2037,7 +2071,7 @@ async function buscarPersonas(db, user, qRaw) {
     return an.localeCompare(bn);
   });
 
-  return { ok: true, resultados };
+  return { ok: true, resultados, tribu_activa: !!(tribu.miCoach || tribu.soyCoach) };
 }
 
 const MAX_COMENTARIO = 200;
@@ -2921,12 +2955,10 @@ async function sugerenciasFollow(db, user) {
   const bloqueados = new Set((bloqR.rows || []).map((r) => toNum(r.blocked_id || r.blocker_id)));
 
   // Solo quien YA activó Comunidad (fila en perfiles_sociales). Sin auto-crear.
-  // Prioriza mismo coach (tribu).
-  const coachR = await db.execute({
-    sql: `SELECT coach_id FROM usuarios WHERE id = ?`,
-    args: [user.id]
-  });
-  const miCoach = toNum(coachR.rows?.[0]?.coach_id);
+  // Prioriza mismo coach / alumnos del coach (tribu).
+  const tribu = await contextoTribuViewer(db, user.id);
+  const miCoach = tribu.miCoach;
+  const viewerId = tribu.viewerId;
 
   const r = await db.execute({
     sql: `SELECT u.id AS usuario_id, u.nombre AS nombre_cuenta, u.coach_id,
@@ -2938,22 +2970,44 @@ async function sugerenciasFollow(db, user) {
             AND UPPER(COALESCE(u.rol, '')) IN ('CLIENTE', 'COACH', 'SUPERADMIN')
             AND (c.edad IS NULL OR c.edad >= 18)
           ORDER BY
-            CASE WHEN ? IS NOT NULL AND u.coach_id = ? THEN 0 ELSE 1 END ASC,
+            CASE
+              WHEN ? = 1 AND u.coach_id = ? THEN 0
+              WHEN ? IS NOT NULL AND u.coach_id = ? THEN 0
+              ELSE 1
+            END ASC,
             CASE WHEN COALESCE(u.nombre, '') = '' THEN 1 ELSE 0 END ASC,
             u.id DESC
           LIMIT 80`,
-    args: [user.id, miCoach, miCoach]
+    args: [
+      user.id,
+      tribu.soyCoach ? 1 : 0,
+      viewerId,
+      miCoach,
+      miCoach
+    ]
   });
 
   const sugerencias = [];
+  let nTribu = 0;
   for (const row of r.rows || []) {
     if (sugerencias.length >= 40) break;
     const uid = toNum(row.usuario_id);
     if (!uid || yaFollow.has(uid) || bloqueados.has(uid)) continue;
-    const packed = packPersonaBusqueda(row);
-    if (packed && !packed.privado) sugerencias.push(packed);
+    const packed = packPersonaBusqueda(row, tribu);
+    if (packed && !packed.privado) {
+      if (packed.mismo_coach) nTribu += 1;
+      sugerencias.push(packed);
+    }
   }
-  return { ok: true, sugerencias };
+  return {
+    ok: true,
+    sugerencias,
+    tribu: {
+      activa: !!(miCoach || tribu.soyCoach),
+      n: nTribu,
+      soy_coach: !!tribu.soyCoach
+    }
+  };
 }
 
 async function borrarDatosSocialesUsuario(db, userId) {
