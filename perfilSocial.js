@@ -1772,51 +1772,71 @@ async function listarMuro(db, user) {
   });
   const yoPublico = Number(yo.rows?.[0]?.mostrar_muro) === 1;
 
-  const posts = [];
+  const bloqR = await db.execute({
+    sql: `SELECT blocked_id FROM social_bloqueos WHERE blocker_id = ?
+          UNION SELECT blocker_id FROM social_bloqueos WHERE blocked_id = ?`,
+    args: [user.id, user.id]
+  });
+  const bloqueados = new Set((bloqR.rows || []).map((row) => toNum(row.blocked_id || row.blocker_id)));
+
+  const filas = [];
   for (const row of r.rows || []) {
     const uid = toNum(row.usuario_id);
-    if (uid !== user.id && (await hayBloqueo(db, user.id, uid))) continue;
+    if (!uid) continue;
+    if (uid !== user.id && bloqueados.has(uid)) continue;
+    filas.push(row);
+  }
+
+  const postIds = filas.map((row) => toNum(row.id)).filter(Boolean);
+  const likesMap = new Map();
+  const yoLikeSet = new Set();
+  const comsMap = new Map();
+  const guardadoSet = new Set();
+
+  if (postIds.length) {
+    const ph = postIds.map(() => "?").join(",");
+    const likes = await db.execute({
+      sql: `SELECT post_id, COUNT(*) AS n FROM social_post_likes
+            WHERE post_id IN (${ph}) GROUP BY post_id`,
+      args: postIds
+    });
+    for (const row of likes.rows || []) {
+      likesMap.set(toNum(row.post_id), Number(row.n || 0));
+    }
+    const yoLikes = await db.execute({
+      sql: `SELECT post_id FROM social_post_likes
+            WHERE usuario_id = ? AND post_id IN (${ph})`,
+      args: [user.id, ...postIds]
+    });
+    for (const row of yoLikes.rows || []) {
+      yoLikeSet.add(toNum(row.post_id));
+    }
+    const coms = await db.execute({
+      sql: `SELECT post_id, COUNT(*) AS n FROM social_post_comentarios
+            WHERE post_id IN (${ph}) GROUP BY post_id`,
+      args: postIds
+    });
+    for (const row of coms.rows || []) {
+      comsMap.set(toNum(row.post_id), Number(row.n || 0));
+    }
+    try {
+      const g = await db.execute({
+        sql: `SELECT post_id FROM social_posts_guardados
+              WHERE usuario_id = ? AND post_id IN (${ph})`,
+        args: [user.id, ...postIds]
+      });
+      for (const row of g.rows || []) {
+        guardadoSet.add(toNum(row.post_id));
+      }
+    } catch (_) { /* tabla aún no migrada */ }
+  }
+
+  const posts = filas.map((row) => {
+    const uid = toNum(row.usuario_id);
     const soyYo = toNum(uid) === toNum(user.id);
     const verFoto = soyYo || Number(row.mostrar_foto) === 1;
     const postId = toNum(row.id);
-    const likes = await db.execute({
-      sql: `SELECT COUNT(*) AS n FROM social_post_likes WHERE post_id = ?`,
-      args: [postId]
-    });
-    const yoLike = await db.execute({
-      sql: `SELECT 1 FROM social_post_likes WHERE post_id = ? AND usuario_id = ? LIMIT 1`,
-      args: [postId, user.id]
-    });
-    const coms = await db.execute({
-      sql: `SELECT COUNT(*) AS n FROM social_post_comentarios WHERE post_id = ?`,
-      args: [postId]
-    });
-    const preview = await db.execute({
-      sql: `SELECT c.id, c.texto, c.created_at, c.usuario_id, s.alias, s.foto, s.mostrar_foto
-            FROM social_post_comentarios c
-            JOIN perfiles_sociales s ON s.usuario_id = c.usuario_id
-            WHERE c.post_id = ?
-            ORDER BY c.id DESC LIMIT 6`,
-      args: [postId]
-    });
-    const likesPrev = await db.execute({
-      sql: `SELECT l.usuario_id, s.alias, s.foto, s.mostrar_foto
-            FROM social_post_likes l
-            JOIN perfiles_sociales s ON s.usuario_id = l.usuario_id
-            WHERE l.post_id = ?
-            ORDER BY l.rowid DESC LIMIT 5`,
-      args: [postId]
-    });
-    const yoGuardado = { rows: [] };
-    try {
-      const g = await db.execute({
-        sql: `SELECT 1 FROM social_posts_guardados
-              WHERE post_id = ? AND usuario_id = ? LIMIT 1`,
-        args: [postId, user.id]
-      });
-      yoGuardado.rows = g.rows || [];
-    } catch (_) { /* tabla aún no migrada */ }
-    posts.push({
+    return {
       id: postId,
       user_id: uid,
       alias: row.alias,
@@ -1828,37 +1848,16 @@ async function listarMuro(db, user) {
       publico: true,
       soy_yo: soyYo,
       fijado: Number(row.fijado) === 1,
-      yo_guardado: !!(yoGuardado.rows || []).length,
-      likes: Number(likes.rows?.[0]?.n || 0),
-      yo_like: !!(yoLike.rows || []).length,
-      likes_preview: (likesPrev.rows || []).map((l) => {
-        const lid = toNum(l.usuario_id);
-        const verL = lid === toNum(user.id) || Number(l.mostrar_foto) === 1;
-        return {
-          user_id: lid,
-          alias: l.alias,
-          foto: verL ? (l.foto || null) : null
-        };
-      }),
-      comentarios_n: Number(coms.rows?.[0]?.n || 0),
+      yo_guardado: guardadoSet.has(postId),
+      likes: likesMap.get(postId) || 0,
+      yo_like: yoLikeSet.has(postId),
+      likes_preview: [],
+      comentarios_n: comsMap.get(postId) || 0,
       ...packPrivacidadComentarios(row),
-      comentarios: (preview.rows || [])
-        .slice()
-        .reverse()
-        .map((c) => {
-          const cid = toNum(c.usuario_id);
-          const verC = cid === toNum(user.id) || Number(c.mostrar_foto) === 1;
-          return {
-            id: toNum(c.id),
-            alias: c.alias,
-            texto: c.texto,
-            created_at: c.created_at,
-            foto: verC ? (c.foto || null) : null,
-            soy_yo: cid === toNum(user.id)
-          };
-        })
-    });
-  }
+      comentarios: []
+    };
+  });
+
   return { ok: true, yo_publico: yoPublico, posts };
 }
 
