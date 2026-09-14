@@ -8,6 +8,8 @@ const { crearNotificacion, crearOAgruparNotifSocial } = require("./notificacione
 const { deduplicarFilasHistorialFuerza } = require("./fuerzaHistorial");
 
 const MAX_FOTO_CHARS = 780_000;
+/** Video en posts (data URL). Historias permiten más; el muro se mantiene más liviano. */
+const MAX_POST_VIDEO_CHARS = 8_000_000;
 const MAX_VITRINA = 24;
 const MAX_MSG_CHARS = 400;
 const MAX_HILO = 80;
@@ -396,6 +398,29 @@ function validarFoto(imagen) {
     return { ok: false, error: "La foto es muy pesada. Prueba otra más ligera." };
   }
   return { ok: true, imagen: s };
+}
+
+/** Foto o video para posts del muro (misma columna `imagen`). */
+function validarMediaPost(raw) {
+  const s = String(raw || "").trim();
+  if (!s) return { ok: false, error: "Sin archivo." };
+  if (s.startsWith("data:image/")) return validarFoto(s);
+  if (/^data:video\/[a-z0-9.+-]+;base64,/i.test(s)) {
+    if (s.length > MAX_POST_VIDEO_CHARS) {
+      return { ok: false, error: "El video es muy pesado. Usa un clip más corto (máx. ~30 s)." };
+    }
+    return { ok: true, imagen: s };
+  }
+  return { ok: false, error: "Sube una foto (JPG/PNG) o un video (MP4/WebM)." };
+}
+
+function esVideoMedia(src) {
+  return /^data:video\//i.test(String(src || "").trim());
+}
+
+function packMediaPost(rowImagen) {
+  const imagen = rowImagen || null;
+  return { imagen, es_video: esVideoMedia(imagen) };
 }
 
 async function edadUsuario(db, userId) {
@@ -1601,7 +1626,7 @@ async function listarFeed(db, user) {
       alias: row.alias,
       foto: verFoto ? (row.foto || null) : null,
       texto: row.texto || null,
-      imagen: row.imagen || null,
+      ...packMediaPost(row.imagen),
       created_at: row.created_at,
       soy_yo: soyYo
     });
@@ -1647,12 +1672,12 @@ async function crearPost(db, user, body) {
     .trim();
   let imagen = null;
   if (body?.foto) {
-    const v = validarFoto(body.foto);
+    const v = validarMediaPost(body.foto);
     if (!v.ok) return { ok: false, status: 400, error: v.error };
     imagen = v.imagen;
   }
   if (!texto && !imagen) {
-    return { ok: false, status: 400, error: "Escribe algo o sube una foto." };
+    return { ok: false, status: 400, error: "Escribe algo o sube una foto/video." };
   }
   if (texto.length > MAX_POST_CHARS) {
     return { ok: false, status: 400, error: `Máximo ${MAX_POST_CHARS} caracteres.` };
@@ -1843,7 +1868,7 @@ async function listarMuro(db, user) {
       nombre: nombreCortoPublico(row.nombre_cuenta),
       foto: verFoto ? (row.foto || null) : null,
       texto: row.texto || null,
-      imagen: row.imagen || null,
+      ...packMediaPost(row.imagen),
       created_at: row.created_at,
       publico: true,
       soy_yo: soyYo,
@@ -1925,7 +1950,7 @@ async function enriquecerPostFila(db, user, row) {
     nombre: nombreCortoPublico(row.nombre_cuenta),
     foto: verFoto ? (row.foto || null) : null,
     texto: row.texto || null,
-    imagen: row.imagen || null,
+    ...packMediaPost(row.imagen),
     created_at: row.created_at,
     publico: true,
     soy_yo: soyYo,
