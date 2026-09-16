@@ -154,6 +154,7 @@ const {
   sugerenciasFollow: sugerenciasFollowSocial,
   perfilVistaPublica: perfilVistaPublicaSocial
 } = require("./perfilSocial");
+const { buscarTracksSpotify, statusSpotify } = require("./spotifyPreview");
 const {
   editarPost: editarPostSocial,
   fijarPost: fijarPostSocial,
@@ -2373,6 +2374,28 @@ app.post("/api/social/comentario/:id/reaccion", async (req, res) => {
 });
 
 // --- Historias ---
+app.get("/api/social/musica/status", async (_req, res) => {
+  try {
+    return res.json(statusSpotify());
+  } catch (err) {
+    console.error("GET social/musica/status:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/api/social/musica/buscar", async (req, res) => {
+  try {
+    const result = await buscarTracksSpotify(req.query?.q, { limit: Number(req.query?.limit) || 12 });
+    if (!result?.ok) {
+      return res.status(result?.status || 400).json({ error: result?.error || "No se pudo buscar." });
+    }
+    return res.json({ ok: true, tracks: result.tracks || [], configurado: !!result.configurado });
+  } catch (err) {
+    console.error("GET social/musica/buscar:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.post("/api/social/historias", async (req, res) => {
   try {
     const result = await crearHistoriaSocial(db, req.user, req.body || {});
