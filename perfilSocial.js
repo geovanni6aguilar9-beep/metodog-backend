@@ -97,6 +97,16 @@ async function ensureTablasPerfilSocial(db) {
       "ALTER TABLE perfiles_sociales ADD COLUMN bio TEXT"
     );
   } catch (_) { /* ya existe */ }
+  try {
+    await db.execute(
+      "ALTER TABLE perfiles_sociales ADD COLUMN default_quien_comenta TEXT DEFAULT 'todos'"
+    );
+  } catch (_) { /* ya existe */ }
+  try {
+    await db.execute(
+      "ALTER TABLE perfiles_sociales ADD COLUMN quien_mensaje TEXT DEFAULT 'seguidores'"
+    );
+  } catch (_) { /* ya existe */ }
 
   // Producto abierto por defecto: publicar + aparecer en sugerencias/búsqueda
   try {
@@ -682,6 +692,19 @@ function normalizarBio(raw) {
     .slice(0, BIO_MAX);
 }
 
+const QUIEN_MENSAJE_OK = new Set(["nadie", "seguidores", "todos"]);
+const DEFAULT_QUIEN_COMENTA_OK = new Set(["todos", "seguidores", "off"]);
+
+function normalizarQuienMensaje(raw) {
+  const v = String(raw || "").trim().toLowerCase();
+  return QUIEN_MENSAJE_OK.has(v) ? v : "seguidores";
+}
+
+function normalizarDefaultQuienComenta(raw) {
+  const v = String(raw || "").trim().toLowerCase();
+  return DEFAULT_QUIEN_COMENTA_OK.has(v) ? v : "todos";
+}
+
 function filaAPerfilPropio(row, { menor, resumen, vitrina, progreso }) {
   return {
     usuario_id: toNum(row.usuario_id),
@@ -697,6 +720,8 @@ function filaAPerfilPropio(row, { menor, resumen, vitrina, progreso }) {
     mostrar_feed: Number(row.mostrar_feed) === 1,
     mostrar_cuerpo: Number(row.mostrar_cuerpo) === 1,
     mostrar_muro: Number(row.mostrar_muro) === 1,
+    default_quien_comenta: normalizarDefaultQuienComenta(row.default_quien_comenta),
+    quien_mensaje: normalizarQuienMensaje(row.quien_mensaje),
     menor: !!menor,
     social_activa: !menor,
     resumen: resumen || { sesiones: 0, series: 0, mejores: [] },
@@ -786,6 +811,22 @@ async function guardarYo(db, user, body) {
   if (body.mostrar_muro != null) {
     patch.push("mostrar_muro = ?");
     args.push(body.mostrar_muro ? 1 : 0);
+  }
+  if (body.default_quien_comenta != null) {
+    const quien = normalizarDefaultQuienComenta(body.default_quien_comenta);
+    if (!DEFAULT_QUIEN_COMENTA_OK.has(String(body.default_quien_comenta || "").trim().toLowerCase())) {
+      return { ok: false, status: 400, error: "Default de comentarios inválido." };
+    }
+    patch.push("default_quien_comenta = ?");
+    args.push(quien);
+  }
+  if (body.quien_mensaje != null) {
+    const quien = String(body.quien_mensaje || "").trim().toLowerCase();
+    if (!QUIEN_MENSAJE_OK.has(quien)) {
+      return { ok: false, status: 400, error: "Quién puede escribirte: nadie, seguidores o todos." };
+    }
+    patch.push("quien_mensaje = ?");
+    args.push(quien);
   }
 
   if (!patch.length) {
@@ -1416,10 +1457,23 @@ async function gateChat(db, user, otherId) {
   if (await hayBloqueo(db, user.id, oid)) {
     return { ok: false, status: 403, error: "No puedes escribirle." };
   }
-  if (!(await amistadAceptada(db, user.id, oid))) {
-    return { ok: false, status: 403, error: "Solo entre compañeros aceptados." };
+  await asegurarPerfil(db, oid, "Atleta");
+  const pref = await db.execute({
+    sql: "SELECT quien_mensaje FROM perfiles_sociales WHERE usuario_id = ?",
+    args: [oid]
+  });
+  const quien = normalizarQuienMensaje(pref.rows?.[0]?.quien_mensaje);
+  if (quien === "nadie") {
+    return { ok: false, status: 403, error: "No acepta mensajes." };
   }
-  return { ok: true, oid };
+  if (quien === "todos") {
+    return { ok: true, oid };
+  }
+  // seguidores (default): quien lo sigue, o legado compañeros aceptados
+  if (await yoSigo(db, user.id, oid) || await amistadAceptada(db, user.id, oid)) {
+    return { ok: true, oid };
+  }
+  return { ok: false, status: 403, error: "Solo sus seguidores pueden escribirle." };
 }
 
 function limpiarTextoMensaje(raw) {
@@ -1705,9 +1759,17 @@ async function crearPost(db, user, body) {
           .join(" · ")}`.slice(0, MAX_POST_CHARS)
       : texto || null;
 
+  const prefCom = await db.execute({
+    sql: "SELECT default_quien_comenta FROM perfiles_sociales WHERE usuario_id = ?",
+    args: [user.id]
+  });
+  const defaultQuien = normalizarDefaultQuienComenta(prefCom.rows?.[0]?.default_quien_comenta);
+  const comentariosOff = defaultQuien === "off" ? 1 : 0;
+
   const ins = await db.execute({
-    sql: `INSERT INTO social_posts (usuario_id, texto, imagen, publico) VALUES (?, ?, ?, ?)`,
-    args: [user.id, textoFinal, imagen, esPublico ? 1 : 0]
+    sql: `INSERT INTO social_posts (usuario_id, texto, imagen, publico, quien_comenta, comentarios_off)
+          VALUES (?, ?, ?, ?, ?, ?)`,
+    args: [user.id, textoFinal, imagen, esPublico ? 1 : 0, defaultQuien, comentariosOff]
   });
   if (!(ins.rowsAffected > 0)) {
     return { ok: false, status: 500, error: "No se pudo publicar." };
@@ -3035,48 +3097,131 @@ async function sugerenciasFollow(db, user) {
 }
 
 async function borrarDatosSocialesUsuario(db, userId) {
+  const uid = toNum(userId);
+  if (!uid) return;
+  try {
+    await db.execute({
+      sql: `DELETE FROM social_posts_guardados WHERE usuario_id = ? OR post_id IN
+            (SELECT id FROM social_posts WHERE usuario_id = ?)`,
+      args: [uid, uid]
+    });
+  } catch (_) { /* tabla opcional */ }
+  try {
+    await db.execute({
+      sql: `DELETE FROM social_reportes WHERE reporter_id = ? OR post_id IN
+            (SELECT id FROM social_posts WHERE usuario_id = ?)`,
+      args: [uid, uid]
+    });
+  } catch (_) { /* tabla opcional */ }
   await db.execute({
     sql: `DELETE FROM social_post_likes WHERE usuario_id = ? OR post_id IN
           (SELECT id FROM social_posts WHERE usuario_id = ?)`,
-    args: [userId, userId]
+    args: [uid, uid]
   });
   await db.execute({
     sql: `DELETE FROM social_post_comentarios WHERE usuario_id = ? OR post_id IN
           (SELECT id FROM social_posts WHERE usuario_id = ?)`,
-    args: [userId, userId]
+    args: [uid, uid]
   });
   await db.execute({
     sql: "DELETE FROM social_posts WHERE usuario_id = ?",
-    args: [userId]
+    args: [uid]
   });
   await db.execute({
     sql: "DELETE FROM social_mensajes WHERE de_id = ? OR para_id = ?",
-    args: [userId, userId]
+    args: [uid, uid]
   });
   await db.execute({
     sql: "DELETE FROM social_vitrina WHERE usuario_id = ?",
-    args: [userId]
+    args: [uid]
   });
   await db.execute({
     sql: "DELETE FROM social_solicitudes WHERE de_id = ? OR para_id = ?",
-    args: [userId, userId]
+    args: [uid, uid]
   });
   await db.execute({
     sql: "DELETE FROM social_bloqueos WHERE blocker_id = ? OR blocked_id = ?",
-    args: [userId, userId]
+    args: [uid, uid]
   });
-  await db.execute({
-    sql: "DELETE FROM social_historias WHERE usuario_id = ?",
-    args: [userId]
-  });
+  try {
+    await db.execute({
+      sql: "DELETE FROM social_historias WHERE usuario_id = ?",
+      args: [uid]
+    });
+  } catch (_) { /* ignore */ }
   await db.execute({
     sql: "DELETE FROM social_follows WHERE seguidor_id = ? OR seguido_id = ?",
-    args: [userId, userId]
+    args: [uid, uid]
   });
+  try {
+    await db.execute({
+      sql: `DELETE FROM notificaciones WHERE usuario_id = ?
+            AND tipo IN ('social_like','social_comentario','social_solicitud','social_aceptada','social_mensaje')`,
+      args: [uid]
+    });
+  } catch (_) { /* ignore */ }
   await db.execute({
     sql: "DELETE FROM perfiles_sociales WHERE usuario_id = ?",
-    args: [userId]
+    args: [uid]
   });
+}
+
+async function exportarDatosSociales(db, user) {
+  if (!(await rolEsCliente(db, user.id))) {
+    return { ok: false, status: 403, error: "El perfil social es para atletas." };
+  }
+  const yo = await obtenerYo(db, user, user.nombre);
+  if (!yo.ok) return yo;
+  const pe = yo.perfil || {};
+  const postsR = await db.execute({
+    sql: `SELECT id, texto, imagen, publico, quien_comenta, created_at
+          FROM social_posts WHERE usuario_id = ? ORDER BY id DESC LIMIT 500`,
+    args: [user.id]
+  });
+  const seg = await listarSeguidores(db, user);
+  const sig = await listarSiguiendo(db, user);
+  const en = await listarEnlaces(db, user);
+  const perfilExport = {
+    alias: pe.alias,
+    codigo: pe.codigo,
+    bio: pe.bio,
+    modo_entrada: pe.modo_entrada,
+    mostrar_foto: pe.mostrar_foto,
+    mostrar_prs: pe.mostrar_prs,
+    mostrar_vitrina: pe.mostrar_vitrina,
+    mostrar_ranking: pe.mostrar_ranking,
+    mostrar_muro: pe.mostrar_muro,
+    mostrar_cuerpo: pe.mostrar_cuerpo,
+    default_quien_comenta: pe.default_quien_comenta,
+    quien_mensaje: pe.quien_mensaje,
+    foto: pe.foto ? true : false
+  };
+  return {
+    ok: true,
+    exportado_en: new Date().toISOString(),
+    perfil: perfilExport,
+    posts: (postsR.rows || []).map((r) => ({
+      id: toNum(r.id),
+      texto: r.texto || null,
+      tiene_media: !!r.imagen,
+      es_video: String(r.imagen || "").startsWith("data:video"),
+      publico: Number(r.publico) === 1,
+      quien_comenta: r.quien_comenta || "todos",
+      created_at: r.created_at
+    })),
+    seguidores: (seg.seguidores || []).map((u) => ({ user_id: u.user_id, alias: u.alias })),
+    siguiendo: (sig.siguiendo || []).map((u) => ({ user_id: u.user_id, alias: u.alias })),
+    bloqueados: (en.bloqueados || []).map((u) => ({ user_id: u.user_id, alias: u.alias }))
+  };
+}
+
+async function reiniciarDatosSociales(db, user) {
+  if (!(await rolEsCliente(db, user.id))) {
+    return { ok: false, status: 403, error: "El perfil social es para atletas." };
+  }
+  await borrarDatosSocialesUsuario(db, user.id);
+  await asegurarPerfil(db, user.id, user.nombre);
+  return obtenerYo(db, user, user.nombre);
 }
 
 module.exports = {
@@ -3123,5 +3268,7 @@ module.exports = {
   yoSigo,
   sugerenciasFollow,
   perfilVistaPublica,
-  borrarDatosSocialesUsuario
+  borrarDatosSocialesUsuario,
+  exportarDatosSociales,
+  reiniciarDatosSociales
 };

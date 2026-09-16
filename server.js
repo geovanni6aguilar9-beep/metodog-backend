@@ -140,6 +140,8 @@ const {
   setPrivacidadComentarios: setPrivacidadComentariosSocial,
   reaccionarComentario: reaccionarComentarioSocial,
   borrarDatosSocialesUsuario,
+  exportarDatosSociales,
+  reiniciarDatosSociales,
   crearHistoria: crearHistoriaSocial,
   listarHistorias: listarHistoriasSocial,
   borrarHistoria: borrarHistoriaSocial,
@@ -1969,6 +1971,30 @@ app.put("/api/social/yo", async (req, res) => {
     return responderPerfilSocial(res, result);
   } catch (err) {
     console.error("PUT social/yo:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/api/social/yo/exportar", async (req, res) => {
+  try {
+    const result = await exportarDatosSociales(db, req.user);
+    return responderPerfilSocial(res, result);
+  } catch (err) {
+    console.error("GET social/yo/exportar:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/social/yo/reiniciar", async (req, res) => {
+  try {
+    const confirm = String(req.body?.confirm || "").trim().toUpperCase();
+    if (confirm !== "BORRAR") {
+      return res.status(400).json({ error: 'Escribe BORRAR para confirmar.' });
+    }
+    const result = await reiniciarDatosSociales(db, req.user);
+    return responderPerfilSocial(res, result);
+  } catch (err) {
+    console.error("POST social/yo/reiniciar:", err.message);
     res.status(500).json({ error: err.message });
   }
 });
