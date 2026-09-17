@@ -117,69 +117,104 @@ async function intentarSpotify(query, limit) {
   return { ok: true, tracks: items, fuente: "spotify" };
 }
 
-async function buscarTracksItunes(query, limit) {
+function packItunesResult(r) {
+  if (!r?.trackId) return null;
+  const cover = String(r.artworkUrl100 || r.artworkUrl60 || "")
+    .replace("100x100bb", "200x200bb")
+    .replace("60x60bb", "200x200bb");
+  return {
+    id: `it:${r.trackId}`,
+    name: r.trackName || "Sin título",
+    artist: r.artistName || "Artista",
+    preview_url: r.previewUrl || null,
+    cover: cover || null,
+    external_url: r.trackViewUrl || null,
+    has_preview: !!r.previewUrl,
+    source: "itunes"
+  };
+}
+
+async function itunesSearchCountry(query, limit, country) {
   const url = new URL("https://itunes.apple.com/search");
   url.searchParams.set("term", query);
   url.searchParams.set("media", "music");
   url.searchParams.set("entity", "song");
   url.searchParams.set("limit", String(Math.min(25, Math.max(1, limit))));
-  url.searchParams.set("country", "mx");
-  let res;
-  let data = {};
+  url.searchParams.set("country", country);
+  const res = await fetch(url.toString());
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) return [];
+  return (data.results || []).map(packItunesResult).filter(Boolean);
+}
+
+async function buscarTracksItunes(query, limit) {
+  let mx = [];
+  let us = [];
   try {
-    res = await fetch(url.toString());
-    data = await res.json().catch(() => ({}));
+    [mx, us] = await Promise.all([
+      itunesSearchCountry(query, limit, "mx"),
+      itunesSearchCountry(query, limit, "us")
+    ]);
   } catch (err) {
     console.error("iTunes search network:", err.message);
     return { ok: false, status: 502, error: "Sin conexión a catálogo de previews." };
   }
-  if (!res.ok) {
-    return { ok: false, status: 502, error: `Catálogo preview ${res.status}` };
+  const seen = new Set();
+  const items = [];
+  for (const t of [...mx, ...us]) {
+    if (seen.has(t.id)) continue;
+    seen.add(t.id);
+    items.push(t);
   }
-  const items = (data.results || [])
-    .map((r) => {
-      if (!r?.trackId) return null;
-      const cover = String(r.artworkUrl100 || r.artworkUrl60 || "")
-        .replace("100x100bb", "200x200bb")
-        .replace("60x60bb", "200x200bb");
-      return {
-        id: `it:${r.trackId}`,
-        name: r.trackName || "Sin título",
-        artist: r.artistName || "Artista",
-        preview_url: r.previewUrl || null,
-        cover: cover || null,
-        external_url: r.trackViewUrl || null,
-        has_preview: !!r.previewUrl,
-        source: "itunes"
-      };
-    })
-    .filter(Boolean);
+  // Variedad: no descartar sin preview; solo priorizar las que sí suenan
   items.sort((a, b) => Number(b.has_preview) - Number(a.has_preview));
-  return { ok: true, tracks: items, fuente: "itunes" };
+  return { ok: true, tracks: items.slice(0, Math.min(30, Math.max(limit, 20))), fuente: "itunes" };
 }
 
-/** API pública usada por server.js */
-async function buscarTracksSpotify(q, { limit = 12 } = {}) {
+function mergeTracksById(primary, secondary) {
+  const seen = new Set();
+  const out = [];
+  for (const t of [...(primary || []), ...(secondary || [])]) {
+    if (!t?.id || seen.has(t.id)) continue;
+    seen.add(t.id);
+    out.push(t);
+  }
+  out.sort((a, b) => Number(b.has_preview) - Number(a.has_preview));
+  return out;
+}
+
+/** API pública usada por server.js — no filtra preview_url (sticker visual OK sin audio). */
+async function buscarTracksSpotify(q, { limit = 20 } = {}) {
   const query = String(q || "").trim();
   if (query.length < 2) {
     return { ok: false, status: 400, error: "Escribe al menos 2 letras." };
   }
 
+  const lim = Math.min(25, Math.max(8, Number(limit) || 20));
+  let spTracks = [];
+  let spOk = false;
+  let spotifyBloqueado = false;
+
   if (spotifyConfigured()) {
-    const sp = await intentarSpotify(query, limit);
+    const sp = await intentarSpotify(query, lim);
     if (sp.ok && (sp.tracks || []).length) {
-      return { ok: true, tracks: sp.tracks, configurado: true, fuente: "spotify" };
+      spTracks = sp.tracks;
+      spOk = true;
+    } else {
+      spotifyBloqueado = true;
     }
   }
 
-  const it = await buscarTracksItunes(query, limit);
-  if (!it.ok) return it;
+  const it = await buscarTracksItunes(query, lim);
+  if (!it.ok && !spOk) return it;
+
+  const tracks = mergeTracksById(spTracks, it.ok ? it.tracks : []);
   return {
     ok: true,
-    tracks: it.tracks || [],
+    tracks,
     configurado: true,
-    fuente: "itunes",
-    spotify_bloqueado: spotifyConfigured()
+    fuente: spOk ? (tracks.some((t) => t.source === "itunes") ? "mixto" : "spotify") : "itunes",
+    spotify_bloqueado: spotifyBloqueado
   };
 }
 

@@ -2385,7 +2385,7 @@ app.get("/api/social/musica/status", async (_req, res) => {
 
 app.get("/api/social/musica/buscar", async (req, res) => {
   try {
-    const result = await buscarTracksSpotify(req.query?.q, { limit: Number(req.query?.limit) || 12 });
+    const result = await buscarTracksSpotify(req.query?.q, { limit: Number(req.query?.limit) || 20 });
     if (!result?.ok) {
       return res.status(result?.status || 400).json({ error: result?.error || "No se pudo buscar." });
     }
