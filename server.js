@@ -2376,7 +2376,7 @@ app.post("/api/social/comentario/:id/reaccion", async (req, res) => {
 // --- Historias ---
 app.get("/api/social/musica/status", async (_req, res) => {
   try {
-    return res.json(statusSpotify());
+    return res.json(await statusSpotify());
   } catch (err) {
     console.error("GET social/musica/status:", err.message);
     res.status(500).json({ error: err.message });
