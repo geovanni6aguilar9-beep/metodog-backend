@@ -23,21 +23,27 @@ async function obtenerTokenSpotify() {
   const id = (process.env.SPOTIFY_CLIENT_ID || "").trim();
   const secret = (process.env.SPOTIFY_CLIENT_SECRET || "").trim();
   const basic = Buffer.from(`${id}:${secret}`).toString("base64");
-  const res = await fetch("https://accounts.spotify.com/api/token", {
-    method: "POST",
-    headers: {
-      Authorization: `Basic ${basic}`,
-      "Content-Type": "application/x-www-form-urlencoded"
-    },
-    body: "grant_type=client_credentials"
-  });
-  const data = await res.json().catch(() => ({}));
+  let res;
+  let data = {};
+  try {
+    res = await fetch("https://accounts.spotify.com/api/token", {
+      method: "POST",
+      headers: {
+        Authorization: `Basic ${basic}`,
+        "Content-Type": "application/x-www-form-urlencoded"
+      },
+      body: "grant_type=client_credentials"
+    });
+    data = await res.json().catch(() => ({}));
+  } catch (err) {
+    console.error("Spotify token network:", err.message);
+    return { ok: false, status: 502, error: "Sin conexión a Spotify (token)." };
+  }
   if (!res.ok || !data.access_token) {
-    return {
-      ok: false,
-      status: 502,
-      error: data.error_description || data.error || "No se pudo autenticar con Spotify."
-    };
+    const msg = data.error_description || data.error || `Auth Spotify ${res.status}`;
+    console.error("Spotify token fail:", res.status, msg);
+    tokenCache = { accessToken: null, expiresAt: 0 };
+    return { ok: false, status: 502, error: msg };
   }
   tokenCache = {
     accessToken: data.access_token,
@@ -62,6 +68,19 @@ function packTrack(t) {
   };
 }
 
+async function searchOnce(accessToken, query, limit, market) {
+  const url = new URL("https://api.spotify.com/v1/search");
+  url.searchParams.set("q", query);
+  url.searchParams.set("type", "track");
+  url.searchParams.set("limit", String(Math.min(20, Math.max(1, limit))));
+  if (market) url.searchParams.set("market", market);
+  const res = await fetch(url, {
+    headers: { Authorization: `Bearer ${accessToken}` }
+  });
+  const data = await res.json().catch(() => ({}));
+  return { res, data };
+}
+
 async function buscarTracksSpotify(q, { limit = 12 } = {}) {
   const query = String(q || "").trim();
   if (query.length < 2) {
@@ -70,31 +89,62 @@ async function buscarTracksSpotify(q, { limit = 12 } = {}) {
   const tok = await obtenerTokenSpotify();
   if (!tok.ok) return tok;
 
-  const url = new URL("https://api.spotify.com/v1/search");
-  url.searchParams.set("q", query);
-  url.searchParams.set("type", "track");
-  url.searchParams.set("limit", String(Math.min(20, Math.max(1, limit))));
-  url.searchParams.set("market", "MX");
+  let res;
+  let data;
+  try {
+    ({ res, data } = await searchOnce(tok.accessToken, query, limit, "MX"));
+    // Algunos apps/cuentas fallan con market fijo → reintento sin market
+    if (!res.ok && (res.status === 403 || res.status === 400)) {
+      ({ res, data } = await searchOnce(tok.accessToken, query, limit, null));
+    }
+  } catch (err) {
+    console.error("Spotify search network:", err.message);
+    return { ok: false, status: 502, error: "Sin conexión a Spotify (search)." };
+  }
 
-  const res = await fetch(url, {
-    headers: { Authorization: `Bearer ${tok.accessToken}` }
-  });
-  const data = await res.json().catch(() => ({}));
   if (!res.ok) {
+    // Token vencido / inválido: limpiar caché y un reintento
+    if (res.status === 401) {
+      tokenCache = { accessToken: null, expiresAt: 0 };
+      const tok2 = await obtenerTokenSpotify();
+      if (tok2.ok) {
+        try {
+          ({ res, data } = await searchOnce(tok2.accessToken, query, limit, null));
+        } catch (err) {
+          console.error("Spotify search retry network:", err.message);
+          return { ok: false, status: 502, error: "Sin conexión a Spotify (search)." };
+        }
+      }
+    }
+  }
+
+  if (!res.ok) {
+    const msg = data.error?.message || data.error_description || `Spotify search ${res.status}`;
+    console.error("Spotify search fail:", res.status, msg);
     return {
       ok: false,
       status: res.status === 429 ? 429 : 502,
-      error: data.error?.message || "Spotify search falló."
+      error: msg
     };
   }
+
   const items = (data.tracks?.items || []).map(packTrack).filter(Boolean);
-  // Preferir con preview, pero no ocultar el resto (sticker + link igual sirve)
   items.sort((a, b) => Number(b.has_preview) - Number(a.has_preview));
   return { ok: true, tracks: items, configurado: true };
 }
 
-function statusSpotify() {
-  return { ok: true, configurado: spotifyConfigured() };
+async function statusSpotify() {
+  const configurado = spotifyConfigured();
+  if (!configurado) {
+    return { ok: true, configurado: false, auth_ok: false };
+  }
+  const tok = await obtenerTokenSpotify();
+  return {
+    ok: true,
+    configurado: true,
+    auth_ok: !!tok.ok,
+    error: tok.ok ? undefined : tok.error
+  };
 }
 
 module.exports = {
