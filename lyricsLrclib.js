@@ -1,6 +1,6 @@
 /**
  * Letra de canciones vía LRCLIB (público, sin API key).
- * Para stickers Letra/Karaoke en historias.
+ * Tiempos ABSOLUTOS del LRC — el cliente suma lyricOffset al currentTime del preview.
  */
 
 function sanitizeMusicQuery(s) {
@@ -36,68 +36,32 @@ function plainToLines(plain) {
     .filter((s) => s && !/^\[/.test(s));
 }
 
-/** Bloque de ~30–40s desde la primera línea con voz. */
-function pickVocalBlock(syncedLines, windowSec = 38) {
-  if (!syncedLines.length) return [];
-  const startIdx = syncedLines.findIndex((l) => l.text);
-  if (startIdx < 0) return [];
-  const t0 = syncedLines[startIdx].t;
-  const out = [];
-  for (let i = startIdx; i < syncedLines.length && out.length < 18; i++) {
-    if (syncedLines[i].t - t0 > windowSec) break;
-    out.push(syncedLines[i]);
-  }
-  return out;
-}
-
-function remapBlockToClip(block, clipStart, clipEnd) {
-  if (!block.length) return [];
-  const t0 = block[0].t;
-  const t1 = block[block.length - 1].t;
-  const span = Math.max(1.2, t1 - t0);
-  const dur = Math.max(1.2, (Number(clipEnd) || 30) - (Number(clipStart) || 0));
-  const base = Number(clipStart) || 0;
-  return block.map((l) => ({
-    t: base + ((l.t - t0) / span) * dur,
-    text: l.text
-  }));
-}
-
-function evenlySpaced(texts, clipStart, clipEnd) {
-  const list = (texts || []).filter(Boolean).slice(0, 14);
-  if (!list.length) return [];
-  const base = Number(clipStart) || 0;
-  const dur = Math.max(1.2, (Number(clipEnd) || 30) - base);
-  const step = dur / Math.max(1, list.length);
-  return list.map((text, i) => ({ t: base + i * step, text }));
-}
-
 /**
- * Líneas listas para el sticker, ancladas al clip del preview (0–30s del audio).
+ * Timeline absoluta del tema + offset sugerido si la voz empieza tarde
+ * (el preview de 30s suele saltar el intro).
  */
-function buildLyricTimeline(payload, clipStart = 0, clipEnd = 30) {
+function buildLyricTimeline(payload) {
   const synced = parseLrc(payload?.syncedLyrics);
-  const plain = plainToLines(payload?.plainLyrics);
-
-  const early = synced.filter((l) => l.t >= clipStart && l.t <= Math.max(clipEnd, 35));
-  if (early.length >= 3) {
-    return early.map((l) => ({ t: l.t, text: l.text }));
+  if (synced.length) {
+    const timeline = synced.slice(0, 48);
+    const early = timeline.filter((l) => l.t <= 28).length;
+    const firstT = timeline[0]?.t || 0;
+    const suggestedOffset = early >= 2 ? 0 : Math.round(firstT * 10) / 10;
+    return { timeline, suggestedOffset };
   }
-
-  const block = pickVocalBlock(synced);
-  if (block.length >= 2) {
-    return remapBlockToClip(block, clipStart, clipEnd);
-  }
-
-  return evenlySpaced(plain, clipStart, clipEnd);
+  const plain = plainToLines(payload?.plainLyrics).slice(0, 24);
+  if (!plain.length) return { timeline: [], suggestedOffset: 0 };
+  const timeline = plain.map((text, i) => ({ t: i * 2.8, text }));
+  return { timeline, suggestedOffset: 0 };
 }
 
 function lineAtTime(timeline, t) {
   if (!timeline?.length) return "";
   const sec = Number(t) || 0;
-  let cur = timeline[0].text;
+  if (sec + 0.05 < (Number(timeline[0].t) || 0)) return "";
+  let cur = "";
   for (const L of timeline) {
-    if (L.t <= sec) cur = L.text;
+    if ((Number(L.t) || 0) <= sec) cur = L.text;
     else break;
   }
   return cur || "";
@@ -146,7 +110,7 @@ async function fetchLrclib(artist, track) {
       return { ok: false, status: 404, error: "Sin letra para este tema." };
     }
 
-    const timeline = buildLyricTimeline(data, 0, 30);
+    const { timeline, suggestedOffset } = buildLyricTimeline(data);
     if (!timeline.length) {
       return { ok: false, status: 404, error: "Sin letra para este tema." };
     }
@@ -157,6 +121,7 @@ async function fetchLrclib(artist, track) {
       artist: data.artistName || artistClean,
       duration: data.duration || null,
       timeline,
+      suggestedOffset,
       lines: timeline.map((x) => x.text)
     };
   } catch (err) {

@@ -2408,6 +2408,7 @@ app.get("/api/social/musica/letra", async (req, res) => {
       track: result.track,
       artist: result.artist,
       timeline: result.timeline,
+      suggestedOffset: result.suggestedOffset ?? 0,
       lines: result.lines
     });
   } catch (err) {
