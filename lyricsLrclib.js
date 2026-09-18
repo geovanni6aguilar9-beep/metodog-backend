@@ -1,5 +1,5 @@
 /**
- * Letra vía LRCLIB — auto-sync al preview ~30s (sin slider).
+ * Letra vía LRCLIB — tiempos ABSOLUTOS del LRC (preview ≈ inicio del tema).
  */
 
 function sanitizeMusicQuery(s) {
@@ -35,42 +35,28 @@ function plainToLines(plain) {
     .filter((s) => s && !/^\[/.test(s));
 }
 
-/**
- * 1) Letra al inicio del tema → tiempos absolutos.
- * 2) Si no → ventana más densa (coro/hook del preview), intervalos LRC reales.
- */
 function buildLyricTimeline(payload, previewDur = 30) {
   const synced = parseLrc(payload?.syncedLyrics);
   const dur = Math.max(20, Number(previewDur) || 30);
 
   if (synced.length) {
-    const early = synced.filter((l) => l.t <= dur + 1);
-    if (early.length >= 3) {
-      return early.map((l) => ({ t: l.t, text: l.text }));
-    }
-
-    let bestStart = synced[0].t;
-    let bestCount = 0;
-    for (let i = 0; i < synced.length; i++) {
-      const start = synced[i].t;
-      const end = start + dur;
-      let count = 0;
-      for (let j = i; j < synced.length && synced[j].t < end; j++) count += 1;
-      if (count > bestCount) {
-        bestCount = count;
-        bestStart = start;
-      }
+    const firstT = synced[0].t;
+    if (firstT <= 12) {
+      return synced
+        .filter((l) => l.t <= dur + 8)
+        .slice(0, 32)
+        .map((l) => ({ t: l.t, text: l.text }));
     }
 
     return synced
-      .filter((l) => l.t >= bestStart && l.t < bestStart + dur + 4)
+      .filter((l) => l.t >= firstT && l.t < firstT + dur + 4)
       .slice(0, 24)
-      .map((l) => ({ t: Math.max(0, l.t - bestStart), text: l.text }));
+      .map((l) => ({ t: Math.max(0, l.t - firstT), text: l.text }));
   }
 
-  const plain = plainToLines(payload?.plainLyrics).slice(0, 16);
+  const plain = plainToLines(payload?.plainLyrics).slice(0, 12);
   if (!plain.length) return [];
-  const step = dur / Math.max(1, plain.length);
+  const step = Math.min(3, dur / Math.max(1, plain.length));
   return plain.map((text, i) => ({ t: i * step, text }));
 }
 
@@ -93,6 +79,7 @@ async function lrclibGet(artist, track) {
   const res = await fetch(getUrl.toString(), {
     headers: { "User-Agent": "MetodoG-Historias/1.0 (lyrics sticker)" }
   });
+  if (res.status === 404) return null;
   const data = await res.json().catch(() => null);
   if (res.ok && data && (data.syncedLyrics || data.plainLyrics)) return data;
   return null;
@@ -119,11 +106,11 @@ async function fetchLrclib(artist, track, previewDur = 30) {
   const trackClean = sanitizeMusicQuery(rawT);
 
   try {
-    let data =
-      (await lrclibGet(artistClean, trackClean)) ||
-      (await lrclibGet(artistClean, rawT)) ||
-      (await lrclibSearch(`${trackClean} ${artistClean}`)) ||
-      (await lrclibSearch(`${rawT} ${artistClean}`));
+    const [exact, fuzzy] = await Promise.all([
+      lrclibGet(artistClean, trackClean),
+      lrclibSearch(`${trackClean} ${artistClean}`)
+    ]);
+    const data = exact || fuzzy;
 
     if (!data) {
       return { ok: false, status: 404, error: "Sin letra para este tema." };
@@ -131,7 +118,7 @@ async function fetchLrclib(artist, track, previewDur = 30) {
 
     const timeline = buildLyricTimeline(data, previewDur);
     if (!timeline.length) {
-      return { ok: false, status: 404, error: "Sin letra para este tema." };
+      return { ok: false, status: 404, error: "Este fragmento no trae voz con letra." };
     }
 
     return {
