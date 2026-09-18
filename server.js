@@ -155,6 +155,7 @@ const {
   perfilVistaPublica: perfilVistaPublicaSocial
 } = require("./perfilSocial");
 const { buscarTracksSpotify, statusSpotify } = require("./spotifyPreview");
+const { fetchLrclib } = require("./lyricsLrclib");
 const {
   editarPost: editarPostSocial,
   fijarPost: fijarPostSocial,
@@ -2392,6 +2393,25 @@ app.get("/api/social/musica/buscar", async (req, res) => {
     return res.json({ ok: true, tracks: result.tracks || [], configurado: !!result.configurado });
   } catch (err) {
     console.error("GET social/musica/buscar:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/api/social/musica/letra", async (req, res) => {
+  try {
+    const result = await fetchLrclib(req.query?.artist, req.query?.track);
+    if (!result?.ok) {
+      return res.status(result?.status || 404).json({ error: result?.error || "Sin letra." });
+    }
+    return res.json({
+      ok: true,
+      track: result.track,
+      artist: result.artist,
+      timeline: result.timeline,
+      lines: result.lines
+    });
+  } catch (err) {
+    console.error("GET social/musica/letra:", err.message);
     res.status(500).json({ error: err.message });
   }
 });
