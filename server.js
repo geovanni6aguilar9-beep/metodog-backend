@@ -2399,7 +2399,7 @@ app.get("/api/social/musica/buscar", async (req, res) => {
 
 app.get("/api/social/musica/letra", async (req, res) => {
   try {
-    const result = await fetchLrclib(req.query?.artist, req.query?.track);
+    const result = await fetchLrclib(req.query?.artist, req.query?.track, Number(req.query?.dur) || 30);
     if (!result?.ok) {
       return res.status(result?.status || 404).json({ error: result?.error || "Sin letra." });
     }
@@ -2408,7 +2408,6 @@ app.get("/api/social/musica/letra", async (req, res) => {
       track: result.track,
       artist: result.artist,
       timeline: result.timeline,
-      suggestedOffset: result.suggestedOffset ?? 0,
       lines: result.lines
     });
   } catch (err) {

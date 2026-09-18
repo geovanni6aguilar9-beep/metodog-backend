@@ -1,6 +1,5 @@
 /**
- * Letra de canciones vía LRCLIB (público, sin API key).
- * Tiempos ABSOLUTOS del LRC — el cliente suma lyricOffset al currentTime del preview.
+ * Letra vía LRCLIB — auto-sync al preview ~30s (sin slider).
  */
 
 function sanitizeMusicQuery(s) {
@@ -37,28 +36,48 @@ function plainToLines(plain) {
 }
 
 /**
- * Timeline absoluta del tema + offset sugerido si la voz empieza tarde
- * (el preview de 30s suele saltar el intro).
+ * 1) Letra al inicio del tema → tiempos absolutos.
+ * 2) Si no → ventana más densa (coro/hook del preview), intervalos LRC reales.
  */
-function buildLyricTimeline(payload) {
+function buildLyricTimeline(payload, previewDur = 30) {
   const synced = parseLrc(payload?.syncedLyrics);
+  const dur = Math.max(20, Number(previewDur) || 30);
+
   if (synced.length) {
-    const timeline = synced.slice(0, 48);
-    const early = timeline.filter((l) => l.t <= 28).length;
-    const firstT = timeline[0]?.t || 0;
-    const suggestedOffset = early >= 2 ? 0 : Math.round(firstT * 10) / 10;
-    return { timeline, suggestedOffset };
+    const early = synced.filter((l) => l.t <= dur + 1);
+    if (early.length >= 3) {
+      return early.map((l) => ({ t: l.t, text: l.text }));
+    }
+
+    let bestStart = synced[0].t;
+    let bestCount = 0;
+    for (let i = 0; i < synced.length; i++) {
+      const start = synced[i].t;
+      const end = start + dur;
+      let count = 0;
+      for (let j = i; j < synced.length && synced[j].t < end; j++) count += 1;
+      if (count > bestCount) {
+        bestCount = count;
+        bestStart = start;
+      }
+    }
+
+    return synced
+      .filter((l) => l.t >= bestStart && l.t < bestStart + dur + 4)
+      .slice(0, 24)
+      .map((l) => ({ t: Math.max(0, l.t - bestStart), text: l.text }));
   }
-  const plain = plainToLines(payload?.plainLyrics).slice(0, 24);
-  if (!plain.length) return { timeline: [], suggestedOffset: 0 };
-  const timeline = plain.map((text, i) => ({ t: i * 2.8, text }));
-  return { timeline, suggestedOffset: 0 };
+
+  const plain = plainToLines(payload?.plainLyrics).slice(0, 16);
+  if (!plain.length) return [];
+  const step = dur / Math.max(1, plain.length);
+  return plain.map((text, i) => ({ t: i * step, text }));
 }
 
 function lineAtTime(timeline, t) {
   if (!timeline?.length) return "";
   const sec = Number(t) || 0;
-  if (sec + 0.05 < (Number(timeline[0].t) || 0)) return "";
+  if (sec + 0.08 < (Number(timeline[0].t) || 0)) return "";
   let cur = "";
   for (const L of timeline) {
     if ((Number(L.t) || 0) <= sec) cur = L.text;
@@ -89,7 +108,7 @@ async function lrclibSearch(q) {
   return (Array.isArray(arr) ? arr : []).find((x) => x?.syncedLyrics || x?.plainLyrics) || null;
 }
 
-async function fetchLrclib(artist, track) {
+async function fetchLrclib(artist, track, previewDur = 30) {
   const rawA = String(artist || "").trim();
   const rawT = String(track || "").trim();
   if (rawA.length < 1 || rawT.length < 1) {
@@ -110,7 +129,7 @@ async function fetchLrclib(artist, track) {
       return { ok: false, status: 404, error: "Sin letra para este tema." };
     }
 
-    const { timeline, suggestedOffset } = buildLyricTimeline(data);
+    const timeline = buildLyricTimeline(data, previewDur);
     if (!timeline.length) {
       return { ok: false, status: 404, error: "Sin letra para este tema." };
     }
@@ -121,7 +140,6 @@ async function fetchLrclib(artist, track) {
       artist: data.artistName || artistClean,
       duration: data.duration || null,
       timeline,
-      suggestedOffset,
       lines: timeline.map((x) => x.text)
     };
   } catch (err) {
