@@ -1,5 +1,5 @@
 /**
- * Letra vía LRCLIB — tiempos ABSOLUTOS del LRC (preview ≈ inicio del tema).
+ * Letra vía LRCLIB — ventana densa ≈ preview Spotify/iTunes (gancho), no 0:00.
  */
 
 function sanitizeMusicQuery(s) {
@@ -40,18 +40,41 @@ function buildLyricTimeline(payload, previewDur = 30) {
   const dur = Math.max(20, Number(previewDur) || 30);
 
   if (synced.length) {
-    const firstT = synced[0].t;
-    if (firstT <= 12) {
-      return synced
-        .filter((l) => l.t <= dur + 8)
-        .slice(0, 32)
-        .map((l) => ({ t: l.t, text: l.text }));
+    const trackEnd = synced[synced.length - 1].t || dur;
+    const ideal = Math.max(0, trackEnd * 0.35 - dur * 0.15);
+    const candidates = [0];
+    for (const L of synced) {
+      const t = L.t;
+      if (candidates[candidates.length - 1] !== t) candidates.push(t);
+    }
+
+    let bestStart = 0;
+    let bestCount = -1;
+    let bestDist = Infinity;
+    for (const start of candidates) {
+      if (start > trackEnd) break;
+      let count = 0;
+      for (const L of synced) {
+        if (L.t < start) continue;
+        if (L.t >= start + dur) break;
+        count += 1;
+      }
+      const dist = Math.abs(start - ideal);
+      const better =
+        count > bestCount ||
+        (count === bestCount &&
+          (dist < bestDist - 3 || (Math.abs(dist - bestDist) <= 3 && start < bestStart)));
+      if (better) {
+        bestCount = count;
+        bestDist = dist;
+        bestStart = start;
+      }
     }
 
     return synced
-      .filter((l) => l.t >= firstT && l.t < firstT + dur + 4)
+      .filter((l) => l.t >= bestStart && l.t < bestStart + dur + 2)
       .slice(0, 24)
-      .map((l) => ({ t: Math.max(0, l.t - firstT), text: l.text }));
+      .map((l) => ({ t: Math.max(0, l.t - bestStart), text: l.text }));
   }
 
   const plain = plainToLines(payload?.plainLyrics).slice(0, 12);
@@ -106,11 +129,8 @@ async function fetchLrclib(artist, track, previewDur = 30) {
   const trackClean = sanitizeMusicQuery(rawT);
 
   try {
-    const [exact, fuzzy] = await Promise.all([
-      lrclibGet(artistClean, trackClean),
-      lrclibSearch(`${trackClean} ${artistClean}`)
-    ]);
-    const data = exact || fuzzy;
+    const exact = await lrclibGet(artistClean, trackClean);
+    const data = exact || (await lrclibSearch(`${trackClean} ${artistClean}`));
 
     if (!data) {
       return { ok: false, status: 404, error: "Sin letra para este tema." };
