@@ -191,6 +191,13 @@ const {
   upsertOverride,
   GRUPOS_VALIDOS
 } = require("./catalogoEjercicios");
+const {
+  asegurarTablaInvitacionesPresenciales,
+  crearInvitacionPresencial,
+  listarInvitacionesCoach,
+  previewInvitacion,
+  reclamarInvitacion
+} = require("./invitacionesPresenciales");
 const multer = require("multer");
 const uploadPdf = multer({
   storage: multer.memoryStorage(),
@@ -584,6 +591,7 @@ async function inicializarBD() {
     await ensureTablaPlantillasRutinaCoach(db);
     await ensureTablasPerfilSocial(db);
     await ensureTablaVeredictosMedidasIa(db);
+    await asegurarTablaInvitacionesPresenciales(db);
 
     await seedAlimentosMetodog(db);
     console.log("✅ Base de datos conectada (suscripciones atleta/coach + tiers).");
@@ -4125,6 +4133,61 @@ app.post("/api/solicitudes-vinculo/:id/responder", async (req, res) => {
   } catch (err) {
     console.error("Error responder solicitud:", err.message);
     res.status(500).json({ error: err.message });
+  }
+});
+
+/** Alta presencial: coach crea borrador + código de reclamo. */
+app.post("/api/coach/invitaciones-presenciales", async (req, res) => {
+  if (!(await assertCoachOAdmin(db, req, res))) return;
+  try {
+    const result = await crearInvitacionPresencial(db, req.user, req.body || {}, evaluarSuscripcionCoach);
+    if (!result.ok) return res.status(result.status || 400).json({ error: result.error });
+    res.json({ invitacion: result.invitacion });
+  } catch (err) {
+    console.error("Error crear invitación presencial:", err.message);
+    res.status(500).json({ error: mensajeErrorDb(err) });
+  }
+});
+
+app.get("/api/coach/invitaciones-presenciales", async (req, res) => {
+  if (!(await assertCoachOAdmin(db, req, res))) return;
+  try {
+    const result = await listarInvitacionesCoach(db, req.user);
+    if (!result.ok) return res.status(result.status || 400).json({ error: result.error });
+    res.json({ invitaciones: result.invitaciones });
+  } catch (err) {
+    console.error("Error listar invitaciones presencial:", err.message);
+    res.status(500).json({ error: mensajeErrorDb(err) });
+  }
+});
+
+/** Público: preview de código de reclamo (sin auth). */
+app.get("/api/invitaciones-presenciales/preview", async (req, res) => {
+  try {
+    const result = await previewInvitacion(db, req.query?.codigo);
+    if (!result.ok) return res.status(result.status || 400).json({ error: result.error });
+    res.json({ preview: result.preview });
+  } catch (err) {
+    console.error("Error preview invitación:", err.message);
+    res.status(500).json({ error: mensajeErrorDb(err) });
+  }
+});
+
+/** Público: reclamar código → cuenta + vínculo + mediciones. */
+app.post("/api/invitaciones-presenciales/reclamar", async (req, res) => {
+  try {
+    const result = await reclamarInvitacion(db, req.body || {}, {
+      signToken,
+      sanitizeUsuario,
+      enrichUsuarioConSuscripcion,
+      enrichUsuarioVinculo,
+      evaluarSuscripcionCoach
+    });
+    if (!result.ok) return res.status(result.status || 400).json({ error: result.error });
+    res.json({ usuario: result.usuario, token: result.token });
+  } catch (err) {
+    console.error("Error reclamar invitación:", err.message);
+    res.status(500).json({ error: mensajeErrorDb(err) });
   }
 });
 
