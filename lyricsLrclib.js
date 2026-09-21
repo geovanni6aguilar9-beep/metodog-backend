@@ -39,18 +39,21 @@ function buildLyricTimeline(payload, previewDur = 30) {
   const synced = parseLrc(payload?.syncedLyrics);
   const dur = Math.max(20, Number(previewDur) || 30);
 
-  if (synced.length) {
-    const trackEnd = synced[synced.length - 1].t || dur;
-    const ideal = Math.max(0, trackEnd * 0.35 - dur * 0.15);
-    const candidates = [0];
-    for (const L of synced) {
-      const t = L.t;
-      if (candidates[candidates.length - 1] !== t) candidates.push(t);
-    }
+  // Solo LRC timed; sin sync confiable → timeline vacía (FE cae a Píldora).
+  if (synced.length < 6) return [];
 
-    let bestStart = 0;
-    let bestCount = -1;
-    let bestDist = Infinity;
+  const trackEnd = synced[synced.length - 1].t || dur;
+  const ideals = [0.28, 0.38, 0.48].map((p) => Math.max(0, trackEnd * p - dur * 0.15));
+  const candidates = [0];
+  for (const L of synced) {
+    const t = L.t;
+    if (candidates[candidates.length - 1] !== t) candidates.push(t);
+  }
+
+  let bestStart = 0;
+  let bestCount = -1;
+  let bestDist = Infinity;
+  for (const ideal of ideals) {
     for (const start of candidates) {
       if (start > trackEnd) break;
       let count = 0;
@@ -70,17 +73,15 @@ function buildLyricTimeline(payload, previewDur = 30) {
         bestStart = start;
       }
     }
-
-    return synced
-      .filter((l) => l.t >= bestStart && l.t < bestStart + dur + 2)
-      .slice(0, 24)
-      .map((l) => ({ t: Math.max(0, l.t - bestStart), text: l.text }));
   }
 
-  const plain = plainToLines(payload?.plainLyrics).slice(0, 12);
-  if (!plain.length) return [];
-  const step = Math.min(3, dur / Math.max(1, plain.length));
-  return plain.map((text, i) => ({ t: i * step, text }));
+  const timeline = synced
+    .filter((l) => l.t >= bestStart && l.t < bestStart + dur + 2)
+    .slice(0, 24)
+    .map((l) => ({ t: Math.max(0, l.t - bestStart), text: l.text }));
+
+  if (timeline.length < 4 || bestCount < 5) return [];
+  return timeline;
 }
 
 function lineAtTime(timeline, t) {
