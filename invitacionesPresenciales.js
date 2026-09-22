@@ -41,16 +41,26 @@ async function asegurarTablaInvitacionesPresenciales(db) {
     estatura REAL,
     peso_kg REAL,
     datos_medicion TEXT,
+    gustos TEXT,
+    disgustos TEXT,
+    enfermedades TEXT,
     status TEXT NOT NULL DEFAULT 'pending',
     cliente_id INTEGER,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     expires_at DATETIME,
     FOREIGN KEY(coach_id) REFERENCES usuarios(id)
   )`);
-  try {
-    await db.execute("ALTER TABLE perfiles_clientes ADD COLUMN telefono TEXT");
-  } catch {
-    /* ya existe */
+  for (const sql of [
+    "ALTER TABLE perfiles_clientes ADD COLUMN telefono TEXT",
+    "ALTER TABLE invitaciones_presenciales ADD COLUMN gustos TEXT",
+    "ALTER TABLE invitaciones_presenciales ADD COLUMN disgustos TEXT",
+    "ALTER TABLE invitaciones_presenciales ADD COLUMN enfermedades TEXT"
+  ]) {
+    try {
+      await db.execute(sql);
+    } catch {
+      /* ya existe */
+    }
   }
 }
 
@@ -69,6 +79,7 @@ async function codigoUnico(db) {
 /**
  * Coach crea borrador + código.
  * Body: nombre, email?, telefono?, objetivo?, genero?, edad?, estatura?, peso_kg?,
+ *       gustos?, disgustos?, enfermedades?,
  *       formula?, pliegues{}, grasa?, masa_magra?, tmb_katch?
  */
 async function crearInvitacionPresencial(db, coachUser, body, evaluarSuscripcionCoach) {
@@ -109,6 +120,9 @@ async function crearInvitacionPresencial(db, coachUser, body, evaluarSuscripcion
   const edad = Number(body?.edad) || null;
   const estatura = Number(body?.estatura) || null;
   const peso_kg = Number(body?.peso_kg) || null;
+  const gustos = String(body?.gustos || "").trim() || null;
+  const disgustos = String(body?.disgustos || "").trim() || null;
+  const enfermedades = String(body?.enfermedades || "").trim() || null;
 
   const datosMedicion = {
     formula: body?.formula || null,
@@ -125,8 +139,9 @@ async function crearInvitacionPresencial(db, coachUser, body, evaluarSuscripcion
 
   const ins = await db.execute({
     sql: `INSERT INTO invitaciones_presenciales
-      (coach_id, codigo, nombre, email, telefono, objetivo, genero, edad, estatura, peso_kg, datos_medicion, status, expires_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)`,
+      (coach_id, codigo, nombre, email, telefono, objetivo, genero, edad, estatura, peso_kg,
+       datos_medicion, gustos, disgustos, enfermedades, status, expires_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)`,
     args: [
       coachId,
       codigo,
@@ -139,6 +154,9 @@ async function crearInvitacionPresencial(db, coachUser, body, evaluarSuscripcion
       estatura,
       peso_kg,
       JSON.stringify(datosMedicion),
+      gustos,
+      disgustos,
+      enfermedades,
       expiresAt
     ]
   });
@@ -322,15 +340,21 @@ async function reclamarInvitacion(db, body, deps = {}) {
     datosMed = {};
   }
 
+  const gustosFinal = String(inv.gustos || "").trim() || String(inv.objetivo || "").trim() || "";
+  const disgustosFinal = String(inv.disgustos || "").trim() || "";
+  const enfermedadesFinal = String(inv.enfermedades || "").trim() || "";
+
   await db.execute({
     sql: `INSERT INTO perfiles_clientes (usuario_id, edad, estatura, peso_kg, genero, gustos, disgustos, enfermedades, intencion_atleta, telefono)
-          VALUES (?, ?, ?, ?, ?, ?, '', '', 'coach', ?)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'coach', ?)
           ON CONFLICT(usuario_id) DO UPDATE SET
             edad = COALESCE(excluded.edad, perfiles_clientes.edad),
             estatura = COALESCE(excluded.estatura, perfiles_clientes.estatura),
             peso_kg = COALESCE(excluded.peso_kg, perfiles_clientes.peso_kg),
             genero = COALESCE(excluded.genero, perfiles_clientes.genero),
-            gustos = COALESCE(excluded.gustos, perfiles_clientes.gustos),
+            gustos = COALESCE(NULLIF(excluded.gustos, ''), perfiles_clientes.gustos),
+            disgustos = COALESCE(NULLIF(excluded.disgustos, ''), perfiles_clientes.disgustos),
+            enfermedades = COALESCE(NULLIF(excluded.enfermedades, ''), perfiles_clientes.enfermedades),
             intencion_atleta = 'coach',
             telefono = COALESCE(excluded.telefono, perfiles_clientes.telefono)`,
     args: [
@@ -339,7 +363,9 @@ async function reclamarInvitacion(db, body, deps = {}) {
       inv.estatura != null ? Number(inv.estatura) : null,
       inv.peso_kg != null ? Number(inv.peso_kg) : null,
       inv.genero || null,
-      inv.objetivo || "",
+      gustosFinal,
+      disgustosFinal,
+      enfermedadesFinal,
       telefono
     ]
   });
