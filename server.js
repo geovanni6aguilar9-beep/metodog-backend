@@ -4718,11 +4718,8 @@ app.get("/api/auth/me", async (req, res) => {
     let usuario = sanitizeUsuario(row);
     usuario = await enrichUsuarioConSuscripcion(db, usuario);
     usuario = await enrichUsuarioVinculo(db, usuario);
-    const payload = { usuario };
-    if (usuario.rol !== req.user.rol) {
-      payload.token = signToken(usuario);
-    }
-    res.json(payload);
+    // Renovar JWT en cada ping → sesión se extiende al usar la app (no solo al login).
+    res.json({ usuario, token: signToken(usuario) });
   } catch (err) {
     console.error("auth/me:", err.message);
     res.status(503).json({ error: mensajeErrorDb(err), codigo: "db_temporal" });
