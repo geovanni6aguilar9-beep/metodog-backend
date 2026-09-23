@@ -4318,7 +4318,15 @@ app.get("/api/comunidad/:id", async (req, res) => {
       const allRes = await db.execute("SELECT id, nombre, email, rol, coach_id, calificacion, codigo_invitacion FROM usuarios");
       res.json(allRes.rows);
     } else if (user.rol === 'COACH') {
-      const coachRes = await db.execute({ sql: "SELECT id, nombre, email, rol FROM usuarios WHERE coach_id = ?", args: [req.params.id] });
+      const coachRes = await db.execute({
+        sql: `SELECT u.id, u.nombre, u.email, u.rol,
+                p.telefono AS telefono
+              FROM usuarios u
+              LEFT JOIN perfiles_clientes p ON p.usuario_id = u.id
+              WHERE u.coach_id = ?
+              ORDER BY u.nombre ASC`,
+        args: [req.params.id]
+      });
       res.json(coachRes.rows);
     } else { res.json([]); }
   } catch (err) { res.status(500).json({ error: err.message }); }
