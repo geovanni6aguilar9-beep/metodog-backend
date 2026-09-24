@@ -99,6 +99,12 @@ const {
   borrarFotoProgreso
 } = require("./fotosProgreso");
 const {
+  ensureTablaNotasExpediente,
+  listarNotasExpediente,
+  crearNotaExpediente,
+  borrarNotaExpediente
+} = require("./notasExpediente");
+const {
   ensureTablaPlantillasRutinaCoach,
   listarPlantillasRutinaCoach,
   obtenerPlantillaRutinaCoach,
@@ -588,6 +594,7 @@ async function inicializarBD() {
 
     await ensureTablaCuotaComboIa(db);
     await ensureTablaFotosProgreso(db);
+    await ensureTablaNotasExpediente(db);
     await ensureTablaPlantillasRutinaCoach(db);
     await ensureTablasPerfilSocial(db);
     await ensureTablaVeredictosMedidasIa(db);
@@ -4308,6 +4315,54 @@ app.delete("/api/clientes/:id/fotos-progreso/:fotoId", async (req, res) => {
     const fotoId = parseInt(req.params.fotoId, 10);
     if (!fotoId) return res.status(400).json({ error: "ID de foto inválido" });
     const out = await borrarFotoProgreso(db, { usuarioId, fotoId });
+    if (!out.ok) return res.status(out.status || 404).json({ error: out.error });
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/** Bitácora clínica coach → alumno. */
+app.get("/api/clientes/:id/notas-expediente", async (req, res) => {
+  if (!(await assertAccesoUsuario(db, req, res, req.params.id))) return;
+  try {
+    const clienteId = parseInt(req.params.id, 10);
+    const notas = await listarNotasExpediente(db, clienteId);
+    res.json({ notas });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/clientes/:id/notas-expediente", async (req, res) => {
+  if (!(await assertCoachOAdmin(db, req, res))) return;
+  if (!(await assertAccesoUsuarioEdicion(db, req, res, req.params.id))) return;
+  try {
+    const clienteId = parseInt(req.params.id, 10);
+    const out = await crearNotaExpediente(db, {
+      clienteId,
+      coachId: req.user.id,
+      texto: req.body?.texto
+    });
+    if (!out.ok) return res.status(out.status || 400).json({ error: out.error });
+    res.status(201).json({ nota: out.nota });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete("/api/clientes/:id/notas-expediente/:notaId", async (req, res) => {
+  if (!(await assertCoachOAdmin(db, req, res))) return;
+  if (!(await assertAccesoUsuarioEdicion(db, req, res, req.params.id))) return;
+  try {
+    const clienteId = parseInt(req.params.id, 10);
+    const notaId = parseInt(req.params.notaId, 10);
+    const out = await borrarNotaExpediente(db, {
+      clienteId,
+      notaId,
+      coachId: req.user.id,
+      esAdmin: req.user.rol === "SUPERADMIN"
+    });
     if (!out.ok) return res.status(out.status || 404).json({ error: out.error });
     res.json({ ok: true });
   } catch (err) {
