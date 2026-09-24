@@ -105,6 +105,10 @@ const {
   borrarNotaExpediente
 } = require("./notasExpediente");
 const {
+  ensureColumnasFechaAsignacionPlanes,
+  reiniciarFechaAsignacionPlan
+} = require("./planesTimeline");
+const {
   ensureTablaPlantillasRutinaCoach,
   listarPlantillasRutinaCoach,
   obtenerPlantillaRutinaCoach,
@@ -595,6 +599,7 @@ async function inicializarBD() {
     await ensureTablaCuotaComboIa(db);
     await ensureTablaFotosProgreso(db);
     await ensureTablaNotasExpediente(db);
+    await ensureColumnasFechaAsignacionPlanes(db);
     await ensureTablaPlantillasRutinaCoach(db);
     await ensureTablasPerfilSocial(db);
     await ensureTablaVeredictosMedidasIa(db);
@@ -2591,7 +2596,13 @@ app.post("/api/dietas/guardar", async (req, res) => {
       macros_totales
     );
     await db.execute({
-      sql: `INSERT INTO dietas (usuario_id, datos_dieta, macros_totales, notas_dieta) VALUES (?, ?, ?, ?) ON CONFLICT(usuario_id) DO UPDATE SET datos_dieta = excluded.datos_dieta, macros_totales = excluded.macros_totales, notas_dieta = excluded.notas_dieta`,
+      sql: `INSERT INTO dietas (usuario_id, datos_dieta, macros_totales, notas_dieta, ultima_actualizacion, fecha_asignacion)
+      VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))
+      ON CONFLICT(usuario_id) DO UPDATE SET
+        datos_dieta = excluded.datos_dieta,
+        macros_totales = excluded.macros_totales,
+        notas_dieta = excluded.notas_dieta,
+        ultima_actualizacion = datetime('now')`,
       args: [usuario_id, JSON.stringify(datos_dieta), JSON.stringify(macrosMerged), notas_dieta ?? ""]
     });
     await notificarClientePlanActualizado(db, req, usuario_id, "plan_dieta", {
@@ -2916,7 +2927,12 @@ app.post("/api/rutinas/guardar", async (req, res) => {
   if (!(await assertAccesoUsuarioEdicion(db, req, res, usuario_id))) return;
   try {
     await db.execute({
-      sql: `INSERT INTO rutinas (usuario_id, datos_rutina, notas_generales) VALUES (?, ?, ?) ON CONFLICT(usuario_id) DO UPDATE SET datos_rutina = excluded.datos_rutina, notas_generales = excluded.notas_generales`,
+      sql: `INSERT INTO rutinas (usuario_id, datos_rutina, notas_generales, ultima_actualizacion, fecha_asignacion)
+      VALUES (?, ?, ?, datetime('now'), datetime('now'))
+      ON CONFLICT(usuario_id) DO UPDATE SET
+        datos_rutina = excluded.datos_rutina,
+        notas_generales = excluded.notas_generales,
+        ultima_actualizacion = datetime('now')`,
       args: [usuario_id, JSON.stringify(datos_rutina), JSON.stringify(notas_generales)]
     });
     await notificarClientePlanActualizado(db, req, usuario_id, "plan_rutina", {
@@ -4219,8 +4235,8 @@ app.post("/api/admin/seed-meso2-rutina", async (req, res) => {
       .reduce((acc, d) => acc + (datos_rutina[d]?.length || 0), 0);
 
     const result = await db.execute({
-      sql: `INSERT INTO rutinas (usuario_id, datos_rutina, notas_generales, ultima_actualizacion)
-            VALUES (?, ?, ?, datetime('now'))
+      sql: `INSERT INTO rutinas (usuario_id, datos_rutina, notas_generales, ultima_actualizacion, fecha_asignacion)
+            VALUES (?, ?, ?, datetime('now'), datetime('now'))
             ON CONFLICT(usuario_id) DO UPDATE SET
               datos_rutina = excluded.datos_rutina,
               notas_generales = excluded.notas_generales,
@@ -4256,13 +4272,15 @@ app.get("/api/clientes/:id/resumen", async (req, res) => {
 
     const histRes = await db.execute({ sql: "SELECT id, peso, grasa, datos_extra, fecha FROM mediciones WHERE usuario_id = ? ORDER BY fecha DESC", args: [req.params.id] });
 
-    const rutinaRes = await db.execute({ sql: "SELECT datos_rutina, ultima_actualizacion FROM rutinas WHERE usuario_id = ?", args: [req.params.id] });
-    const dietaRes = await db.execute({ sql: "SELECT datos_dieta, ultima_actualizacion FROM dietas WHERE usuario_id = ?", args: [req.params.id] });
+    const rutinaRes = await db.execute({ sql: "SELECT datos_rutina, ultima_actualizacion, fecha_asignacion FROM rutinas WHERE usuario_id = ?", args: [req.params.id] });
+    const dietaRes = await db.execute({ sql: "SELECT datos_dieta, ultima_actualizacion, fecha_asignacion FROM dietas WHERE usuario_id = ?", args: [req.params.id] });
     const rutRow = rutinaRes.rows[0];
     const dietRow = dietaRes.rows[0];
     const planes = {
       rutina_ultima: rutRow?.ultima_actualizacion || null,
       dieta_ultima: dietRow?.ultima_actualizacion || null,
+      rutina_asignada: rutRow?.fecha_asignacion || rutRow?.ultima_actualizacion || null,
+      dieta_asignada: dietRow?.fecha_asignacion || dietRow?.ultima_actualizacion || null,
       tiene_rutina: typeof rutinaTieneContenido === "function" ? rutinaTieneContenido(rutRow?.datos_rutina) : !!(rutRow?.datos_rutina),
       tiene_dieta: !!(dietRow?.datos_dieta && String(dietRow.datos_dieta).length > 8)
     };
@@ -4274,6 +4292,27 @@ app.get("/api/clientes/:id/resumen", async (req, res) => {
       planes
     });
   } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+/** Reinicia conteo de ciclo (nueva rutina/dieta). */
+app.post("/api/clientes/:id/planes/reiniciar-ciclo", async (req, res) => {
+  if (!(await assertCoachOAdmin(db, req, res))) return;
+  if (!(await assertAccesoUsuarioEdicion(db, req, res, req.params.id))) return;
+  try {
+    const out = await reiniciarFechaAsignacionPlan(db, {
+      usuarioId: req.params.id,
+      tipo: req.body?.tipo
+    });
+    if (!out.ok) return res.status(out.status || 400).json({ error: out.error });
+    res.json({
+      ok: true,
+      tipo: out.tipo,
+      fecha_asignacion: out.fecha_asignacion,
+      ultima_actualizacion: out.ultima_actualizacion
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 /** Fotos de progreso corporal (frente / lado / espalda). */
