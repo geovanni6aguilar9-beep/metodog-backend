@@ -4240,23 +4240,31 @@ app.post("/api/admin/seed-meso2-rutina", async (req, res) => {
 app.get("/api/clientes/:id/resumen", async (req, res) => {
   if (!(await assertAccesoUsuario(db, req, res, req.params.id))) return;
   try {
-    // 1. Obtener datos base del usuario
+    const clienteId = parseInt(req.params.id, 10);
     const infoRes = await db.execute({ sql: "SELECT nombre, email, fecha_inicio FROM usuarios WHERE id = ?", args: [req.params.id] });
     if (infoRes.rows.length === 0) return res.status(404).json({ error: "Usuario no encontrado" });
-    
-    // 2. Obtener su perfil extendido (si no lo ha llenado, manda valores vacíos por defecto)
+
     const perfilRes = await db.execute({ sql: "SELECT edad, estatura, peso_kg, genero, gustos, disgustos, enfermedades, intencion_atleta FROM perfiles_clientes WHERE usuario_id = ?", args: [req.params.id] });
     const perfil = perfilRes.rows.length > 0 ? perfilRes.rows[0] : { edad: null, estatura: null, peso_kg: null, genero: null, gustos: "", disgustos: "", enfermedades: "", intencion_atleta: null };
 
-    // 3. Obtener su historial de pesajes ordenados del más reciente al más antiguo
     const histRes = await db.execute({ sql: "SELECT id, peso, grasa, datos_extra, fecha FROM mediciones WHERE usuario_id = ? ORDER BY fecha DESC", args: [req.params.id] });
-    
-    // Mandamos las 3 piezas de información en una sola respuesta limpia
-    const clienteId = parseInt(req.params.id, 10);
-    res.json({ 
-      info: { id: clienteId, ...infoRes.rows[0] }, 
-      perfil: perfil,
-      historial: histRes.rows || [] 
+
+    const rutinaRes = await db.execute({ sql: "SELECT datos_rutina, ultima_actualizacion FROM rutinas WHERE usuario_id = ?", args: [req.params.id] });
+    const dietaRes = await db.execute({ sql: "SELECT datos_dieta, ultima_actualizacion FROM dietas WHERE usuario_id = ?", args: [req.params.id] });
+    const rutRow = rutinaRes.rows[0];
+    const dietRow = dietaRes.rows[0];
+    const planes = {
+      rutina_ultima: rutRow?.ultima_actualizacion || null,
+      dieta_ultima: dietRow?.ultima_actualizacion || null,
+      tiene_rutina: typeof rutinaTieneContenido === "function" ? rutinaTieneContenido(rutRow?.datos_rutina) : !!(rutRow?.datos_rutina),
+      tiene_dieta: !!(dietRow?.datos_dieta && String(dietRow.datos_dieta).length > 8)
+    };
+
+    res.json({
+      info: { id: clienteId, ...infoRes.rows[0] },
+      perfil,
+      historial: histRes.rows || [],
+      planes
     });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
