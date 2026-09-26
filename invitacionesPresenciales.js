@@ -27,6 +27,41 @@ function telefonoLimpio(raw) {
   return d.length >= 8 ? d : "";
 }
 
+/** Solo claves numéricas válidas (pliegues / perímetros). */
+function limpiarMapaMedidas(obj) {
+  if (!obj || typeof obj !== "object") return null;
+  const out = {};
+  for (const [k, v] of Object.entries(obj)) {
+    if (v === "" || v == null) continue;
+    const n = Number(v);
+    if (!Number.isFinite(n)) continue;
+    out[k] = n;
+  }
+  return Object.keys(out).length ? out : null;
+}
+
+function construirDatosExtraMedicion(datosMed) {
+  const pliegues = limpiarMapaMedidas(datosMed?.pliegues) || {};
+  const perimetros = limpiarMapaMedidas(datosMed?.perimetros) || {};
+  const sumaPliegues = Object.values(pliegues).reduce((a, n) => a + n, 0);
+  return {
+    formula: datosMed?.formula || null,
+    ...pliegues,
+    ...perimetros,
+    pliegues: Object.keys(pliegues).length ? pliegues : null,
+    perimetros: Object.keys(perimetros).length ? perimetros : null,
+    _resultado: {
+      grasa: datosMed?.grasa ?? null,
+      masaMagra: datosMed?.masa_magra ?? null,
+      masaGrasa: datosMed?.masa_grasa ?? null,
+      tmbKatch: datosMed?.tmb_katch ?? null,
+      densidad: datosMed?.densidad ?? null,
+      sumaPliegues: sumaPliegues > 0 ? Math.round(sumaPliegues * 10) / 10 : null
+    },
+    origen: "consulta_presencial"
+  };
+}
+
 async function asegurarTablaInvitacionesPresenciales(db) {
   await db.execute(`CREATE TABLE IF NOT EXISTS invitaciones_presenciales (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -80,7 +115,7 @@ async function codigoUnico(db) {
  * Coach crea borrador + código.
  * Body: nombre, email?, telefono?, objetivo?, genero?, edad?, estatura?, peso_kg?,
  *       gustos?, disgustos?, enfermedades?,
- *       formula?, pliegues{}, grasa?, masa_magra?, tmb_katch?
+ *       formula?, pliegues{}, perimetros{}, grasa?, masa_magra?, tmb_katch?
  */
 async function crearInvitacionPresencial(db, coachUser, body, evaluarSuscripcionCoach) {
   const coachId = Number(coachUser?.id);
@@ -126,7 +161,8 @@ async function crearInvitacionPresencial(db, coachUser, body, evaluarSuscripcion
 
   const datosMedicion = {
     formula: body?.formula || null,
-    pliegues: body?.pliegues || null,
+    pliegues: limpiarMapaMedidas(body?.pliegues),
+    perimetros: limpiarMapaMedidas(body?.perimetros),
     grasa: body?.grasa != null ? Number(body.grasa) : null,
     masa_magra: body?.masa_magra != null ? Number(body.masa_magra) : null,
     masa_grasa: body?.masa_grasa != null ? Number(body.masa_grasa) : null,
@@ -370,19 +406,9 @@ async function reclamarInvitacion(db, body, deps = {}) {
     ]
   });
 
-  if (inv.peso_kg != null || datosMed.grasa != null) {
-    const extra = JSON.stringify({
-      formula: datosMed.formula || null,
-      pliegues: datosMed.pliegues || null,
-      _resultado: {
-        grasa: datosMed.grasa,
-        masaMagra: datosMed.masa_magra,
-        masaGrasa: datosMed.masa_grasa,
-        tmbKatch: datosMed.tmb_katch,
-        densidad: datosMed.densidad
-      },
-      origen: "consulta_presencial"
-    });
+  const hayPerimetros = !!(datosMed.perimetros && Object.keys(datosMed.perimetros).length);
+  if (inv.peso_kg != null || datosMed.grasa != null || hayPerimetros) {
+    const extra = JSON.stringify(construirDatosExtraMedicion(datosMed));
     await db.execute({
       sql: "INSERT INTO mediciones (usuario_id, peso, grasa, datos_extra) VALUES (?, ?, ?, ?)",
       args: [
