@@ -3967,6 +3967,56 @@ app.post("/api/clientes/guardar-perfil", async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+/** Archiva planes 30d y pone coach_id = NULL. */
+async function desvincularClienteDeSuCoach(dbConn, clienteId) {
+  const cid = parseInt(clienteId, 10);
+  if (!cid) return { ok: false, status: 400, error: "cliente_id inválido" };
+  const userRes = await dbConn.execute({
+    sql: "SELECT id, coach_id FROM usuarios WHERE id = ?",
+    args: [cid]
+  });
+  if (!userRes.rows?.length) return { ok: false, status: 404, error: "Cliente no encontrado" };
+  const cliente = userRes.rows[0];
+  if (!cliente.coach_id) return { ok: false, status: 400, error: "No tiene coach asignado" };
+
+  const coachId = cliente.coach_id;
+  const archivadoHasta = new Date();
+  archivadoHasta.setDate(archivadoHasta.getDate() + 30);
+  const hastaISO = archivadoHasta.toISOString();
+
+  const rutinaRes = await dbConn.execute({
+    sql: "SELECT datos_rutina, notas_generales FROM rutinas WHERE usuario_id = ?",
+    args: [cid]
+  });
+  if (rutinaRes.rows.length > 0) {
+    await dbConn.execute({
+      sql: "INSERT INTO planes_archivados (cliente_id, coach_id, tipo, datos_json, archivado_hasta) VALUES (?, ?, ?, ?, ?)",
+      args: [cid, coachId, "rutina", JSON.stringify(rutinaRes.rows[0]), hastaISO]
+    });
+  }
+  const dietaRes = await dbConn.execute({
+    sql: "SELECT datos_dieta, macros_totales, notas_dieta FROM dietas WHERE usuario_id = ?",
+    args: [cid]
+  });
+  if (dietaRes.rows.length > 0) {
+    await dbConn.execute({
+      sql: "INSERT INTO planes_archivados (cliente_id, coach_id, tipo, datos_json, archivado_hasta) VALUES (?, ?, ?, ?, ?)",
+      args: [cid, coachId, "dieta", JSON.stringify(dietaRes.rows[0]), hastaISO]
+    });
+  }
+
+  await cancelarSolicitudesPendientesCliente(dbConn, cid);
+
+  const updateRes = await dbConn.execute({
+    sql: "UPDATE usuarios SET coach_id = NULL WHERE id = ?",
+    args: [cid]
+  });
+  if ((updateRes.rowsAffected ?? 0) === 0) {
+    return { ok: false, status: 500, error: "No se pudo actualizar el vínculo" };
+  }
+  return { ok: true, archivado_hasta: hastaISO };
+}
+
 app.post("/api/clientes/desvincular-coach", async (req, res) => {
   const { cliente_id } = req.body;
   if (!cliente_id) return res.status(400).json({ error: "cliente_id requerido" });
@@ -3974,40 +4024,79 @@ app.post("/api/clientes/desvincular-coach", async (req, res) => {
     return res.status(403).json({ error: "Solo puedes desvincular tu propia cuenta" });
   }
   try {
-    const userRes = await db.execute({ sql: "SELECT id, coach_id FROM usuarios WHERE id = ?", args: [cliente_id] });
-    if (userRes.rows.length === 0) return res.status(404).json({ error: "Cliente no encontrado" });
-    const cliente = userRes.rows[0];
-    if (!cliente.coach_id) return res.status(400).json({ error: "No tienes un coach asignado" });
-
-    const coachId = cliente.coach_id;
-    const archivadoHasta = new Date();
-    archivadoHasta.setDate(archivadoHasta.getDate() + 30);
-    const hastaISO = archivadoHasta.toISOString();
-
-    const rutinaRes = await db.execute({ sql: "SELECT datos_rutina, notas_generales FROM rutinas WHERE usuario_id = ?", args: [cliente_id] });
-    if (rutinaRes.rows.length > 0) {
-      await db.execute({
-        sql: "INSERT INTO planes_archivados (cliente_id, coach_id, tipo, datos_json, archivado_hasta) VALUES (?, ?, ?, ?, ?)",
-        args: [cliente_id, coachId, "rutina", JSON.stringify(rutinaRes.rows[0]), hastaISO]
-      });
-    }
-    const dietaRes = await db.execute({ sql: "SELECT datos_dieta, macros_totales, notas_dieta FROM dietas WHERE usuario_id = ?", args: [cliente_id] });
-    if (dietaRes.rows.length > 0) {
-      await db.execute({
-        sql: "INSERT INTO planes_archivados (cliente_id, coach_id, tipo, datos_json, archivado_hasta) VALUES (?, ?, ?, ?, ?)",
-        args: [cliente_id, coachId, "dieta", JSON.stringify(dietaRes.rows[0]), hastaISO]
-      });
-    }
-
-    await cancelarSolicitudesPendientesCliente(db, cliente_id);
-
-    const updateRes = await db.execute({ sql: "UPDATE usuarios SET coach_id = NULL WHERE id = ?", args: [cliente_id] });
-    if ((updateRes.rowsAffected ?? 0) === 0) {
-      return res.status(500).json({ error: "No se pudo actualizar el vínculo" });
-    }
-    res.json({ mensaje: "Desvinculado correctamente", archivado_hasta: hastaISO });
+    const out = await desvincularClienteDeSuCoach(db, cliente_id);
+    if (!out.ok) return res.status(out.status || 400).json({ error: out.error });
+    res.json({ mensaje: "Desvinculado correctamente", archivado_hasta: out.archivado_hasta });
   } catch (err) {
     console.error("Error desvincular coach:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/** Coach / SUPERADMIN: quita al atleta de la cartera (coach_id → NULL). Archiva planes 30 días. */
+app.post("/api/coach/desvincular-alumno", async (req, res) => {
+  if (!(await assertCoachOAdmin(db, req, res))) return;
+  const clienteId = parseInt(req.body?.cliente_id, 10);
+  if (!clienteId) return res.status(400).json({ error: "cliente_id requerido" });
+  try {
+    const userRes = await db.execute({
+      sql: "SELECT id, rol, coach_id, nombre FROM usuarios WHERE id = ?",
+      args: [clienteId]
+    });
+    if (!userRes.rows?.length) return res.status(404).json({ error: "Atleta no encontrado" });
+    const cliente = userRes.rows[0];
+    if (cliente.rol !== "CLIENTE") {
+      return res.status(400).json({ error: "Solo se pueden desvincular cuentas de atleta." });
+    }
+    if (!cliente.coach_id) {
+      return res.status(400).json({ error: "Este atleta no tiene coach asignado." });
+    }
+    if (req.user.rol === "COACH" && Number(cliente.coach_id) !== Number(req.user.id)) {
+      return res.status(403).json({ error: "Solo puedes desvincular atletas de tu cartera." });
+    }
+
+    const out = await desvincularClienteDeSuCoach(db, clienteId);
+    if (!out.ok) return res.status(out.status || 400).json({ error: out.error });
+    res.json({
+      mensaje: "Atleta desvinculado",
+      cliente_id: clienteId,
+      nombre: cliente.nombre,
+      archivado_hasta: out.archivado_hasta
+    });
+  } catch (err) {
+    console.error("Error coach desvincular alumno:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/** Cancela código presencial pendiente (coach dueño o SUPERADMIN). */
+app.delete("/api/coach/invitaciones-presenciales/:id", async (req, res) => {
+  if (!(await assertCoachOAdmin(db, req, res))) return;
+  try {
+    const invId = parseInt(req.params.id, 10);
+    if (!invId) return res.status(400).json({ error: "ID inválido" });
+    const hit = await db.execute({
+      sql: "SELECT id, coach_id, status FROM invitaciones_presenciales WHERE id = ?",
+      args: [invId]
+    });
+    if (!hit.rows?.length) return res.status(404).json({ error: "Invitación no encontrada" });
+    const row = hit.rows[0];
+    if (req.user.rol === "COACH" && Number(row.coach_id) !== Number(req.user.id)) {
+      return res.status(403).json({ error: "No es tu invitación." });
+    }
+    if (row.status !== "pending") {
+      return res.status(400).json({ error: "Solo se pueden cancelar códigos pendientes." });
+    }
+    const del = await db.execute({
+      sql: "UPDATE invitaciones_presenciales SET status = 'cancelled' WHERE id = ? AND status = 'pending'",
+      args: [invId]
+    });
+    if ((del.rowsAffected ?? 0) === 0) {
+      return res.status(500).json({ error: "No se pudo cancelar." });
+    }
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("Error cancelar invitación presencial:", err.message);
     res.status(500).json({ error: err.message });
   }
 });
