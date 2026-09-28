@@ -621,6 +621,122 @@ async function cuentaEsProvisionalPendiente(db, usuarioId) {
   return !!(r.rows && r.rows.length);
 }
 
+/** Corrige nombre/tel/email de una consulta pendiente (y sync cuenta provisional si existe). */
+async function editarInvitacionPresencial(db, coachUser, invitacionId, body = {}) {
+  const coachId = Number(coachUser?.id);
+  const invId = Number(invitacionId);
+  if (!coachId || !invId) return { ok: false, status: 400, error: "Datos inválidos." };
+  if (!["COACH", "SUPERADMIN"].includes(coachUser?.rol)) {
+    return { ok: false, status: 403, error: "No autorizado." };
+  }
+
+  const hit = await db.execute({
+    sql: "SELECT * FROM invitaciones_presenciales WHERE id = ? LIMIT 1",
+    args: [invId]
+  });
+  if (!hit.rows?.length) return { ok: false, status: 404, error: "Invitación no encontrada." };
+  const inv = hit.rows[0];
+  if (coachUser.rol === "COACH" && Number(inv.coach_id) !== coachId) {
+    return { ok: false, status: 403, error: "No es tu consulta." };
+  }
+  if (inv.status !== "pending") {
+    return { ok: false, status: 400, error: "Solo se editan consultas pendientes." };
+  }
+
+  const nombre = body.nombre != null ? String(body.nombre).trim() : String(inv.nombre || "").trim();
+  if (nombre.length < 2) return { ok: false, status: 400, error: "Indica un nombre válido." };
+
+  const emailRaw = body.email != null ? String(body.email).toLowerCase().trim() : (inv.email || "");
+  const email = emailRaw || null;
+  if (email && !email.includes("@")) {
+    return { ok: false, status: 400, error: "Correo inválido." };
+  }
+
+  const telefono =
+    body.telefono != null ? telefonoLimpio(body.telefono) || null : telefonoLimpio(inv.telefono) || null;
+
+  await db.execute({
+    sql: `UPDATE invitaciones_presenciales
+          SET nombre = ?, email = ?, telefono = ?
+          WHERE id = ? AND status = 'pending'`,
+    args: [nombre, email, telefono, invId]
+  });
+
+  if (inv.cliente_id != null) {
+    const cid = Number(inv.cliente_id);
+    await db.execute({
+      sql: "UPDATE usuarios SET nombre = ? WHERE id = ?",
+      args: [nombre, cid]
+    });
+    if (telefono) {
+      try {
+        await db.execute({
+          sql: `UPDATE perfiles_clientes SET telefono = ? WHERE usuario_id = ?`,
+          args: [telefono, cid]
+        });
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+
+  return {
+    ok: true,
+    invitacion: {
+      id: invId,
+      nombre,
+      email,
+      telefono,
+      codigo: inv.codigo,
+      status: "pending",
+      cliente_id: inv.cliente_id != null ? Number(inv.cliente_id) : null
+    }
+  };
+}
+
+/** Corrige nombre/teléfono de un atleta activo en cartera. */
+async function editarAlumnoCartera(db, coachUser, clienteId, body = {}) {
+  const coachId = Number(coachUser?.id);
+  const cid = Number(clienteId);
+  if (!coachId || !cid) return { ok: false, status: 400, error: "Datos inválidos." };
+  if (!["COACH", "SUPERADMIN"].includes(coachUser?.rol)) {
+    return { ok: false, status: 403, error: "No autorizado." };
+  }
+
+  const hit = await db.execute({
+    sql: "SELECT id, rol, coach_id, nombre, email FROM usuarios WHERE id = ? LIMIT 1",
+    args: [cid]
+  });
+  if (!hit.rows?.length) return { ok: false, status: 404, error: "Atleta no encontrado." };
+  const u = hit.rows[0];
+  if (u.rol !== "CLIENTE") return { ok: false, status: 400, error: "Solo atletas." };
+  if (coachUser.rol === "COACH" && Number(u.coach_id) !== coachId) {
+    return { ok: false, status: 403, error: "Solo atletas de tu cartera." };
+  }
+
+  const nombre = body.nombre != null ? String(body.nombre).trim() : String(u.nombre || "").trim();
+  if (nombre.length < 2) return { ok: false, status: 400, error: "Indica un nombre válido." };
+  const telefono = body.telefono != null ? telefonoLimpio(body.telefono) || null : undefined;
+
+  await db.execute({
+    sql: "UPDATE usuarios SET nombre = ? WHERE id = ?",
+    args: [nombre, cid]
+  });
+  if (telefono !== undefined) {
+    await db.execute({
+      sql: `INSERT INTO perfiles_clientes (usuario_id, telefono)
+            VALUES (?, ?)
+            ON CONFLICT(usuario_id) DO UPDATE SET telefono = excluded.telefono`,
+      args: [cid, telefono]
+    });
+  }
+
+  return {
+    ok: true,
+    cliente: { id: cid, nombre, email: u.email, telefono: telefono !== undefined ? telefono : null }
+  };
+}
+
 module.exports = {
   asegurarTablaInvitacionesPresenciales,
   crearInvitacionPresencial,
@@ -630,6 +746,8 @@ module.exports = {
   prepararPlanInvitacion,
   limpiarClienteProvisionalPendiente,
   cuentaEsProvisionalPendiente,
+  editarInvitacionPresencial,
+  editarAlumnoCartera,
   normalizarCodigoReclamo,
   DIAS_EXPIRA
 };

@@ -209,7 +209,9 @@ const {
   reclamarInvitacion,
   prepararPlanInvitacion,
   limpiarClienteProvisionalPendiente,
-  cuentaEsProvisionalPendiente
+  cuentaEsProvisionalPendiente,
+  editarInvitacionPresencial,
+  editarAlumnoCartera
 } = require("./invitacionesPresenciales");
 const multer = require("multer");
 const uploadPdf = multer({
@@ -4117,6 +4119,32 @@ app.post("/api/coach/invitaciones-presenciales/:id/preparar-plan", async (req, r
     res.json({ cliente: result.cliente });
   } catch (err) {
     console.error("Error preparar plan presencial:", err.message);
+    res.status(500).json({ error: mensajeErrorDb(err) });
+  }
+});
+
+/** Edita nombre/tel/email de consulta pendiente. */
+app.patch("/api/coach/invitaciones-presenciales/:id", async (req, res) => {
+  if (!(await assertCoachOAdmin(db, req, res))) return;
+  try {
+    const result = await editarInvitacionPresencial(db, req.user, req.params.id, req.body || {});
+    if (!result.ok) return res.status(result.status || 400).json({ error: result.error });
+    res.json({ invitacion: result.invitacion });
+  } catch (err) {
+    console.error("Error editar invitación presencial:", err.message);
+    res.status(500).json({ error: mensajeErrorDb(err) });
+  }
+});
+
+/** Edita nombre/teléfono de atleta activo. */
+app.patch("/api/coach/alumnos/:id", async (req, res) => {
+  if (!(await assertCoachOAdmin(db, req, res))) return;
+  try {
+    const result = await editarAlumnoCartera(db, req.user, req.params.id, req.body || {});
+    if (!result.ok) return res.status(result.status || 400).json({ error: result.error });
+    res.json({ cliente: result.cliente });
+  } catch (err) {
+    console.error("Error editar alumno:", err.message);
     res.status(500).json({ error: mensajeErrorDb(err) });
   }
 });
