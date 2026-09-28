@@ -117,6 +117,14 @@ const {
   borrarPlantillaRutinaCoach
 } = require("./plantillasRutinaCoach");
 const {
+  ensureTablaPlantillasDietaCoach,
+  listarPlantillasDietaCoach,
+  obtenerPlantillaDietaCoach,
+  crearPlantillaDietaCoach,
+  renombrarPlantillaDietaCoach,
+  borrarPlantillaDietaCoach
+} = require("./plantillasDietaCoach");
+const {
   ensureTablasPerfilSocial,
   obtenerYo: obtenerPerfilSocialYo,
   guardarYo: guardarPerfilSocialYo,
@@ -606,6 +614,7 @@ async function inicializarBD() {
     await ensureTablaNotasExpediente(db);
     await ensureColumnasFechaAsignacionPlanes(db);
     await ensureTablaPlantillasRutinaCoach(db);
+    await ensureTablaPlantillasDietaCoach(db);
     await ensureTablasPerfilSocial(db);
     await ensureTablaVeredictosMedidasIa(db);
     await asegurarTablaInvitacionesPresenciales(db);
@@ -1951,6 +1960,80 @@ app.delete("/api/coach/plantillas-rutina/:id", async (req, res) => {
     res.json({ ok: true, id: result.id });
   } catch (err) {
     console.error("DELETE plantillas-rutina/:id:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/** Plantillas de dieta del coach (comidas + macros objetivo + notas). */
+app.get("/api/coach/plantillas-dieta", async (req, res) => {
+  if (!(await assertCoachOAdmin(db, req, res))) return;
+  try {
+    const plantillas = await listarPlantillasDietaCoach(db, parseInt(req.user.id, 10));
+    res.json({ plantillas });
+  } catch (err) {
+    console.error("GET plantillas-dieta:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/api/coach/plantillas-dieta/:id", async (req, res) => {
+  if (!(await assertCoachOAdmin(db, req, res))) return;
+  const id = parseInt(req.params.id, 10);
+  if (!id) return res.status(400).json({ error: "ID inválido." });
+  try {
+    const plantilla = await obtenerPlantillaDietaCoach(db, parseInt(req.user.id, 10), id);
+    if (!plantilla) return res.status(404).json({ error: "Plantilla no encontrada." });
+    res.json({ plantilla });
+  } catch (err) {
+    console.error("GET plantillas-dieta/:id:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/coach/plantillas-dieta", async (req, res) => {
+  if (!(await assertCoachOAdmin(db, req, res))) return;
+  if (!(await assertCoachSuscripcionActiva(db, req, res))) return;
+  try {
+    const result = await crearPlantillaDietaCoach(db, parseInt(req.user.id, 10), req.body || {});
+    if (!result.ok) return res.status(result.status || 400).json({ error: result.error });
+    res.status(201).json({ ok: true, plantilla: result.plantilla });
+  } catch (err) {
+    console.error("POST plantillas-dieta:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put("/api/coach/plantillas-dieta/:id", async (req, res) => {
+  if (!(await assertCoachOAdmin(db, req, res))) return;
+  if (!(await assertCoachSuscripcionActiva(db, req, res))) return;
+  const id = parseInt(req.params.id, 10);
+  if (!id) return res.status(400).json({ error: "ID inválido." });
+  try {
+    const result = await renombrarPlantillaDietaCoach(
+      db,
+      parseInt(req.user.id, 10),
+      id,
+      req.body?.nombre
+    );
+    if (!result.ok) return res.status(result.status || 400).json({ error: result.error });
+    res.json({ ok: true, plantilla: result.plantilla });
+  } catch (err) {
+    console.error("PUT plantillas-dieta/:id:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete("/api/coach/plantillas-dieta/:id", async (req, res) => {
+  if (!(await assertCoachOAdmin(db, req, res))) return;
+  if (!(await assertCoachSuscripcionActiva(db, req, res))) return;
+  const id = parseInt(req.params.id, 10);
+  if (!id) return res.status(400).json({ error: "ID inválido." });
+  try {
+    const result = await borrarPlantillaDietaCoach(db, parseInt(req.user.id, 10), id);
+    if (!result.ok) return res.status(result.status || 400).json({ error: result.error });
+    res.json({ ok: true, id: result.id });
+  } catch (err) {
+    console.error("DELETE plantillas-dieta/:id:", err.message);
     res.status(500).json({ error: err.message });
   }
 });
@@ -3402,6 +3485,10 @@ async function eliminarUsuarioCompleto(db, userId) {
   });
   await db.execute({
     sql: "DELETE FROM plantillas_rutina_coach WHERE coach_id = ?",
+    args: [userId]
+  });
+  await db.execute({
+    sql: "DELETE FROM plantillas_dieta_coach WHERE coach_id = ?",
     args: [userId]
   });
   await borrarDatosSocialesUsuario(db, userId);
