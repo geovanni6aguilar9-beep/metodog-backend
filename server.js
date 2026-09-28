@@ -206,7 +206,10 @@ const {
   crearInvitacionPresencial,
   listarInvitacionesCoach,
   previewInvitacion,
-  reclamarInvitacion
+  reclamarInvitacion,
+  prepararPlanInvitacion,
+  limpiarClienteProvisionalPendiente,
+  cuentaEsProvisionalPendiente
 } = require("./invitacionesPresenciales");
 const multer = require("multer");
 const uploadPdf = multer({
@@ -4076,7 +4079,7 @@ app.delete("/api/coach/invitaciones-presenciales/:id", async (req, res) => {
     const invId = parseInt(req.params.id, 10);
     if (!invId) return res.status(400).json({ error: "ID inválido" });
     const hit = await db.execute({
-      sql: "SELECT id, coach_id, status FROM invitaciones_presenciales WHERE id = ?",
+      sql: "SELECT id, coach_id, status, cliente_id FROM invitaciones_presenciales WHERE id = ?",
       args: [invId]
     });
     if (!hit.rows?.length) return res.status(404).json({ error: "Invitación no encontrada" });
@@ -4087,6 +4090,7 @@ app.delete("/api/coach/invitaciones-presenciales/:id", async (req, res) => {
     if (row.status !== "pending") {
       return res.status(400).json({ error: "Solo se pueden cancelar códigos pendientes." });
     }
+    const clienteProv = row.cliente_id != null ? Number(row.cliente_id) : null;
     const del = await db.execute({
       sql: "UPDATE invitaciones_presenciales SET status = 'cancelled' WHERE id = ? AND status = 'pending'",
       args: [invId]
@@ -4094,10 +4098,26 @@ app.delete("/api/coach/invitaciones-presenciales/:id", async (req, res) => {
     if ((del.rowsAffected ?? 0) === 0) {
       return res.status(500).json({ error: "No se pudo cancelar." });
     }
+    if (clienteProv) {
+      await limpiarClienteProvisionalPendiente(db, clienteProv);
+    }
     res.json({ ok: true });
   } catch (err) {
     console.error("Error cancelar invitación presencial:", err.message);
     res.status(500).json({ error: err.message });
+  }
+});
+
+/** Abre cuenta provisional para armar rutina/dieta antes del reclamo. */
+app.post("/api/coach/invitaciones-presenciales/:id/preparar-plan", async (req, res) => {
+  if (!(await assertCoachOAdmin(db, req, res))) return;
+  try {
+    const result = await prepararPlanInvitacion(db, req.user, req.params.id);
+    if (!result.ok) return res.status(result.status || 400).json({ error: result.error });
+    res.json({ cliente: result.cliente });
+  } catch (err) {
+    console.error("Error preparar plan presencial:", err.message);
+    res.status(500).json({ error: mensajeErrorDb(err) });
   }
 });
 
@@ -4891,6 +4911,11 @@ app.post("/api/login", async (req, res) => {
     if (userRes.rows.length === 0) return res.status(401).json({ error: "Correo o contraseña incorrectos" });
     let user = userRes.rows[0];
     if (!bcrypt.compareSync(password, user.password)) return res.status(401).json({ error: "Correo o contraseña incorrectos" });
+    if (await cuentaEsProvisionalPendiente(db, user.id)) {
+      return res.status(403).json({
+        error: "Tu cuenta aún no está activada. Usa el código de reclamo que te dio tu coach."
+      });
+    }
     user = await asegurarRolSuperAdminPorEmail(db, user);
     let usuario = sanitizeUsuario(user);
     usuario = await enrichUsuarioConSuscripcion(db, usuario);

@@ -138,7 +138,8 @@ async function crearInvitacionPresencial(db, coachUser, body, evaluarSuscripcion
       args: [coachId]
     });
     const pendingRes = await db.execute({
-      sql: "SELECT COUNT(*) as c FROM invitaciones_presenciales WHERE coach_id = ? AND status = 'pending'",
+      sql: `SELECT COUNT(*) as c FROM invitaciones_presenciales
+            WHERE coach_id = ? AND status = 'pending' AND cliente_id IS NULL`,
       args: [coachId]
     });
     const ocupados =
@@ -250,7 +251,8 @@ async function listarInvitacionesCoach(db, coachUser) {
       expires_at: r.expires_at,
       cliente_id: r.cliente_id != null ? Number(r.cliente_id) : null,
       peso_kg: r.peso_kg != null ? Number(r.peso_kg) : null,
-      grasa
+      grasa,
+      plan_listo: r.cliente_id != null
     };
   });
 
@@ -297,6 +299,7 @@ async function previewInvitacion(db, codigoRaw) {
 
 /**
  * Cliente reclama código: crea cuenta + perfil + medición + vínculo coach.
+ * Si el coach ya usó «Preparar plan», solo activa email/contraseña sobre la cuenta provisional.
  */
 async function reclamarInvitacion(db, body, deps = {}) {
   const { signToken, sanitizeUsuario, enrichUsuarioConSuscripcion, enrichUsuarioVinculo, evaluarSuscripcionCoach } =
@@ -329,18 +332,22 @@ async function reclamarInvitacion(db, body, deps = {}) {
   }
 
   const coachId = Number(inv.coach_id);
+  const provisionalId = inv.cliente_id != null ? Number(inv.cliente_id) : null;
+
   if (typeof evaluarSuscripcionCoach === "function") {
     const sub = await evaluarSuscripcionCoach(db, coachId);
     if (!sub) {
       return { ok: false, status: 400, error: "Tu coach no tiene suscripción activa ahora." };
     }
-    const countRes = await db.execute({
-      sql: "SELECT COUNT(*) as count FROM usuarios WHERE coach_id = ?",
-      args: [coachId]
-    });
-    const count = Number(countRes.rows[0]?.count || 0);
-    if (sub.limite_efectivo && count >= Number(sub.limite_efectivo)) {
-      return { ok: false, status: 400, error: "Tu coach alcanzó el límite de alumnos." };
+    if (!provisionalId) {
+      const countRes = await db.execute({
+        sql: "SELECT COUNT(*) as count FROM usuarios WHERE coach_id = ?",
+        args: [coachId]
+      });
+      const count = Number(countRes.rows[0]?.count || 0);
+      if (sub.limite_efectivo && count >= Number(sub.limite_efectivo)) {
+        return { ok: false, status: 400, error: "Tu coach alcanzó el límite de alumnos." };
+      }
     }
   }
 
@@ -349,26 +356,72 @@ async function reclamarInvitacion(db, body, deps = {}) {
     args: [email]
   });
   if (exists.rows?.length) {
-    return {
-      ok: false,
-      status: 400,
-      error: "Este correo ya está registrado. Inicia sesión y pide a tu coach que te vincule."
-    };
+    const existingId = Number(exists.rows[0].id);
+    if (!provisionalId || existingId !== provisionalId) {
+      return {
+        ok: false,
+        status: 400,
+        error: "Este correo ya está registrado. Inicia sesión y pide a tu coach que te vincule."
+      };
+    }
   }
 
   const nombre = nombreBody || String(inv.nombre || "").trim() || "Atleta";
   const hash = bcrypt.hashSync(password, 10);
+  let clienteId = provisionalId;
 
-  const userIns = await db.execute({
-    sql: `INSERT INTO usuarios (nombre, email, password, rol, codigo_invitacion, coach_id, onboarding_guia_vista, onboarding_quests)
-          VALUES (?, ?, ?, 'CLIENTE', NULL, ?, 0, '{}')`,
-    args: [nombre, email, hash, coachId]
-  });
-  const clienteId = Number(userIns.lastInsertRowid || userIns.meta?.last_insert_rowid || 0);
-  if (!clienteId) {
-    return { ok: false, status: 500, error: "No se pudo crear la cuenta." };
+  if (provisionalId) {
+    await db.execute({
+      sql: `UPDATE usuarios SET nombre = ?, email = ?, password = ?, coach_id = ?
+            WHERE id = ?`,
+      args: [nombre, email, hash, coachId, provisionalId]
+    });
+    await aplicarPerfilYMedicionDesdeInv(db, provisionalId, inv, telefono, { forzarMedicion: false });
+  } else {
+    const userIns = await db.execute({
+      sql: `INSERT INTO usuarios (nombre, email, password, rol, codigo_invitacion, coach_id, onboarding_guia_vista, onboarding_quests)
+            VALUES (?, ?, ?, 'CLIENTE', NULL, ?, 0, '{}')`,
+      args: [nombre, email, hash, coachId]
+    });
+    clienteId = Number(userIns.lastInsertRowid || userIns.meta?.last_insert_rowid || 0);
+    if (!clienteId) {
+      return { ok: false, status: 500, error: "No se pudo crear la cuenta." };
+    }
+    await aplicarPerfilYMedicionDesdeInv(db, clienteId, inv, telefono, { forzarMedicion: true });
   }
 
+  const upd = await db.execute({
+    sql: `UPDATE invitaciones_presenciales
+          SET status = 'active', cliente_id = ?, email = COALESCE(?, email), telefono = COALESCE(?, telefono)
+          WHERE id = ? AND status = 'pending'`,
+    args: [clienteId, email, telefono, Number(inv.id)]
+  });
+  if ((upd.rowsAffected ?? upd.meta?.rows_affected ?? 0) === 0) {
+    return { ok: false, status: 409, error: "El código ya no está disponible." };
+  }
+
+  const userRes = await db.execute({
+    sql: "SELECT * FROM usuarios WHERE id = ?",
+    args: [clienteId]
+  });
+  let usuario = sanitizeUsuario(userRes.rows[0]);
+  if (enrichUsuarioConSuscripcion) {
+    usuario = await enrichUsuarioConSuscripcion(db, usuario);
+  }
+  if (enrichUsuarioVinculo) {
+    usuario = await enrichUsuarioVinculo(db, usuario);
+  }
+  const token = signToken(usuario);
+
+  return { ok: true, usuario, token };
+}
+
+function emailProvisionalPresencial(codigo) {
+  return `pendiente.${String(codigo || "").toLowerCase()}@reclamo.metodog.app`;
+}
+
+async function aplicarPerfilYMedicionDesdeInv(db, clienteId, inv, telefonoOpt, opts = {}) {
+  const { forzarMedicion = true } = opts;
   let datosMed = {};
   try {
     datosMed = JSON.parse(inv.datos_medicion || "{}");
@@ -379,6 +432,7 @@ async function reclamarInvitacion(db, body, deps = {}) {
   const gustosFinal = String(inv.gustos || "").trim() || String(inv.objetivo || "").trim() || "";
   const disgustosFinal = String(inv.disgustos || "").trim() || "";
   const enfermedadesFinal = String(inv.enfermedades || "").trim() || "";
+  const telefono = telefonoLimpio(telefonoOpt) || telefonoLimpio(inv.telefono) || null;
 
   await db.execute({
     sql: `INSERT INTO perfiles_clientes (usuario_id, edad, estatura, peso_kg, genero, gustos, disgustos, enfermedades, intencion_atleta, telefono)
@@ -406,6 +460,14 @@ async function reclamarInvitacion(db, body, deps = {}) {
     ]
   });
 
+  if (!forzarMedicion) {
+    const ya = await db.execute({
+      sql: "SELECT id FROM mediciones WHERE usuario_id = ? LIMIT 1",
+      args: [clienteId]
+    });
+    if (ya.rows?.length) return;
+  }
+
   const hayPerimetros = !!(datosMed.perimetros && Object.keys(datosMed.perimetros).length);
   if (inv.peso_kg != null || datosMed.grasa != null || hayPerimetros) {
     const extra = JSON.stringify(construirDatosExtraMedicion(datosMed));
@@ -419,31 +481,144 @@ async function reclamarInvitacion(db, body, deps = {}) {
       ]
     });
   }
+}
 
-  const upd = await db.execute({
-    sql: `UPDATE invitaciones_presenciales
-          SET status = 'active', cliente_id = ?
-          WHERE id = ? AND status = 'pending'`,
-    args: [clienteId, Number(inv.id)]
+/**
+ * Coach prepara rutina/dieta antes del reclamo: crea CLIENTE provisional + perfil/medidas.
+ */
+async function prepararPlanInvitacion(db, coachUser, invitacionId) {
+  const coachId = Number(coachUser?.id);
+  const invId = Number(invitacionId);
+  if (!coachId || !invId) {
+    return { ok: false, status: 400, error: "Datos inválidos." };
+  }
+  if (!["COACH", "SUPERADMIN"].includes(coachUser?.rol)) {
+    return { ok: false, status: 403, error: "No autorizado." };
+  }
+
+  const invRes = await db.execute({
+    sql: "SELECT * FROM invitaciones_presenciales WHERE id = ? LIMIT 1",
+    args: [invId]
   });
-  if ((upd.rowsAffected ?? upd.meta?.rows_affected ?? 0) === 0) {
-    return { ok: false, status: 409, error: "El código ya no está disponible." };
+  if (!invRes.rows?.length) {
+    return { ok: false, status: 404, error: "Invitación no encontrada." };
+  }
+  const inv = invRes.rows[0];
+  if (coachUser.rol === "COACH" && Number(inv.coach_id) !== coachId) {
+    return { ok: false, status: 403, error: "No es tu consulta." };
+  }
+  if (inv.status !== "pending") {
+    return { ok: false, status: 400, error: "Esta consulta ya no está pendiente." };
+  }
+  if (inv.expires_at && new Date(inv.expires_at).getTime() < Date.now()) {
+    return { ok: false, status: 400, error: "El código expiró. Crea una consulta nueva." };
   }
 
-  const userRes = await db.execute({
-    sql: "SELECT * FROM usuarios WHERE id = ?",
-    args: [clienteId]
+  if (inv.cliente_id != null) {
+    const cid = Number(inv.cliente_id);
+    const u = await db.execute({
+      sql: "SELECT id, nombre, email, rol, coach_id FROM usuarios WHERE id = ?",
+      args: [cid]
+    });
+    if (!u.rows?.length) {
+      return { ok: false, status: 404, error: "Cuenta provisional no encontrada." };
+    }
+    return {
+      ok: true,
+      cliente: {
+        id: cid,
+        nombre: u.rows[0].nombre,
+        email: u.rows[0].email,
+        coach_id: u.rows[0].coach_id,
+        provisional: true,
+        invitacion_id: invId,
+        codigo: inv.codigo
+      }
+    };
+  }
+
+  const crypto = require("crypto");
+  const emailProv = emailProvisionalPresencial(inv.codigo);
+  const hash = bcrypt.hashSync(crypto.randomBytes(24).toString("hex"), 10);
+  const nombre = String(inv.nombre || "").trim() || "Atleta";
+
+  const userIns = await db.execute({
+    sql: `INSERT INTO usuarios (nombre, email, password, rol, codigo_invitacion, coach_id, onboarding_guia_vista, onboarding_quests)
+          VALUES (?, ?, ?, 'CLIENTE', NULL, ?, 0, '{}')`,
+    args: [nombre, emailProv, hash, Number(inv.coach_id)]
   });
-  let usuario = sanitizeUsuario(userRes.rows[0]);
-  if (enrichUsuarioConSuscripcion) {
-    usuario = await enrichUsuarioConSuscripcion(db, usuario);
+  const clienteId = Number(userIns.lastInsertRowid || userIns.meta?.last_insert_rowid || 0);
+  if (!clienteId) {
+    return { ok: false, status: 500, error: "No se pudo crear la cuenta provisional." };
   }
-  if (enrichUsuarioVinculo) {
-    usuario = await enrichUsuarioVinculo(db, usuario);
-  }
-  const token = signToken(usuario);
 
-  return { ok: true, usuario, token };
+  await aplicarPerfilYMedicionDesdeInv(db, clienteId, inv, inv.telefono, { forzarMedicion: true });
+
+  const link = await db.execute({
+    sql: `UPDATE invitaciones_presenciales SET cliente_id = ?
+          WHERE id = ? AND status = 'pending' AND cliente_id IS NULL`,
+    args: [clienteId, invId]
+  });
+  if ((link.rowsAffected ?? link.meta?.rows_affected ?? 0) === 0) {
+    return { ok: false, status: 409, error: "No se pudo vincular el plan. Reintenta." };
+  }
+
+  return {
+    ok: true,
+    cliente: {
+      id: clienteId,
+      nombre,
+      email: emailProv,
+      coach_id: Number(inv.coach_id),
+      provisional: true,
+      invitacion_id: invId,
+      codigo: inv.codigo
+    }
+  };
+}
+
+/** Limpia cuenta provisional si el coach cancela un pendiente ya preparado. */
+async function limpiarClienteProvisionalPendiente(db, clienteId) {
+  const cid = Number(clienteId);
+  if (!cid) return;
+  const stillPending = await db.execute({
+    sql: `SELECT id FROM invitaciones_presenciales
+          WHERE cliente_id = ? AND status = 'pending' LIMIT 1`,
+    args: [cid]
+  });
+  if (stillPending.rows?.length) return;
+
+  const activeInv = await db.execute({
+    sql: `SELECT id FROM invitaciones_presenciales
+          WHERE cliente_id = ? AND status = 'active' LIMIT 1`,
+    args: [cid]
+  });
+  if (activeInv.rows?.length) return;
+
+  for (const sql of [
+    "DELETE FROM mediciones WHERE usuario_id = ?",
+    "DELETE FROM dietas WHERE usuario_id = ?",
+    "DELETE FROM rutinas WHERE usuario_id = ?",
+    "DELETE FROM perfiles_clientes WHERE usuario_id = ?",
+    "DELETE FROM notas_expediente WHERE cliente_id = ?",
+    "DELETE FROM fotos_progreso WHERE usuario_id = ?",
+    "DELETE FROM usuarios WHERE id = ? AND rol = 'CLIENTE'"
+  ]) {
+    try {
+      await db.execute({ sql, args: [cid] });
+    } catch {
+      /* tabla puede no existir */
+    }
+  }
+}
+
+async function cuentaEsProvisionalPendiente(db, usuarioId) {
+  const r = await db.execute({
+    sql: `SELECT id FROM invitaciones_presenciales
+          WHERE cliente_id = ? AND status = 'pending' LIMIT 1`,
+    args: [Number(usuarioId)]
+  });
+  return !!(r.rows && r.rows.length);
 }
 
 module.exports = {
@@ -452,6 +627,9 @@ module.exports = {
   listarInvitacionesCoach,
   previewInvitacion,
   reclamarInvitacion,
+  prepararPlanInvitacion,
+  limpiarClienteProvisionalPendiente,
+  cuentaEsProvisionalPendiente,
   normalizarCodigoReclamo,
   DIAS_EXPIRA
 };
