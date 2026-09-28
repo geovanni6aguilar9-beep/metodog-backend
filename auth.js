@@ -123,7 +123,7 @@ async function puedeAccederUsuario(db, authUser, targetUserId) {
       sql: "SELECT coach_id FROM usuarios WHERE id = ?",
       args: [tid]
     });
-    return r.rows[0]?.coach_id === aid;
+    return Number(r.rows[0]?.coach_id) === aid;
   }
   return false;
 }

@@ -523,6 +523,8 @@ async function prepararPlanInvitacion(db, coachUser, invitacionId) {
     if (!u.rows?.length) {
       return { ok: false, status: 404, error: "Cuenta provisional no encontrada." };
     }
+    // Re-sincroniza perfil/medidas (Abrir plan no creaba perfil si falló el 1er prepare)
+    await aplicarPerfilYMedicionDesdeInv(db, cid, inv, inv.telefono, { forzarMedicion: false });
     return {
       ok: true,
       cliente: {
