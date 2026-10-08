@@ -1183,6 +1183,22 @@ async function bloquearUsuario(db, user, otherId) {
     sql: `INSERT OR IGNORE INTO social_bloqueos (blocker_id, blocked_id) VALUES (?, ?)`,
     args: [user.id, oid]
   });
+  try {
+    const { notificarFundador } = require("./socialModeracion");
+    const nombres = await db.execute({
+      sql: "SELECT id, nombre FROM usuarios WHERE id IN (?, ?)",
+      args: [user.id, oid]
+    });
+    const mapa = new Map((nombres.rows || []).map((row) => [Number(row.id), row.nombre || "alguien"]));
+    await notificarFundador(db, {
+      titulo: "Bloqueo en el muro",
+      cuerpo: `${mapa.get(Number(user.id)) || "Alguien"} bloqueó a ${mapa.get(oid) || "un usuario"}. Sus publicaciones ya no se ven entre ellos.`,
+      refTipo: "social_bloqueo",
+      refId: oid
+    });
+  } catch (err) {
+    console.warn("notif bloqueo:", err.message);
+  }
   return { ok: true };
 }
 
@@ -1692,6 +1708,9 @@ async function listarFeed(db, user) {
 async function crearPost(db, user, body) {
   if (!(await rolEsCliente(db, user.id))) {
     return { ok: false, status: 403, error: "El feed es para atletas." };
+  }
+  if (await require("./socialModeracion").usuarioExpulsado(db, user.id)) {
+    return { ok: false, status: 403, error: "Tu acceso al muro está cerrado." };
   }
   if (await esMenorOSinEdad(db, user.id)) {
     return { ok: false, status: 403, error: "Cerrado hasta los 18 años." };
@@ -2599,6 +2618,9 @@ const MAX_HISTORIA_CHARS = 18_000_000;
 async function crearHistoria(db, user, body) {
   if (!(await rolEsCliente(db, user.id))) {
     return { ok: false, status: 403, error: "Solo atletas." };
+  }
+  if (await require("./socialModeracion").usuarioExpulsado(db, user.id)) {
+    return { ok: false, status: 403, error: "Tu acceso al muro está cerrado." };
   }
   if (await esMenorOSinEdad(db, user.id)) {
     return { ok: false, status: 403, error: "Cerrado hasta los 18 años." };

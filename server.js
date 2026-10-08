@@ -184,6 +184,11 @@ const {
   listarPostsGuardados: listarPostsGuardadosSocial
 } = require("./socialPostAcciones");
 const {
+  listarReportes: listarReportesSocial,
+  borrarPostModeracion: borrarPostModeracionSocial,
+  expulsarUsuario: expulsarUsuarioSocial
+} = require("./socialModeracion");
+const {
   importarAlimentosCsv,
   previewImportacionCsv,
   PLANTILLA_CSV,
@@ -2458,6 +2463,36 @@ app.post("/api/social/muro/:id/reportar", async (req, res) => {
     return responderPerfilSocial(res, result);
   } catch (err) {
     console.error("POST social/muro/reportar:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/api/social/moderacion/reportes", async (req, res) => {
+  try {
+    const result = await listarReportesSocial(db, req.user);
+    return responderPerfilSocial(res, result);
+  } catch (err) {
+    console.error("GET social/moderacion/reportes:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/social/moderacion/posts/:id/borrar", async (req, res) => {
+  try {
+    const result = await borrarPostModeracionSocial(db, req.user, req.params.id);
+    return responderPerfilSocial(res, result);
+  } catch (err) {
+    console.error("POST social/moderacion/borrar:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/social/moderacion/usuarios/:id/expulsar", async (req, res) => {
+  try {
+    const result = await expulsarUsuarioSocial(db, req.user, req.params.id);
+    return responderPerfilSocial(res, result);
+  } catch (err) {
+    console.error("POST social/moderacion/expulsar:", err.message);
     res.status(500).json({ error: err.message });
   }
 });
@@ -4970,7 +5005,10 @@ app.post("/api/calificar", async (req, res) => {
 });
 
 app.post("/api/registro", async (req, res) => {
-  const { nombre, email, password, codigoIngresado } = req.body;
+  const { nombre, email, password, codigoIngresado, acepta_terminos } = req.body;
+  if (acepta_terminos !== true) {
+    return res.status(400).json({ error: "Acepta las reglas del muro para crear la cuenta." });
+  }
   const hash = bcrypt.hashSync(password, 10);
   const emailLimpio = email.toLowerCase().trim();
   const rol = esEmailSuperAdmin(emailLimpio) ? 'SUPERADMIN' : 'CLIENTE';
@@ -5005,9 +5043,19 @@ app.post("/api/registro", async (req, res) => {
         sql: query,
         args: [nombre, emailLimpio, hash, 'CLIENTE', null, coachId]
       });
+      try {
+        await require("./socialModeracion").marcarTerminosPorEmail(db, emailLimpio);
+      } catch (err) {
+        console.warn("terminos registro:", err.message);
+      }
       res.json({ mensaje: "Ok" });
     } else {
       await db.execute({ sql: query, args: [nombre, emailLimpio, hash, rol, (rol === 'SUPERADMIN' ? generarCodigo() : null), null] });
+      try {
+        await require("./socialModeracion").marcarTerminosPorEmail(db, emailLimpio);
+      } catch (err) {
+        console.warn("terminos registro:", err.message);
+      }
       res.json({ mensaje: "Ok" });
     }
   } catch (err) { 

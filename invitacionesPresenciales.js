@@ -315,6 +315,9 @@ async function reclamarInvitacion(db, body, deps = {}) {
   if (!email || !email.includes("@")) return { ok: false, status: 400, error: "Correo inválido." };
   if (password.length < 6) return { ok: false, status: 400, error: "La contraseña debe tener al menos 6 caracteres." };
   if (!telefono) return { ok: false, status: 400, error: "Indica un teléfono de contacto." };
+  if (body?.acepta_terminos !== true) {
+    return { ok: false, status: 400, error: "Acepta las reglas del muro para activar la cuenta." };
+  }
 
   const invRes = await db.execute({
     sql: "SELECT * FROM invitaciones_presenciales WHERE codigo = ? LIMIT 1",
@@ -388,6 +391,12 @@ async function reclamarInvitacion(db, body, deps = {}) {
       return { ok: false, status: 500, error: "No se pudo crear la cuenta." };
     }
     await aplicarPerfilYMedicionDesdeInv(db, clienteId, inv, telefono, { forzarMedicion: true });
+  }
+
+  try {
+    await require("./socialModeracion").marcarTerminos(db, clienteId);
+  } catch (err) {
+    console.warn("terminos reclamo:", err.message);
   }
 
   const upd = await db.execute({

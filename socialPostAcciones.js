@@ -260,6 +260,21 @@ async function reportarPost(db, user, postIdRaw, body) {
           VALUES (?, ?, ?, ?)`,
     args: [uid, postId, motivo, detalle]
   });
+  try {
+    const { notificarFundador } = require("./socialModeracion");
+    const autor = await db.execute({
+      sql: "SELECT nombre FROM usuarios WHERE id = ?",
+      args: [row.usuario_id]
+    });
+    await notificarFundador(db, {
+      titulo: "Reporte en el muro",
+      cuerpo: `Motivo: ${motivo}. Publicación de ${autor.rows?.[0]?.nombre || "un usuario"}.`,
+      refTipo: "social_reporte",
+      refId: postId
+    });
+  } catch (err) {
+    console.warn("notif reporte:", err.message);
+  }
   return { ok: true, mensaje: "Reporte enviado. Gracias." };
 }
 
