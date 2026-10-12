@@ -59,10 +59,14 @@ function normalizarDatosDietaPlantilla(datos) {
         .filter(Boolean);
       totalAlimentos += alimentos.length;
       const nombre = String(c.nombre || "").trim() || `Comida ${idx + 1}`;
+      const foto = String(c.foto || "");
       return {
         id: c.id != null ? Number(c.id) || idx + 1 : idx + 1,
         nombre,
-        alimentos
+        alimentos,
+        descripcion: String(c.descripcion || "").slice(0, 90),
+        preparacion: String(c.preparacion || "").slice(0, 500),
+        foto: foto.startsWith("data:image/") ? foto.slice(0, 300000) : ""
       };
     })
     .filter(Boolean);

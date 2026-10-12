@@ -125,6 +125,12 @@ const {
   borrarPlantillaDietaCoach
 } = require("./plantillasDietaCoach");
 const {
+  ensureTablaPlatillosCoach,
+  listarPlatillosCoach,
+  crearPlatilloCoach,
+  borrarPlatilloCoach
+} = require("./platillosCoach");
+const {
   ensureTablasPerfilSocial,
   obtenerYo: obtenerPerfilSocialYo,
   guardarYo: guardarPerfilSocialYo,
@@ -620,6 +626,7 @@ async function inicializarBD() {
     await ensureColumnasFechaAsignacionPlanes(db);
     await ensureTablaPlantillasRutinaCoach(db);
     await ensureTablaPlantillasDietaCoach(db);
+    await ensureTablaPlatillosCoach(db);
     await ensureTablasPerfilSocial(db);
     await ensureTablaVeredictosMedidasIa(db);
     await asegurarTablaInvitacionesPresenciales(db);
@@ -2024,6 +2031,46 @@ app.put("/api/coach/plantillas-dieta/:id", async (req, res) => {
     res.json({ ok: true, plantilla: result.plantilla });
   } catch (err) {
     console.error("PUT plantillas-dieta/:id:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/** Biblioteca de un platillo (foto, texto, ingredientes). Copia, no enlace. */
+app.get("/api/coach/platillos", async (req, res) => {
+  if (!(await assertCoachOAdmin(db, req, res))) return;
+  try {
+    const platillos = await listarPlatillosCoach(db, parseInt(req.user.id, 10));
+    res.json({ platillos });
+  } catch (err) {
+    console.error("GET platillos:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/coach/platillos", async (req, res) => {
+  if (!(await assertCoachOAdmin(db, req, res))) return;
+  if (!(await assertCoachSuscripcionActiva(db, req, res))) return;
+  try {
+    const result = await crearPlatilloCoach(db, parseInt(req.user.id, 10), req.body || {});
+    if (!result.ok) return res.status(result.status || 400).json({ error: result.error });
+    res.status(201).json({ ok: true, platillo: result.platillo });
+  } catch (err) {
+    console.error("POST platillos:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete("/api/coach/platillos/:id", async (req, res) => {
+  if (!(await assertCoachOAdmin(db, req, res))) return;
+  if (!(await assertCoachSuscripcionActiva(db, req, res))) return;
+  const id = parseInt(req.params.id, 10);
+  if (!id) return res.status(400).json({ error: "ID inválido." });
+  try {
+    const result = await borrarPlatilloCoach(db, parseInt(req.user.id, 10), id);
+    if (!result.ok) return res.status(result.status || 400).json({ error: result.error });
+    res.json({ ok: true, id: result.id });
+  } catch (err) {
+    console.error("DELETE platillos/:id:", err.message);
     res.status(500).json({ error: err.message });
   }
 });
