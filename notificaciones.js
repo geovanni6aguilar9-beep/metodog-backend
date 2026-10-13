@@ -54,6 +54,12 @@ async function crearNotificacion(db, { usuarioId, tipo, titulo, cuerpo, refTipo,
       meta != null ? (typeof meta === "string" ? meta : JSON.stringify(meta)) : null
     ]
   });
+  try {
+    const { enviarPushUsuario } = require("./pushAvisos");
+    await enviarPushUsuario(db, usuarioId, { titulo, cuerpo, tipo });
+  } catch (err) {
+    console.error("push aviso:", err?.message || err);
+  }
 }
 
 function parseMeta(raw) {

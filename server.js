@@ -43,6 +43,12 @@ const {
   cancelarSolicitudesPendientesCliente,
   notificarClientePlanActualizado
 } = require("./notificaciones");
+const {
+  clavePublicaPush,
+  ensureTablaPushSuscripciones,
+  guardarSuscripcionPush,
+  borrarSuscripcionPush
+} = require("./pushAvisos");
 const { evaluarSuscripcionCoach } = require("./coachSuscripcion");
 const { procesarRecordatoriosTrialCoach } = require("./trialRecordatorios");
 const {
@@ -537,6 +543,7 @@ async function inicializarBD() {
     await ensureTableConcesiones(db);
 
     await ensureTablesNotificaciones(db);
+    await ensureTablaPushSuscripciones(db);
 
     await db.execute(`CREATE TABLE IF NOT EXISTS historial_fuerza (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -4402,6 +4409,32 @@ app.post("/api/notificaciones/leer-todas", async (req, res) => {
   try {
     const actualizadas = await marcarTodasNotificacionesLeidas(db, req.user.id);
     res.json({ mensaje: "Ok", actualizadas });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/api/notificaciones/push-clave", (req, res) => {
+  const clave = clavePublicaPush();
+  if (!clave) return res.status(503).json({ error: "Avisos fuera no configurados" });
+  res.json({ clave });
+});
+
+app.post("/api/notificaciones/push", async (req, res) => {
+  try {
+    const result = await guardarSuscripcionPush(db, req.user.id, req.body || {});
+    if (!result.ok) return res.status(result.status || 400).json({ error: result.error });
+    res.json({ mensaje: "Ok" });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete("/api/notificaciones/push", async (req, res) => {
+  try {
+    const result = await borrarSuscripcionPush(db, req.user.id, req.body?.endpoint);
+    if (!result.ok) return res.status(result.status || 400).json({ error: result.error });
+    res.json({ mensaje: "Ok" });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
