@@ -298,8 +298,9 @@ async function enrichUsuarioVinculo(db, usuario) {
   return usuario;
 }
 
-/** Coach (o superadmin) guardó plan de un alumno → notificación in-app al cliente.
- *  @param {{ silencioso?: boolean }} [opts] — autosave: no notifica. Siempre dedupe si ya hay una no leída del mismo tipo.
+/** Coach (o superadmin) guardó plan de un alumno → aviso al cliente.
+ *  @param {{ silencioso?: boolean }} [opts] — autosave: no notifica.
+ *  Guardar explícito siempre avisa, también si ya había uno sin leer: se refresca y suena fuera.
  */
 async function notificarClientePlanActualizado(db, req, clienteId, tipo, opts = {}) {
   if (opts.silencioso) return;
@@ -318,40 +319,55 @@ async function notificarClientePlanActualizado(db, req, clienteId, tipo, opts = 
 
   if (req.user.rol === "COACH" && Number(cliente.coach_id) !== actorId) return;
 
-  /** Ya hay aviso no leído del mismo tipo → no spamear (autosaves / varios Guardar). */
-  const unread = await db.execute({
-    sql: `SELECT id FROM notificaciones
-          WHERE usuario_id = ? AND tipo = ? AND leida = 0
-          LIMIT 1`,
-    args: [targetId, tipo]
-  });
-  if (unread.rows.length > 0) return;
-
   const coachRes = await db.execute({
     sql: "SELECT nombre FROM usuarios WHERE id = ?",
     args: [actorId]
   });
   const coachNombre = coachRes.rows[0]?.nombre || "Tu coach";
 
+  let titulo = "";
+  let cuerpo = "";
   if (tipo === "plan_rutina") {
-    await crearNotificacion(db, {
-      usuarioId: targetId,
-      tipo: "plan_rutina",
-      titulo: "Nueva rutina disponible",
-      cuerpo: `${coachNombre} actualizó tu rutina. Revísala en Rutinas.`,
-      refTipo: "plan_rutina",
-      refId: actorId
-    });
+    titulo = "Nueva rutina disponible";
+    cuerpo = `${coachNombre} actualizó tu rutina. Revísala en Rutinas.`;
   } else if (tipo === "plan_dieta") {
-    await crearNotificacion(db, {
-      usuarioId: targetId,
-      tipo: "plan_dieta",
-      titulo: "Nueva dieta disponible",
-      cuerpo: `${coachNombre} actualizó tu plan nutricional. Revísala en Nutrición.`,
-      refTipo: "plan_dieta",
-      refId: actorId
-    });
+    titulo = "Nueva dieta disponible";
+    cuerpo = `${coachNombre} actualizó tu plan nutricional. Revísala en Nutrición.`;
+  } else {
+    return;
   }
+
+  const unread = await db.execute({
+    sql: `SELECT id FROM notificaciones
+          WHERE usuario_id = ? AND tipo = ? AND leida = 0
+          LIMIT 1`,
+    args: [targetId, tipo]
+  });
+
+  if (unread.rows.length > 0) {
+    await db.execute({
+      sql: `UPDATE notificaciones
+            SET titulo = ?, cuerpo = ?, created_at = datetime('now'), leida = 0
+            WHERE id = ? AND usuario_id = ?`,
+      args: [titulo, cuerpo, unread.rows[0].id, targetId]
+    });
+    try {
+      const { enviarPushUsuario } = require("./pushAvisos");
+      await enviarPushUsuario(db, targetId, { titulo, cuerpo, tipo });
+    } catch (err) {
+      console.error("push aviso:", err?.message || err);
+    }
+    return;
+  }
+
+  await crearNotificacion(db, {
+    usuarioId: targetId,
+    tipo,
+    titulo,
+    cuerpo,
+    refTipo: tipo,
+    refId: actorId
+  });
 }
 
 async function cancelarSolicitudesPendientesCliente(db, clienteId, exceptId = null) {
