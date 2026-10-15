@@ -49,17 +49,18 @@ function aplicarSustitutoEnDatosDieta(datosDieta, { comidaId, idUnico, alimentoN
   }
 
   let encontrado = false;
+  const cambiar = (lista) => (lista || []).map((a) => {
+    if (String(a.idUnico) !== uid) return a;
+    encontrado = true;
+    return { ...alimentoNuevo, idUnico: uid };
+  });
   const nuevas = comidas.map((c) => {
     if (String(c.id) !== String(cid) && Number(c.id) !== Number(cid)) return c;
-    const alimentos = (c.alimentos || []).map((a) => {
-      if (String(a.idUnico) !== uid) return a;
-      encontrado = true;
-      return {
-        ...alimentoNuevo,
-        idUnico: uid
-      };
-    });
-    return { ...c, alimentos };
+    const alimentos = cambiar(c.alimentos);
+    const opciones = Array.isArray(c.opciones)
+      ? c.opciones.map((op) => ({ ...op, alimentos: cambiar(op.alimentos) }))
+      : c.opciones;
+    return { ...c, alimentos, opciones };
   });
 
   if (!encontrado) {
