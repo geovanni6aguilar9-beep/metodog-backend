@@ -435,7 +435,8 @@ async function inicializarBD() {
     for (const sql of [
       'ALTER TABLE perfiles_clientes ADD COLUMN peso_kg REAL',
       'ALTER TABLE perfiles_clientes ADD COLUMN genero TEXT',
-      "ALTER TABLE perfiles_clientes ADD COLUMN intencion_atleta TEXT"
+      "ALTER TABLE perfiles_clientes ADD COLUMN intencion_atleta TEXT",
+      "ALTER TABLE perfiles_clientes ADD COLUMN meta_cuerpo TEXT"
     ]) {
       try { await db.execute(sql); } catch (_) { /* columna ya existe */ }
     }
@@ -4606,8 +4607,8 @@ app.get("/api/clientes/:id/resumen", async (req, res) => {
     const infoRes = await db.execute({ sql: "SELECT nombre, email, fecha_inicio FROM usuarios WHERE id = ?", args: [req.params.id] });
     if (infoRes.rows.length === 0) return res.status(404).json({ error: "Usuario no encontrado" });
 
-    const perfilRes = await db.execute({ sql: "SELECT edad, estatura, peso_kg, genero, gustos, disgustos, enfermedades, intencion_atleta FROM perfiles_clientes WHERE usuario_id = ?", args: [req.params.id] });
-    const perfil = perfilRes.rows.length > 0 ? perfilRes.rows[0] : { edad: null, estatura: null, peso_kg: null, genero: null, gustos: "", disgustos: "", enfermedades: "", intencion_atleta: null };
+    const perfilRes = await db.execute({ sql: "SELECT edad, estatura, peso_kg, genero, gustos, disgustos, enfermedades, intencion_atleta, meta_cuerpo FROM perfiles_clientes WHERE usuario_id = ?", args: [req.params.id] });
+    const perfil = perfilRes.rows.length > 0 ? perfilRes.rows[0] : { edad: null, estatura: null, peso_kg: null, genero: null, gustos: "", disgustos: "", enfermedades: "", intencion_atleta: null, meta_cuerpo: null };
 
     const histRes = await db.execute({ sql: "SELECT id, peso, grasa, datos_extra, fecha FROM mediciones WHERE usuario_id = ? ORDER BY fecha DESC", args: [req.params.id] });
 
@@ -4631,6 +4632,69 @@ app.get("/api/clientes/:id/resumen", async (req, res) => {
       planes
     });
   } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+/** Meta de grasa o masa magra. El inicio lo fija la última toma. */
+app.post("/api/clientes/:id/meta-cuerpo", async (req, res) => {
+  if (!(await assertCoachOAdmin(db, req, res))) return;
+  if (!(await assertAccesoUsuarioEdicion(db, req, res, req.params.id))) return;
+  const usuarioId = parseInt(req.params.id, 10);
+  if (!usuarioId) return res.status(400).json({ error: "Usuario inválido" });
+
+  try {
+    let payload = null;
+    if (req.body?.quitar !== true) {
+      const tipo = req.body?.tipo === "magra" ? "magra" : req.body?.tipo === "grasa" ? "grasa" : null;
+      const meta = Number(req.body?.meta);
+      const fechaMeta = String(req.body?.fecha_meta || "").slice(0, 10);
+      if (!tipo || !Number.isFinite(meta) || !/^\d{4}-\d{2}-\d{2}$/.test(fechaMeta)) {
+        return res.status(400).json({ error: "Revisa la meta" });
+      }
+      const hist = await db.execute({
+        sql: "SELECT peso, grasa, fecha FROM mediciones WHERE usuario_id = ? ORDER BY fecha DESC LIMIT 1",
+        args: [usuarioId]
+      });
+      const toma = hist.rows[0];
+      if (!toma) return res.status(400).json({ error: "Primero registra una toma" });
+      const peso = Number(toma.peso);
+      const grasa = Number(toma.grasa);
+      let inicio = null;
+      if (tipo === "grasa") {
+        if (!Number.isFinite(grasa) || grasa <= 0) {
+          return res.status(400).json({ error: "La última toma no tiene % de grasa" });
+        }
+        inicio = Math.round(grasa * 10) / 10;
+        if (meta < 4 || meta > 60) return res.status(400).json({ error: "La grasa queda entre 4 y 60" });
+      } else {
+        if (!Number.isFinite(peso) || !Number.isFinite(grasa) || grasa < 0 || grasa >= 100) {
+          return res.status(400).json({ error: "La última toma no tiene masa magra" });
+        }
+        inicio = Math.round(peso * (1 - grasa / 100) * 10) / 10;
+        if (meta < 20 || meta > 150) return res.status(400).json({ error: "La masa magra queda en kilos reales" });
+      }
+      if (Math.abs(meta - inicio) < 0.3) {
+        return res.status(400).json({ error: "La meta tiene que separarse del inicio" });
+      }
+      const fechaInicio = String(toma.fecha || "").slice(0, 10);
+      payload = JSON.stringify({
+        tipo,
+        inicio,
+        meta: Math.round(meta * 10) / 10,
+        fecha_meta: fechaMeta,
+        fecha_inicio: /^\d{4}-\d{2}-\d{2}$/.test(fechaInicio) ? fechaInicio : fechaMeta
+      });
+    }
+
+    await db.execute({
+      sql: `INSERT INTO perfiles_clientes (usuario_id, meta_cuerpo) VALUES (?, ?)
+            ON CONFLICT(usuario_id) DO UPDATE SET meta_cuerpo = excluded.meta_cuerpo`,
+      args: [usuarioId, payload]
+    });
+    res.json({ ok: true, meta_cuerpo: payload });
+  } catch (err) {
+    console.error("Error meta-cuerpo:", err.message);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 /** Reinicia conteo de ciclo (nueva rutina/dieta). */
