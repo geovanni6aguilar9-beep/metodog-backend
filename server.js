@@ -2878,6 +2878,113 @@ app.post("/api/dietas/adherencia", async (req, res) => {
   }
 });
 
+function factorLineaAlimento(a) {
+  const base = parseFloat(a?.porcion_base) || 1;
+  const qty = parseFloat(a?.cantidadSeleccionada);
+  if (!Number.isFinite(qty) || base <= 0) return 0;
+  return qty / base;
+}
+
+function alimentosDelPlato(comida, index) {
+  const i = Math.max(0, Number(index) || 0);
+  if (i === 0) return Array.isArray(comida?.alimentos) ? comida.alimentos : [];
+  const extra = Array.isArray(comida?.opciones) ? comida.opciones[i - 1] : null;
+  return Array.isArray(extra?.alimentos) ? extra.alimentos : [];
+}
+
+function consumidoDesdeMarcas(comidas, porComida, opcionPorComida) {
+  const t = { kcal: 0, p: 0, c: 0, g: 0 };
+  (comidas || []).forEach((comida) => {
+    if (porComida[String(comida.id)] !== "hecha") return;
+    const op = Number(opcionPorComida?.[String(comida.id)]) || 0;
+    alimentosDelPlato(comida, op).forEach((a) => {
+      const f = factorLineaAlimento(a);
+      t.kcal += (parseFloat(a?.calorias) || 0) * f;
+      t.p += (parseFloat(a?.proteinas) || 0) * f;
+      t.c += (parseFloat(a?.carbohidratos) || 0) * f;
+      t.g += (parseFloat(a?.grasas) || 0) * f;
+    });
+  });
+  return {
+    cal: Math.round(t.kcal),
+    kcal: Math.round(t.kcal),
+    prot: Math.round(t.p),
+    carb: Math.round(t.c),
+    gras: Math.round(t.g)
+  };
+}
+
+/** Marca una comida del día sin reescribir el resto del checklist. */
+app.post("/api/dietas/adherencia/comida", async (req, res) => {
+  if (!req.user) return res.status(401).json({ error: "Sesión requerida" });
+  const tid = parseInt(req.user.id, 10);
+  const { meal_id: mealId, fecha } = req.body || {};
+  const mealKey = String(mealId ?? "");
+  if (!tid || Number.isNaN(tid) || !mealKey) {
+    return res.status(400).json({ error: "Comida inválida", codigo: "adherencia_bad_request" });
+  }
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(fecha || ""))) {
+    return res.status(400).json({ error: "Fecha inválida", codigo: "adherencia_bad_request" });
+  }
+
+  try {
+    const dietaRes = await db.execute({
+      sql: "SELECT datos_dieta, macros_totales FROM dietas WHERE usuario_id = ?",
+      args: [tid]
+    });
+    if (!dietaRes.rows.length) {
+      return res.status(404).json({
+        error: "Aún no tienes un plan de nutrición.",
+        codigo: "adherencia_sin_dieta"
+      });
+    }
+
+    const comidas = comidasDesdeDatosDietaBackend(dietaRes.rows[0].datos_dieta);
+    const comida = comidas.find((c) => String(c.id) === mealKey);
+    if (!comida) {
+      return res.status(404).json({ error: "Esa comida no está en el plan.", codigo: "adherencia_sin_comida" });
+    }
+
+    const prev = parseMacrosTotalesJson(dietaRes.rows[0].macros_totales) || {};
+    const adhPrev = prev.adherenciaDia && prev.adherenciaDia.fecha === fecha ? prev.adherenciaDia : {};
+    const porComida = { ...(adhPrev.porComida || {}) };
+    const opcionPorComida = { ...(adhPrev.opcionPorComida || {}) };
+    if (porComida[mealKey] !== "hecha") {
+      porComida[mealKey] = "hecha";
+      if (opcionPorComida[mealKey] == null) opcionPorComida[mealKey] = 0;
+    }
+    const hechas = comidas.filter((c) => porComida[String(c.id)] === "hecha").length;
+    const total = comidas.length;
+    const pct = total ? Math.round((hechas / total) * 100) : 0;
+    const adherenciaDia = { fecha, porComida, opcionPorComida, hechas, total, pct };
+    const consumido = consumidoDesdeMarcas(comidas, porComida, opcionPorComida);
+    const macrosNext = { ...prev, adherenciaDia, consumido };
+
+    await db.execute({
+      sql: "UPDATE dietas SET macros_totales = ? WHERE usuario_id = ?",
+      args: [JSON.stringify(macrosNext), tid]
+    });
+
+    if (total > 0) {
+      await upsertAdherenciaLog(db, tid, fecha, {
+        hechas,
+        total,
+        pct,
+        consumido_kcal: consumido.kcal,
+        meta_kcal: Math.round(Number((prev.objetivos || prev).kcal ?? (prev.objetivos || prev).cal ?? 0))
+      });
+    }
+
+    res.json({ mensaje: "Comida marcada", macros_totales: macrosNext });
+  } catch (err) {
+    console.error("dietas/adherencia/comida:", err.message);
+    res.status(503).json({
+      error: mensajeErrorDb(err, "No se pudo marcar la comida."),
+      codigo: "db_temporal"
+    });
+  }
+});
+
 /**
  * Sustitución puntual (cliente con coach + Full Week).
  * Solo reemplaza un alimento; no acepta reescritura del plan completo.
