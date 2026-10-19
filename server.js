@@ -715,17 +715,22 @@ validarStripeEnProduccion();
 /** Catálogo MétodoG (global) + biblioteca personal si coach / Full Week libre. */
 app.get("/api/alimentos", async (req, res) => {
   try {
-    let sql = "SELECT * FROM alimentos WHERE coach_id IS NULL";
+    let sql = "SELECT * FROM alimentos WHERE coach_id IS NULL OR coach_id = 0";
     const args = [];
     if (req.user) {
       const acceso = await resolverAccesoBibliotecaPersonal(db, req.user);
       if (acceso.ok) {
         await limpiarNombresInvalidosCoach(db, acceso.ownerId);
-      sql = "SELECT * FROM alimentos WHERE coach_id IS NULL OR coach_id = ?";
+        sql = "SELECT * FROM alimentos WHERE coach_id IS NULL OR coach_id = 0 OR coach_id = ?";
         args.push(acceso.ownerId);
       }
     }
-    sql += " ORDER BY grupo, nombre ASC";
+    sql += ` ORDER BY grupo, nombre,
+      CASE LOWER(COALESCE(estado, ''))
+        WHEN 'crudo' THEN 0
+        WHEN 'cocido' THEN 1
+        ELSE 2
+      END`;
     const result = await db.execute({ sql, args });
     res.json(result.rows);
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -1586,7 +1591,9 @@ app.post("/api/alimentos/sustitutos", async (req, res) => {
     if (!alimento && nombre) {
       const nombreTrim = String(nombre).trim();
       const rExact = await db.execute({
-        sql: "SELECT * FROM alimentos WHERE LOWER(nombre) = LOWER(?) LIMIT 1",
+        sql: `SELECT * FROM alimentos WHERE LOWER(nombre) = LOWER(?)
+              ORDER BY CASE WHEN coach_id IS NULL THEN 0 WHEN coach_id = 0 THEN 1 ELSE 2 END
+              LIMIT 1`,
         args: [nombreTrim]
       });
       alimento = rExact.rows[0];
@@ -3075,7 +3082,9 @@ app.post("/api/dietas/sustituir", async (req, res) => {
     let filaOrig = bibOrig.rows[0];
     if (!filaOrig && original.nombre) {
       const byName = await db.execute({
-        sql: "SELECT * FROM alimentos WHERE LOWER(nombre) = LOWER(?) LIMIT 1",
+        sql: `SELECT * FROM alimentos WHERE LOWER(nombre) = LOWER(?)
+              ORDER BY CASE WHEN coach_id IS NULL THEN 0 WHEN coach_id = 0 THEN 1 ELSE 2 END
+              LIMIT 1`,
         args: [String(original.nombre).trim()]
       });
       filaOrig = byName.rows[0];

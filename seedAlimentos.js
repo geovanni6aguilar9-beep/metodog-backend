@@ -1,4 +1,5 @@
 const { ALIMENTOS_METODOG } = require("./data/alimentos-metodog-seed");
+const { CARNES_ESTADO } = require("./data/carnes-estado");
 
 /** Rellena grupo_equivalencia en filas legacy (seed inicial de 13 ítems). */
 const LEGACY_EQUIVALENCIA = {
@@ -49,10 +50,30 @@ async function ensureAlimentosSchema(db) {
   } catch (_) {
     /* ignore */
   }
+  try {
+    await db.execute("ALTER TABLE alimentos ADD COLUMN estado TEXT");
+  } catch (_) {
+    /* columna ya existe */
+  }
 }
 
 async function seedAlimentosMetodog(db) {
   await ensureAlimentosSchema(db);
+
+  for (const [desde, hacia] of [
+    ["Pulpo Cocido", "Pulpo"],
+    ["Mejillón Cocido", "Mejillón"]
+  ]) {
+    await db.execute({
+      sql: `UPDATE alimentos SET nombre = ?
+            WHERE coach_id IS NULL AND LOWER(nombre) = LOWER(?)
+              AND NOT EXISTS (
+                SELECT 1 FROM alimentos x
+                WHERE x.coach_id IS NULL AND LOWER(x.nombre) = LOWER(?)
+              )`,
+      args: [hacia, desde, hacia]
+    });
+  }
 
   for (const [nombre, ge] of Object.entries(LEGACY_EQUIVALENCIA)) {
     await db.execute({
@@ -128,8 +149,56 @@ async function seedAlimentosMetodog(db) {
             AND CAST(porcion_base AS REAL) <= 2
             AND CAST(grasas AS REAL) >= 10`);
 
+  await aplicarCarnesEstado(db);
+
   const count = await db.execute("SELECT COUNT(*) AS n FROM alimentos");
   console.log(`✅ Biblioteca alimentos: ${count.rows[0]?.n ?? "?"} ítems (grupo_equivalencia activo).`);
+}
+
+/** coach_id 0 = el otro estado del corte. La IA solo lee coach_id NULL. */
+async function aplicarCarnesEstado(db) {
+  for (const row of CARNES_ESTADO) {
+    await db.execute({
+      sql: `UPDATE alimentos SET estado = ?
+            WHERE coach_id IS NULL AND LOWER(nombre) = LOWER(?)`,
+      args: [row.estado, row.nombre]
+    });
+    const par = row.par;
+    const existe = await db.execute({
+      sql: `SELECT id FROM alimentos WHERE coach_id = 0 AND LOWER(nombre) = LOWER(?)`,
+      args: [row.nombre]
+    });
+    const args = [
+      row.nombre,
+      "Carnes",
+      row.grupo_equivalencia,
+      100,
+      "g",
+      par.calorias,
+      par.proteinas,
+      par.carbohidratos,
+      par.grasas,
+      par.sodio,
+      par.estado
+    ];
+    if (existe.rows.length > 0) {
+      await db.execute({
+        sql: `UPDATE alimentos SET
+              nombre = ?, grupo = ?, grupo_equivalencia = ?, porcion_base = ?, unidad = ?,
+              calorias = ?, proteinas = ?, carbohidratos = ?, grasas = ?, sodio = ?, estado = ?
+              WHERE id = ?`,
+        args: [...args, existe.rows[0].id]
+      });
+    } else {
+      await db.execute({
+        sql: `INSERT INTO alimentos (
+          nombre, grupo, grupo_equivalencia, porcion_base, unidad,
+          calorias, proteinas, carbohidratos, grasas, sodio, coach_id, estado
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`,
+        args
+      });
+    }
+  }
 }
 
 module.exports = { seedAlimentosMetodog, ensureAlimentosSchema };
