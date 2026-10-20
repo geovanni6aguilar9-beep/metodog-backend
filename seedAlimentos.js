@@ -12,7 +12,7 @@ const LEGACY_EQUIVALENCIA = {
   Lentejas: "legumbre",
   Frijoles: "legumbre",
   "Arroz Blanco": "carbohidrato_complejo",
-  "Avena en Hojuelas": "carbohidrato_complejo",
+  Avena: "carbohidrato_complejo",
   "Tortilla de Maíz": "carbohidrato_complejo",
   Almendras: "grasa",
   "Aceite de Oliva": "grasa",
