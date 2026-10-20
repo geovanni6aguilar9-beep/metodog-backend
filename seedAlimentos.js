@@ -1,5 +1,6 @@
 const { ALIMENTOS_METODOG } = require("./data/alimentos-metodog-seed");
 const { CARNES_ESTADO } = require("./data/carnes-estado");
+const { RENAMES_PESAJE, PESAJE_ESTADO } = require("./data/pesaje-estado");
 
 /** Rellena grupo_equivalencia en filas legacy (seed inicial de 13 ítems). */
 const LEGACY_EQUIVALENCIA = {
@@ -8,14 +9,14 @@ const LEGACY_EQUIVALENCIA = {
   "Atún en Agua": "proteina_magra",
   "Leche Entera": "lacteo",
   "Yogur Griego Sin Azúcar": "lacteo",
-  "Lentejas Cocidas": "legumbre",
-  "Frijoles Cocidos": "legumbre",
-  "Arroz Blanco Cocido": "carbohidrato_complejo",
+  Lentejas: "legumbre",
+  Frijoles: "legumbre",
+  "Arroz Blanco": "carbohidrato_complejo",
   "Avena en Hojuelas": "carbohidrato_complejo",
   "Tortilla de Maíz": "carbohidrato_complejo",
-  "Almendras": "grasa",
+  Almendras: "grasa",
   "Aceite de Oliva": "grasa",
-  "Aguacate": "grasa"
+  Aguacate: "grasa"
 };
 
 async function ensureAlimentosSchema(db) {
@@ -62,7 +63,8 @@ async function seedAlimentosMetodog(db) {
 
   for (const [desde, hacia] of [
     ["Pulpo Cocido", "Pulpo"],
-    ["Mejillón Cocido", "Mejillón"]
+    ["Mejillón Cocido", "Mejillón"],
+    ...RENAMES_PESAJE
   ]) {
     await db.execute({
       sql: `UPDATE alimentos SET nombre = ?
@@ -73,7 +75,17 @@ async function seedAlimentosMetodog(db) {
               )`,
       args: [hacia, desde, hacia]
     });
+    // Si el nombre limpio ya existía, borra el viejo con Cocido/Crudo
+    await db.execute({
+      sql: `DELETE FROM alimentos WHERE coach_id IS NULL AND LOWER(nombre) = LOWER(?)`,
+      args: [desde]
+    });
   }
+
+  await db.execute({
+    sql: `DELETE FROM alimentos WHERE coach_id IS NULL AND LOWER(nombre) = LOWER(?)`,
+    args: ["Edamame con Cáscara"]
+  });
 
   for (const [nombre, ge] of Object.entries(LEGACY_EQUIVALENCIA)) {
     await db.execute({
@@ -124,7 +136,7 @@ async function seedAlimentosMetodog(db) {
   });
 
   // Dedupe histórico: pastas de legumbre solo en Cereales (carbohidrato_complejo)
-  for (const nombre of ["Pasta de Lenteja Cocida", "Pasta de Garbanzo Cocida"]) {
+  for (const nombre of ["Pasta de Lenteja", "Pasta de Garbanzo"]) {
     await db.execute({
       sql: `UPDATE alimentos
             SET grupo = 'Cereales',
@@ -150,9 +162,21 @@ async function seedAlimentosMetodog(db) {
             AND CAST(grasas AS REAL) >= 10`);
 
   await aplicarCarnesEstado(db);
+  await aplicarPesajeEstado(db);
 
   const count = await db.execute("SELECT COUNT(*) AS n FROM alimentos");
   console.log(`✅ Biblioteca alimentos: ${count.rows[0]?.n ?? "?"} ítems (grupo_equivalencia activo).`);
+}
+
+/** Una ficha: el estado en que se pesa. Sin par (arroz no va crudo). */
+async function aplicarPesajeEstado(db) {
+  for (const row of PESAJE_ESTADO) {
+    await db.execute({
+      sql: `UPDATE alimentos SET estado = ?
+            WHERE coach_id IS NULL AND LOWER(nombre) = LOWER(?)`,
+      args: [row.estado, row.nombre]
+    });
+  }
 }
 
 /** coach_id 0 = el otro estado del corte. La IA solo lee coach_id NULL. */
