@@ -1218,7 +1218,7 @@ async function enrichUsuarioConSuscripcion(db, usuario) {
   }
 
   const atletaRes = await db.execute({
-    sql: `SELECT status, current_period_end, cancel_at_period_end
+    sql: `SELECT status, current_period_end, cancel_at_period_end, store
           FROM suscripciones_atleta WHERE usuario_id = ?`,
     args: [usuario.id]
   });
@@ -1228,11 +1228,13 @@ async function enrichUsuarioConSuscripcion(db, usuario) {
     usuario.atleta_suscripcion_activa = suscripcionActiva(a.status);
     usuario.atleta_periodo_fin = a.current_period_end;
     usuario.atleta_cancel_at_period_end = !!a.cancel_at_period_end;
+    usuario.atleta_store = a.store || "stripe";
   } else {
     usuario.atleta_suscripcion_status = null;
     usuario.atleta_suscripcion_activa = !!usuario.paquete_grandfathered;
     usuario.atleta_periodo_fin = null;
     usuario.atleta_cancel_at_period_end = false;
+    usuario.atleta_store = null;
   }
 
   const stripe = getStripe();
@@ -1254,7 +1256,7 @@ async function enrichUsuarioConSuscripcion(db, usuario) {
 
   const subRes = await db.execute({
     sql: `SELECT plan, status, limite_clientes, current_period_end, cancel_at_period_end, trial_end,
-          stripe_customer_id, stripe_subscription_id, trial_usado
+          stripe_customer_id, stripe_subscription_id, trial_usado, store
           FROM suscripciones_coach WHERE usuario_id = ?`,
     args: [usuario.id]
   });
@@ -1282,6 +1284,7 @@ async function enrichUsuarioConSuscripcion(db, usuario) {
       usuario.coach_necesita_suscripcion = usuario.rol === "COACH";
       usuario.coach_stripe_vinculado = !!(s.stripe_subscription_id && s.stripe_customer_id);
       usuario.coach_trial_usado = !!s.trial_usado;
+      usuario.coach_store = s.store || "stripe";
     } else {
       const planEfectivo = s.status === "trialing" ? "starter" : normalizarPlanCoach(s.plan);
       const limiteCalc = limiteAlumnosCoach(planEfectivo, s.status);
@@ -1300,6 +1303,7 @@ async function enrichUsuarioConSuscripcion(db, usuario) {
       usuario.coach_necesita_suscripcion = false;
       usuario.coach_stripe_vinculado = !!(s.stripe_subscription_id && s.stripe_customer_id);
       usuario.coach_trial_usado = !!s.trial_usado;
+      usuario.coach_store = s.store || "stripe";
     }
   } else {
     usuario.coach_plan = null;
@@ -1313,6 +1317,7 @@ async function enrichUsuarioConSuscripcion(db, usuario) {
     usuario.coach_necesita_suscripcion = usuario.rol === "COACH";
     usuario.coach_stripe_vinculado = false;
     usuario.coach_trial_usado = false;
+    usuario.coach_store = null;
   }
 
   if (usuario.rol === "SUPERADMIN") {
@@ -1352,7 +1357,13 @@ async function enrichUsuarioConSuscripcion(db, usuario) {
     ["active", "trialing"].includes(usuario.coach_suscripcion_status) ||
     ["active", "trialing"].includes(usuario.atleta_suscripcion_status)
   ) {
-    usuario.suscripcion_origen = "stripe";
+    const storeCoach = usuario.coach_store;
+    const storeAtleta = usuario.atleta_store;
+    if (storeCoach === "apple" || storeAtleta === "apple") {
+      usuario.suscripcion_origen = "apple";
+    } else {
+      usuario.suscripcion_origen = "stripe";
+    }
     usuario.concesion_admin_fin = null;
   } else if (usuario.paquete_grandfathered || usuario.paquete_rutina_6_dias) {
     usuario.suscripcion_origen = "grandfathered";
@@ -1375,5 +1386,6 @@ module.exports = {
   enrichUsuarioConSuscripcion,
   evaluarSuscripcionCoach,
   migrarPaquetesGrandfathered,
-  syncPaqueteDesdeSuscripcion
+  syncPaqueteDesdeSuscripcion,
+  ascenderUsuarioACoach
 };

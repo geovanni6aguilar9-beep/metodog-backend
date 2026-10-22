@@ -29,6 +29,7 @@ const {
   enrichUsuarioConSuscripcion,
   migrarPaquetesGrandfathered
 } = require("./pagos");
+const { verificarCompraIap, handleAppleServerNotification } = require("./iapApple");
 const {
   ensureTablesNotificaciones,
   enrichUsuarioVinculo,
@@ -531,6 +532,22 @@ async function inicializarBD() {
         "ALTER TABLE suscripciones_coach ADD COLUMN trial_usado INTEGER DEFAULT 0"
       );
     } catch (_) { /* columna ya existe */ }
+
+    /* IAP Apple — store + ids de transacción */
+    for (const tabla of ["suscripciones_atleta", "suscripciones_coach"]) {
+      for (const col of [
+        "store TEXT DEFAULT 'stripe'",
+        "apple_original_transaction_id TEXT",
+        "apple_product_id TEXT"
+      ]) {
+        try {
+          await db.execute(`ALTER TABLE ${tabla} ADD COLUMN ${col}`);
+        } catch (_) { /* ya existe */ }
+      }
+    }
+    try {
+      await db.execute("ALTER TABLE usuarios ADD COLUMN apple_app_account_token TEXT");
+    } catch (_) { /* ya existe */ }
     try {
       await db.execute(`
         UPDATE suscripciones_coach SET trial_usado = 1
@@ -3624,6 +3641,15 @@ app.post("/api/pagos/portal-coach", async (req, res) => {
 
 app.post("/api/pagos/reset-coach-stripe-live", async (req, res) => {
   return resetCoachStripeLive(req, res, db);
+});
+
+app.post("/api/pagos/iap/verificar", async (req, res) => {
+  return verificarCompraIap(req, res, db);
+});
+
+/** App Store Server Notifications V2 — público (auth.js whitelist). */
+app.post("/api/pagos/iap/asn", async (req, res) => {
+  return handleAppleServerNotification(req, res, db);
 });
 
 async function cancelarSuscripcionesStripeUsuario(db, userId) {
